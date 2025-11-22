@@ -1,7 +1,7 @@
 # DeadCellsMultiplayerMod
 
 **DeadCellsMultiplayerMod** is a mod for **Dead Cells**, built on top of the **Dead Cells Core Modding API (DCCM)**.  
-It adds **multiplayer support** via a local or virtual network: one player hosts a server, another connects — and you can explore levels together in real time.
+It adds **multiplayer support** via a local or virtual network: one player hosts a server, another connects — and you can explore levels together.
 
 ---
 
@@ -22,22 +22,19 @@ https://github.com/dead-cells-core-modding/core
 
 Create the following folder inside your game directory:
 
-
 Extract the API release into this folder.
 
 ---
 
 ### 2️⃣ Run DCCM
 Start the game using:
-
-
 DCCM will generate the required files on the first launch.  
 When the game loads — simply close it.
 
 ---
 
 ### 3️⃣ Install the mod
-Extract the **DeadCellsMultiplayerMod** folder into:
+Extract the **DeadCellsMultiplayerMod** folder into mods folder:
 
 
 ---
