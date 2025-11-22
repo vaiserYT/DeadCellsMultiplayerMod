@@ -1,0 +1,257 @@
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Serilog;
+
+public enum NetRole { None, Host, Client }
+
+public sealed class NetNode : IDisposable
+{
+    private readonly ILogger _log;
+    private readonly NetRole _role;
+
+    private TcpListener? _listener;   // host
+    private TcpClient?   _client;     // client OR accepted
+    private NetworkStream? _stream;
+
+    private readonly IPEndPoint _bindEp;   // host bind
+    private readonly IPEndPoint _destEp;   // client connect
+
+    private CancellationTokenSource? _cts;
+    private Task? _acceptTask;
+    private Task? _recvTask;
+
+    private readonly object _sync = new();
+    private int    _rcx, _rcy;
+    private double _rxr, _ryr;
+    private bool   _hasRemote;
+
+    public bool HasRemote { get { lock (_sync) return _hasRemote; } }
+    public bool IsAlive =>
+        (_role == NetRole.Host && _listener != null) ||
+        (_role == NetRole.Client && _client   != null);
+
+    // Новое свойство для реального адреса хоста
+    public IPEndPoint? ListenerEndpoint =>
+        _listener != null ? (IPEndPoint?)_listener.LocalEndpoint : null;
+
+    public static NetNode CreateHost(ILogger log, IPEndPoint ep)  => new(log, NetRole.Host,  ep);
+    public static NetNode CreateClient(ILogger log, IPEndPoint ep)=> new(log, NetRole.Client, ep);
+
+    private NetNode(ILogger log, NetRole role, IPEndPoint ep)
+    {
+        _log  = log;
+        _role = role;
+
+        if (role == NetRole.Host)
+        {
+            // только loopback
+            _bindEp = new IPEndPoint(IPAddress.Loopback, ep.Port);
+            _destEp = new IPEndPoint(IPAddress.None, 0);
+            StartHost();
+        }
+        else
+        {
+            _destEp = ep; // 127.0.0.1:XXXX из server.txt
+            _bindEp = new IPEndPoint(IPAddress.None, 0);
+            StartClient();
+        }
+    }
+
+    // ================= HOST =================
+    private void StartHost()
+    {
+        try
+        {
+            _cts = new CancellationTokenSource();
+            _listener = new TcpListener(_bindEp);
+            _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _listener.Start();
+
+            var lep = (IPEndPoint)_listener.LocalEndpoint;
+
+            // ВАЖНО: логируем реальный адрес слушателя
+            _log.Information("[NetNode] Host started OK. Bound to {0}:{1}", lep.Address, lep.Port);
+
+            _acceptTask = Task.Run(() => AcceptLoop(_cts.Token));
+        }
+        catch (Exception ex)
+        {
+            _log.Error("[NetNode] Host start failed: {msg}", ex.Message);
+            Dispose();
+            throw;
+        }
+    }
+
+    private async Task AcceptLoop(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested && _listener != null)
+            {
+                var tcp = await _listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                tcp.NoDelay = true;
+                _client = tcp;
+                _stream = tcp.GetStream();
+
+                _log.Information("[NetNode] Host accepted {ep}", tcp.Client.RemoteEndPoint);
+
+                await SendLineSafe("WELCOME\n").ConfigureAwait(false);
+
+                lock (_sync) _hasRemote = true;
+
+                _recvTask = Task.Run(() => RecvLoop(ct));
+                break;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex)
+        {
+            _log.Warning("[NetNode] AcceptLoop error: {msg}", ex.Message);
+        }
+    }
+
+    // ================= CLIENT =================
+    private void StartClient()
+    {
+        _cts = new CancellationTokenSource();
+        _ = Task.Run(() => ConnectWithRetryAsync(_cts.Token));
+    }
+
+    private async Task ConnectWithRetryAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                _log.Information("[NetNode] Client connecting to {dest}", _destEp);
+
+                var tcp = new TcpClient(AddressFamily.InterNetwork);
+                tcp.NoDelay = true;
+
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(TimeSpan.FromSeconds(3));
+
+                await tcp.ConnectAsync(_destEp.Address, _destEp.Port, timeoutCts.Token).ConfigureAwait(false);
+                _client = tcp;
+                _stream = tcp.GetStream();
+
+                _log.Information("[NetNode] Client connected to {dest}", _destEp);
+
+                await SendLineSafe("HELLO\n").ConfigureAwait(false);
+
+                lock (_sync) _hasRemote = true;
+
+                _recvTask = Task.Run(() => RecvLoop(ct));
+                return;
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                _log.Warning("[NetNode] Client connect error: {msg}", ex.Message);
+                await Task.Delay(3000, ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    // ============== COMMON IO ==============
+    private async Task RecvLoop(CancellationToken ct)
+    {
+        var buf = new byte[1024];
+        var sb  = new StringBuilder();
+
+        try
+        {
+            while (!ct.IsCancellationRequested && _stream != null)
+            {
+                int n = await _stream.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
+                if (n <= 0) break;
+
+                sb.Append(Encoding.UTF8.GetString(buf, 0, n));
+
+                while (true)
+                {
+                    var text = sb.ToString();
+                    int idx = text.IndexOf('\n');
+                    if (idx < 0) break;
+
+                    var line = text[..idx].Trim();
+                    sb.Remove(0, idx + 1);
+                    if (line.Length == 0) continue;
+
+                    _log.Information("[NetNode] recv line: \"{line}\"", line);
+
+                    if (line == "WELCOME" || line == "HELLO")
+                    {
+                        lock (_sync) _hasRemote = true;
+                        continue;
+                    }
+
+                    var parts = line.Split('|');
+                    if (parts.Length == 4 &&
+                        int.TryParse(parts[0], out var cx) &&
+                        int.TryParse(parts[1], out var cy) &&
+                        double.TryParse(parts[2], out var xr) &&
+                        double.TryParse(parts[3], out var yr))
+                    {
+                        lock (_sync)
+                        {
+                            _rcx = cx; _rcy = cy; _rxr = xr; _ryr = yr; _hasRemote = true;
+                        }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex)
+        {
+            _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
+        }
+    }
+
+    private async Task SendLineSafe(string line)
+    {
+        var s = _stream;
+        if (s == null) return;
+        try
+        {
+            var bytes = Encoding.UTF8.GetBytes(line);
+            await s.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("[NetNode] send error: {msg}", ex.Message);
+        }
+    }
+
+    public void TickSend(int cx, int cy, double xr, double yr)
+    {
+        if (_stream == null || _client == null || !_client.Connected) return;
+        var line = $"{cx}|{cy}|{xr}|{yr}\n";
+        _ = SendLineSafe(line);
+        // _log.Information("[NetNode] sent line: {line}", line.TrimEnd());
+    }
+
+    public bool TryGetRemote(out int rcx, out int rcy, out double rxr, out double ryr)
+    {
+        lock (_sync)
+        {
+            rcx = _rcx; rcy = _rcy; rxr = _rxr; ryr = _ryr;
+            return _hasRemote;
+        }
+    }
+
+    public void Dispose()
+    {
+        try { _cts?.Cancel(); } catch { }
+        try { _stream?.Close(); } catch { }
+        try { _client?.Close(); } catch { }
+        try { _listener?.Stop(); } catch { }
+        _stream = null; _client = null; _listener = null;
+    }
+}

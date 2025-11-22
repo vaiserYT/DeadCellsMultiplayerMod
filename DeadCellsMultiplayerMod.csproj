@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <ModType>mod</ModType>
+    <ModMain>DeadCellsMultiplayerMod.ModEntry</ModMain>
+  </PropertyGroup>
+
+  <!-- MDK reference -->
+  <ItemGroup>
+    <PackageReference Include="DeadCellsCoreModding.MDK" Version="1.0.1" />
+  </ItemGroup>
+
+  <!-- Exclude backup ghost implementation -->
+  <ItemGroup>
+    <Compile Remove="GhostHero_old.cs" />
+  </ItemGroup>
+
+</Project>
