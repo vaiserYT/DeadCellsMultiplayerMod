@@ -64,6 +64,17 @@ For internet play, use **Hamachi, Radmin VPN, ZeroTier**, or similar tools.
 
 ---
 
+## TODO
+- [x] Create the player's ghosts
+- [ ] Better sprite for the ghost
+- [ ] Sync the worlds
+- [ ] Add animation to the player's ghosts
+- [ ] Sync the enemies
+- [ ] Add death for the ghost
+
+
+---
+
 ## 📜 Credits
 
 - **Dead Cells Core Modding API (DCCM):**  
