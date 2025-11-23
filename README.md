@@ -7,9 +7,8 @@ It adds **multiplayer support** via a local or virtual network: one player hosts
 
 ## 🚀 Features
 - Real-time synchronization between two players  
-- UDP-based local server embedded directly in the game  
+- TCP-based local server embedded directly in the game  
 - Simple client connection  
-- Very low latency  
 - Easy installation and setup  
 
 ---
@@ -66,7 +65,7 @@ For internet play, use **Hamachi, Radmin VPN, ZeroTier**, or similar tools.
 
 ## TODO
 - [x] Create the player's ghosts
-- [ ] Sync the world's seeds
+- [x] Sync the world's seeds
 - [ ] Better sprite for the ghost
 - [ ] Add animation to the player's ghosts
 - [ ] Sync the enemies

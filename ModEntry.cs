@@ -1,9 +1,10 @@
-using Hashlink.Proxy.DynamicAccess;
+﻿using Hashlink.Proxy.DynamicAccess;
 using HaxeProxy.Runtime;
 using ModCore.Events.Interfaces.Game;
 using ModCore.Events.Interfaces.Game.Hero;
 using ModCore.Mods;
 using ModCore.Modules;
+using ModCore.Events.Interfaces.Game.Save;
 using Serilog;
 using System;
 using System.IO;
@@ -17,7 +18,8 @@ namespace DeadCellsMultiplayerMod
         IOnGameEndInit,
         IOnHeroInit,
         IOnHeroUpdate,
-        IOnFrameUpdate
+        IOnFrameUpdate,
+        IOnAfterLoadingSave
     {
         private const int VK_F5 = 0x74; // Host
         private const int VK_F6 = 0x75; // Client
@@ -48,7 +50,6 @@ namespace DeadCellsMultiplayerMod
         private bool _initialGhostSpawned;
         private double _ghostLogAccum;
         private const double GhostLogInterval = 5.0;
-
         public override void Initialize()
         {
             Logger.Information("[NetMod] Initialized");
@@ -58,8 +59,16 @@ namespace DeadCellsMultiplayerMod
         public void OnGameEndInit()
         {
             _ready = true;
-            GameMenu.SetNetRole(NetRole.None);
-            Logger.Information("[NetMod] GameEndInit — ready (F5 host / F6 client)");
+            GameMenu.SetRole(NetRole.None);
+            var seed = GameMenu.ForceGenerateServerSeed("OnGameEndInit");
+            Logger.Information("[NetMod] GameEndInit — ready (F5 host / F6 client) seed={Seed}", seed);
+        }
+
+
+        public void OnAfterLoadingSave(dc.User data)
+        {
+            // Р‘РѕР»СЊС€Рµ РќР Р”Р›РЇ Р§Р•Р“Рћ РЅРµ РёСЃРїРѕР»СЊР·СѓРµРј СЃРёРґ РёР· GameData,
+            // Рё РґР°Р¶Рµ РЅРµ Р»РѕРіРёСЂСѓРµРј РµРіРѕ, С‡С‚РѕР±С‹ РЅРµ РїСѓС‚Р°С‚СЊСЃСЏ.
         }
 
         public void OnHeroInit()
@@ -79,10 +88,10 @@ namespace DeadCellsMultiplayerMod
                     {
                         dynamic h = DynamicAccessUtils.AsDynamic(_heroRef);
                         try { heroTypeStr = (string?)h.type; } catch { }
-                        // У героя есть только _level, не level
+                        // РЈ РіРµСЂРѕСЏ РµСЃС‚СЊ С‚РѕР»СЊРєРѕ _level, РЅРµ level
                         try { _lastLevelRef = (object?)h._level; } catch { }
                         
-                        // Получаем game из уровня или используем Game.Instance
+                        // РџРѕР»СѓС‡Р°РµРј game РёР· СѓСЂРѕРІРЅСЏ РёР»Рё РёСЃРїРѕР»СЊР·СѓРµРј Game.Instance
                         _lastGameRef = ExtractGameFromLevel(_lastLevelRef) ?? Game.Instance ?? _lastGameRef;
                     }
                     catch { }
@@ -110,7 +119,7 @@ namespace DeadCellsMultiplayerMod
             if (gm != null)
                 _lastGameRef = gm;
 
-            // шлём ≈10 Гц
+            // С€Р»С‘Рј в‰€10 Р“С†
             _accum += dt;
             if (_accum < 0.1) return;
             _accum = 0;
@@ -136,14 +145,14 @@ namespace DeadCellsMultiplayerMod
                     Logger.Information("[NetMod] Level changed -> reset ghost");
                 }
 
-                // Получаем game из уровня или используем Game.Instance
+                // РџРѕР»СѓС‡Р°РµРј game РёР· СѓСЂРѕРІРЅСЏ РёР»Рё РёСЃРїРѕР»СЊР·СѓРµРј Game.Instance
                 var gameObj = ExtractGameFromLevel(levelObj) ?? Game.Instance;
                 if (gameObj != null)
                     _lastGameRef = gameObj;
             }
             catch (Exception ex)
             {
-                // Логируем ошибку для отладки, но не падаем
+                // Р›РѕРіРёСЂСѓРµРј РѕС€РёР±РєСѓ РґР»СЏ РѕС‚Р»Р°РґРєРё, РЅРѕ РЅРµ РїР°РґР°РµРј
                 Logger.Warning($"[NetMod] OnHeroUpdate error: {ex.Message}");
                 return;
             }
@@ -156,7 +165,7 @@ namespace DeadCellsMultiplayerMod
                 _companion.TryLogGhostPosition();
             }
 
-            // сеть: отправка только при изменениях
+            // СЃРµС‚СЊ: РѕС‚РїСЂР°РІРєР° С‚РѕР»СЊРєРѕ РїСЂРё РёР·РјРµРЅРµРЅРёСЏС…
             if (_net != null && _net.IsAlive && _netRole != NetRole.None)
             {
                 if (cx != _lastSentCx || cy != _lastSentCy || xr != _lastSentXr || yr != _lastSentYr)
@@ -169,21 +178,21 @@ namespace DeadCellsMultiplayerMod
                 }
             }
 
-            // появление удалённых координат — это триггер спавна призрака
+            // РїРѕСЏРІР»РµРЅРёРµ СѓРґР°Р»С‘РЅРЅС‹С… РєРѕРѕСЂРґРёРЅР°С‚ вЂ” СЌС‚Рѕ С‚СЂРёРіРіРµСЂ СЃРїР°РІРЅР° РїСЂРёР·СЂР°РєР°
             if (_net == null || !_net.IsAlive || _netRole == NetRole.None) return;
             if (!_net.TryGetRemote(out var rcx, out var rcy, out var rxr, out var ryr)) return;
             if (rcx < 0 || rcy < 0) return;
 
             _companion ??= new CompanionController(Logger);
 
-            // спавним РАЗ на текущем уровне
+            // СЃРїР°РІРЅРёРј Р РђР— РЅР° С‚РµРєСѓС‰РµРј СѓСЂРѕРІРЅРµ
             if (!_companion.IsSpawned)
             {
                 if (_lastLevelRef != null && _lastGameRef != null && _heroRef != null)
                     _companion.EnsureSpawned(_heroRef, _lastLevelRef, _lastGameRef, cx, cy);
             }
 
-            // и обновляем позицию
+            // Рё РѕР±РЅРѕРІР»СЏРµРј РїРѕР·РёС†РёСЋ
             _companion?.TeleportTo(rcx, rcy, rxr, ryr);
         }
 
@@ -254,8 +263,8 @@ namespace DeadCellsMultiplayerMod
 
                 _net = NetNode.CreateHost(Logger, ep);
                 _netRole = NetRole.Host;
-                GameMenu.SetNetRole(_netRole);
-                GameMenu.SetHostSeedBroadcaster(seed => _net?.SendSeed(seed));
+                GameMenu.SetRole(_netRole);
+                GameMenu.NetRef = _net;
 
                 var lep = _net.ListenerEndpoint;
                 if (lep != null)
@@ -267,8 +276,7 @@ namespace DeadCellsMultiplayerMod
                 _netRole = NetRole.None;
                 _net = null;
                 _hotkeysEnabled = true;
-                GameMenu.SetNetRole(_netRole);
-                GameMenu.SetHostSeedBroadcaster(null);
+                GameMenu.SetRole(_netRole);
             }
         }
 
@@ -281,8 +289,8 @@ namespace DeadCellsMultiplayerMod
 
                 _net = NetNode.CreateClient(Logger, ep);
                 _netRole = NetRole.Client;
-                GameMenu.SetNetRole(_netRole);
-                GameMenu.SetHostSeedBroadcaster(null);
+                GameMenu.SetRole(_netRole);
+                GameMenu.NetRef = _net;
 
                 Logger.Information($"[NetMod] Client connecting to {ep.Address}:{ep.Port}");
             }
@@ -292,8 +300,7 @@ namespace DeadCellsMultiplayerMod
                 _netRole = NetRole.None;
                 _net = null;
                 _hotkeysEnabled = true;
-                GameMenu.SetNetRole(_netRole);
-                GameMenu.SetHostSeedBroadcaster(null);
+                GameMenu.SetRole(_netRole);
             }
         }
 

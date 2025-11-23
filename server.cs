@@ -101,10 +101,9 @@ public sealed class NetNode : IDisposable
                 _log.Information("[NetNode] Host accepted {ep}", tcp.Client.RemoteEndPoint);
 
                 await SendLineSafe("WELCOME\n").ConfigureAwait(false);
-                if (GameMenu.TryGetKnownSeed(out var knownSeed))
+                if (_role == NetRole.Host && GameMenu.TryGetHostRunSeed(out var hostSeed))
                 {
-                    await SendLineSafe($"SEED|{knownSeed}\n").ConfigureAwait(false);
-                    _log.Information("[NetNode] Sent seed immediately on accept: {Seed}", knownSeed);
+                    SendSeed(hostSeed);
                 }
 
                 lock (_sync) _hasRemote = true;
@@ -209,8 +208,12 @@ public sealed class NetNode : IDisposable
                         if (partsSeed.Length >= 2 && int.TryParse(partsSeed[1], out var hostSeed))
                         {
                             lock (_sync) _hasRemote = true;
-                            GameMenu.SetHostSeedFromRemote(hostSeed);
-                            _log.Information("[NetNode] Received host seed {Seed}", hostSeed);
+                            GameMenu.ReceiveHostRunSeed(hostSeed);
+                            _log.Information("[NetNode] Received host run seed {Seed}", hostSeed);
+                        }
+                        else
+                        {
+                            _log.Warning("[NetNode] Malformed SEED line: \"{line}\"");
                         }
                         continue;
                     }
