@@ -50,7 +50,7 @@ public sealed class NetNode : IDisposable
         if (role == NetRole.Host)
         {
             // только loopback
-            _bindEp = new IPEndPoint(IPAddress.Loopback, ep.Port);
+            _bindEp = ep;
             _destEp = new IPEndPoint(IPAddress.None, 0);
             StartHost();
         }
