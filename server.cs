@@ -4,8 +4,12 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Serilog;
+using System.Globalization;
 using DeadCellsMultiplayerMod;
+using HaxeProxy.Runtime;
+using Newtonsoft.Json;
+using Serilog;
+using dc;
 
 public enum NetRole { None, Host, Client }
 
@@ -34,6 +38,7 @@ public sealed class NetNode : IDisposable
     public bool IsAlive =>
         (_role == NetRole.Host && _listener != null) ||
         (_role == NetRole.Client && _client   != null);
+    public bool IsHost => _role == NetRole.Host;
 
     // Новое свойство для реального адреса хоста
     public IPEndPoint? ListenerEndpoint =>
@@ -107,6 +112,7 @@ public sealed class NetNode : IDisposable
                 }
 
                 lock (_sync) _hasRemote = true;
+                GameMenu.NotifyRemoteConnected(_role);
 
                 _recvTask = Task.Run(() => RecvLoop(ct));
                 break;
@@ -150,6 +156,7 @@ public sealed class NetNode : IDisposable
                 await SendLineSafe("HELLO\n").ConfigureAwait(false);
 
                 lock (_sync) _hasRemote = true;
+                GameMenu.NotifyRemoteConnected(_role);
 
                 _recvTask = Task.Run(() => RecvLoop(ct));
                 return;
@@ -171,9 +178,20 @@ public sealed class NetNode : IDisposable
 
         try
         {
-            while (!ct.IsCancellationRequested && _stream != null)
+            while (!ct.IsCancellationRequested)
             {
-                int n = await _stream.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
+                var stream = _stream;
+                var sock = _client?.Client;
+                if (stream == null || sock == null) break;
+
+                // Non-blocking poll
+                if (!sock.Poll(0, SelectMode.SelectRead) || sock.Available == 0)
+                {
+                    await Task.Yield();
+                    continue;
+                }
+
+                int n = await stream.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
                 if (n <= 0) break;
 
                 sb.Append(Encoding.UTF8.GetString(buf, 0, n));
@@ -218,12 +236,50 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("RUNPARAMS|"))
+                    {
+                        var payload = line["RUNPARAMS|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        GameMenu.ReceiveRunParams(payload);
+                        continue;
+                    }
+
+                    if (line.StartsWith("LDESC|"))
+                    {
+                        var payload = line["LDESC|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        GameMenu.ReceiveLevelDesc(payload);
+                        continue;
+                    }
+
+                    if (line.StartsWith("GDATA|"))
+                    {
+                        var payload = line["GDATA|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        ReceiveGameData(payload);
+                        continue;
+                    }
+
+                    if (line.StartsWith("GDB|"))
+                    {
+                        var payload = line["GDB|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        ReceiveGameDataBytes(payload);
+                        continue;
+                    }
+
+                    if (line.StartsWith("KICK"))
+                    {
+                        GameMenu.NotifyRemoteDisconnected(_role);
+                        break;
+                    }
+
                     var parts = line.Split('|');
                     if (parts.Length == 4 &&
                         int.TryParse(parts[0], out var cx) &&
                         int.TryParse(parts[1], out var cy) &&
-                        double.TryParse(parts[2], out var xr) &&
-                        double.TryParse(parts[3], out var yr))
+                        double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var xr) &&
+                        double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var yr))
                     {
                         lock (_sync)
                         {
@@ -238,6 +294,11 @@ public sealed class NetNode : IDisposable
         catch (Exception ex)
         {
             _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
+        }
+        finally
+        {
+            lock (_sync) _hasRemote = false;
+            GameMenu.NotifyRemoteDisconnected(_role);
         }
     }
 
@@ -261,7 +322,6 @@ public sealed class NetNode : IDisposable
         if (_stream == null || _client == null || !_client.Connected) return;
         var line = $"{cx}|{cy}|{xr}|{yr}\n";
         _ = SendLineSafe(line);
-        // _log.Information("[NetNode] sent line: {line}", line.TrimEnd());
     }
 
     public void SendSeed(int seed)
@@ -274,6 +334,102 @@ public sealed class NetNode : IDisposable
         var line = $"SEED|{seed}\n";
         _ = SendLineSafe(line);
         _log.Information("[NetNode] Sent seed {Seed}", seed);
+    }
+
+    public void SendRunParams(string json)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending run params: no connected client");
+            return;
+        }
+
+        SendRaw("RUNPARAMS|" + json);
+        _log.Information("[NetNode] Sent run params payload");
+    }
+
+    public void SendLevelDesc(string json)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending level desc: no connected client");
+            return;
+        }
+
+        SendRaw("LDESC|" + json);
+        _log.Information("[NetNode] Sent LevelDesc payload");
+    }
+
+    public void SendGameData(string json)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending GameData: no connected client");
+            return;
+        }
+
+        SendRaw("GDATA|" + json);
+        _log.Information("[NetNode] Sent GameData payload ({Length} bytes)", json.Length);
+    }
+
+    public void SendKick()
+    {
+        if (_stream == null || _client == null || !_client.Connected) return;
+        SendRaw("KICK");
+    }
+
+    public void ReceiveGameData(string json)
+    {
+            try
+            {
+                var sync = JsonConvert.DeserializeObject<GameDataSync>(json);
+                if (sync != null)
+                {
+                    GameMenu.ApplyGameDataSync(sync);
+                    GameMenu.NotifyGameDataReceived();
+                    _log.Information("[NetNode] Applied GameDataSync");
+                }
+                else
+                {
+                    _log.Warning("[NetNode] Received GameData, but deserializer returned null");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Error("[NetNode] Failed to apply GameDataSync: {Message}", ex);
+        }
+    }
+
+    public void SendGameDataBytes(byte[] bytes)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending GameData bytes: no connected client");
+            return;
+        }
+
+        var b64 = Convert.ToBase64String(bytes);
+        SendRaw("GDB|" + b64);
+        _log.Information("[NetNode] Sent GameData bytes ({Length} bytes)", bytes.Length);
+    }
+
+    private void ReceiveGameDataBytes(string b64)
+    {
+        try
+        {
+            var bytes = Convert.FromBase64String(b64);
+            ModEntry.OnClientReceiveGameData(bytes);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("[NetNode] Failed to receive GameData bytes: {Error}", ex);
+        }
+    }
+
+    private void SendRaw(string payload)
+    {
+        var line = payload.EndsWith('\n') ? payload : payload + "\n";
+        _ = SendLineSafe(line);
     }
 
     public bool TryGetRemote(out int rcx, out int rcy, out double rxr, out double ryr)

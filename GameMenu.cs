@@ -1,550 +1,872 @@
 using System;
+using System.Net;
 using System.Reflection;
-using System.Reflection.Emit;
-using System.Threading;
-using Hashlink.Virtuals;
-using HaxeProxy.Runtime;
-using MonoMod.RuntimeDetour;
-using Serilog;
-using dc;
-using dc.hl.types;
-using dc.libs;
-using dc.level;
 using dc.pr;
-using ModCore.Modules;
+using dc.ui;
+using HaxeProxy.Runtime;
+using Newtonsoft.Json;
+using Hashlink.Virtuals;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static class GameMenu
+    internal static partial class GameMenu
     {
-        private static readonly object Sync = new();
+        private static bool _menuHooksAttached;
+        private static WeakReference<TitleScreen?>? _titleScreenRef;
+        private static string _mpIp = "127.0.0.1";
+        private static int _mpPort = 1234;
+        private static NetRole _menuSelection = NetRole.None;
+        private static bool _waitingForHost;
+        private static bool _pendingAutoStart;
+        private static bool _levelDescArrived;
+        private static bool _gameDataArrived;
+        private static bool _autoStartTriggered;
+        private static bool _mainMenuButtonAdded;
+        private static bool _suppressAutoButton;
+        private static bool _worldExitHandled;
 
-        private static ILogger? _log;
-        private static Delegate? _generateHookDelegate;
-        private static Func<Delegate, LevelGen, User, int, object, Ref<bool>, ArrayObj>? _origInvoker;
-        private static Delegate? _newGameHookDelegate;
-        private static Action<Delegate, User, int, object, bool, bool, LaunchMode>? _newGameInvoker;
-        private static Hook? _delegateHook;
-
-        private static NetRole _role = NetRole.None;
-        private static int? _serverSeed;   // host-generated seed
-        private static int? _remoteSeed;   // client-received seed
-        private static int? _lastHostSeed; // stored for transitions
-
-        private const int MaxSeed = 999_999;
-
-        public static NetNode? NetRef { get; set; }
-
-        private const string LevelDescTypeName = "Hashlink.Virtuals.virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_";
-        private static readonly System.Type? LevelDescType = System.Type.GetType(LevelDescTypeName) ?? typeof(Hook_LevelGen).Assembly.GetType(LevelDescTypeName);
-        private static readonly bool EnableLevelGenHook = true;
-
-
-        // ---------------------------------------------------------
-        // INITIALIZE
-        // ---------------------------------------------------------
-        public static void Initialize(ILogger logger)
+        private static void InitializeMenuUiHooks()
         {
+            if (_menuHooksAttached) return;
+
+            try
+            {
+                Hook_TitleScreen.addMenu += AddMenuHook;
+                Hook_TitleScreen.mainMenu += MainMenuHook;
+                Hook_Game.onDispose += GameDisposeHook;
+                _menuHooksAttached = true;
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] TitleScreen hooks failed: {Message}", ex.Message);
+            }
+        }
+
+        public static void TickMenu(double dt)
+        {
+            bool shouldStart = false;
+
             lock (Sync)
             {
-                _log = logger;
-
-                _log?.Information("[NetMod] GameMenu.Initialize — attaching RNG hooks");
-
-                // Patch UtilityDelegates.CreateDelegate to shorten generated names (avoids 1024-char limit)
-                TryPatchUtilityDelegates();
-
-                // Hook_Rand.initSeed += InitSeedHook;
-                TryAttachNewGameHook();
-
-                if (!EnableLevelGenHook)
+                if (_role == NetRole.Client &&
+                    _pendingAutoStart &&
+                    _levelDescArrived &&
+                    _gameDataArrived &&
+                    !_autoStartTriggered)
                 {
-                    _log?.Information("[NetMod] LevelGen.generate hook disabled to avoid long type-name crash");
+                    _autoStartTriggered = true;
+                    shouldStart = true;
                 }
-                else try
+            }
+
+            if (!shouldStart)
+                return;
+
+            var ts = GetTitleScreen();
+            if (ts != null)
+            {
+                try
                 {
-                    var hookType = typeof(Hook_LevelGen).GetNestedType("hook_generate");
-                    var origType = typeof(Hook_LevelGen).GetNestedType("orig_generate");
-                    if (hookType == null || origType == null || LevelDescType == null)
-                    {
-                        _log?.Warning("[NetMod] LevelGen.generate hook skipped (hookType={Hook}, origType={Orig}, descType={Desc})",
-                            hookType != null, origType != null, LevelDescType != null);
-                    }
-                    else
-                    {
-                        var dm = new DynamicMethod(
-                            "GenerateHookShim",
-                            typeof(ArrayObj),
-                            new[] { origType, typeof(LevelGen), typeof(User), typeof(int), LevelDescType, typeof(Ref<bool>) },
-                            typeof(GameMenu).Module,
-                            skipVisibility: true);
-
-                        var il = dm.GetILGenerator();
-                        il.Emit(OpCodes.Ldarg_0);
-                        il.Emit(OpCodes.Castclass, typeof(Delegate));
-                        il.Emit(OpCodes.Ldarg_1);
-                        il.Emit(OpCodes.Ldarg_2);
-                        il.Emit(OpCodes.Ldarg_3);
-                        il.Emit(OpCodes.Ldarg_S, 4);
-                        if (LevelDescType.IsValueType) il.Emit(OpCodes.Box, LevelDescType);
-                        il.Emit(OpCodes.Ldarg_S, 5);
-                        il.Emit(OpCodes.Call, typeof(GameMenu).GetMethod(nameof(GenerateHookImpl), BindingFlags.Static | BindingFlags.NonPublic)!);
-                        il.Emit(OpCodes.Ret);
-
-                        _generateHookDelegate = dm.CreateDelegate(hookType);
-                        Hook_LevelGen.generate += (dynamic)_generateHookDelegate;
-                        _log?.Information("[NetMod] Hook_LevelGen.generate attached via reflection");
-
-                        var invokeMethod = origType.GetMethod("Invoke")!;
-                        var dmInvoke = new DynamicMethod(
-                            "InvokeOrigGenerate",
-                            typeof(ArrayObj),
-                            new[] { typeof(Delegate), typeof(LevelGen), typeof(User), typeof(int), typeof(object), typeof(Ref<bool>) },
-                            typeof(GameMenu).Module,
-                            skipVisibility: true);
-
-                        var il2 = dmInvoke.GetILGenerator();
-                        il2.Emit(OpCodes.Ldarg_0);
-                        il2.Emit(OpCodes.Castclass, origType);
-                        il2.Emit(OpCodes.Ldarg_1);
-                        il2.Emit(OpCodes.Ldarg_2);
-                        il2.Emit(OpCodes.Ldarg_3);
-                        il2.Emit(OpCodes.Ldarg_S, 4);
-                        if (LevelDescType.IsValueType) il2.Emit(OpCodes.Unbox_Any, LevelDescType); else il2.Emit(OpCodes.Castclass, LevelDescType);
-                        il2.Emit(OpCodes.Ldarg_S, 5);
-                        il2.Emit(OpCodes.Callvirt, invokeMethod);
-                        il2.Emit(OpCodes.Ret);
-
-                        _origInvoker = (Func<Delegate, LevelGen, User, int, object, Ref<bool>, ArrayObj>)dmInvoke.CreateDelegate(typeof(Func<Delegate, LevelGen, User, int, object, Ref<bool>, ArrayObj>));
-                    }
-                }
-                catch (ArgumentException ex) when (ex.ParamName == "name" || ex.Message.Contains("too long", StringComparison.OrdinalIgnoreCase))
-                {
-                    _log?.Warning("[NetMod] LevelGen.generate hook failed: {Message}", ex.Message);
+                    ts.startNewGame(custom: true);
+                    _log?.Information("[NetMod] Auto-started new game after LDESC+GDATA");
                 }
                 catch (Exception ex)
                 {
-                    _log?.Warning("[NetMod] Failed to attach LevelGen.generate hook: {Message}", ex.Message);
+                    _log?.Warning("[NetMod] Failed to auto-start new game: {Message}", ex.Message);
+                    lock (Sync)
+                    {
+                        _autoStartTriggered = false;
+                        _pendingAutoStart = true;
+                    }
                 }
-
-                _log?.Information("[NetMod] Hook_Rand.initSeed attached");
+            }
+            else
+            {
+                lock (Sync)
+                {
+                    _autoStartTriggered = false;
+                    _pendingAutoStart = true;
+                }
             }
         }
 
-        // MonoMod detour for UtilityDelegates.CreateDelegate to clamp generated type names
-        private static void TryPatchUtilityDelegates()
+        public static void NotifyGameDataReceived()
         {
+            lock (Sync)
+            {
+                _gameDataArrived = true;
+                _pendingAutoStart = true;
+            }
+        }
+
+        private static void NotifyLevelDescReceived()
+        {
+            lock (Sync)
+            {
+                _levelDescArrived = true;
+                _pendingAutoStart = true;
+            }
+        }
+
+        private static void MainMenuHook(Hook_TitleScreen.orig_mainMenu orig, TitleScreen self)
+        {
+            StoreTitleScreen(self);
+            _mainMenuButtonAdded = false;
+            orig(self);
+
+            EnsureMainMenuMultiplayerButton(self);
+        }
+
+        private static virtual_cb_help_inter_isEnable_t_<bool> AddMenuHook(
+            Hook_TitleScreen.orig_addMenu orig,
+            TitleScreen self,
+            dc.String str,
+            HlAction cb,
+            dc.String help,
+            bool? isEnable,
+            Ref<int> color)
+        {
+            var ret = orig(self, str, cb, help, isEnable, color);
+
             try
             {
-                if (_delegateHook != null) return;
+                if (_suppressAutoButton) return ret;
+                if (_mainMenuButtonAdded) return ret;
+                if (!self.isMainMenu) return ret;
 
-                var utilType = FindUtilityDelegatesType();
-                var target = utilType?.GetMethod("CreateDelegate", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                var detour = typeof(GameMenu).GetMethod(nameof(CreateDelegateSafe), BindingFlags.Static | BindingFlags.NonPublic);
-                if (target == null || detour == null)
+                var items = GetMemberValue(self, "menuItems", true);
+                var count = GetArrayLength(items);
+                // Default main menu: after the first item (Play) length becomes 1
+                if (count == 1)
                 {
-                    _log?.Warning("[NetMod] UtilityDelegates.CreateDelegate not found; LevelGen hook may fail");
-                    return;
+                    int white = 0xFFFFFF;
+                    var label = MakeHLString("Play multiplayer");
+                    var helpStr = MakeHLString("Host or join a multiplayer session");
+                    var colorHl = Ref<int>.From(ref white);
+                    var cbHl = new HlAction(() => ShowMultiplayerMenu(self));
+                    orig(self, label, cbHl, helpStr, null, colorHl);
+                    _mainMenuButtonAdded = true;
                 }
-
-                _delegateHook = new Hook(target, detour);
-                _log?.Information("[NetMod] Patched UtilityDelegates.CreateDelegate (short names)");
             }
             catch (Exception ex)
             {
-                _log?.Warning("[NetMod] Failed to patch UtilityDelegates.CreateDelegate: {Message}", ex.Message);
+                _log?.Warning("[NetMod] addMenu hook failed: {Message}", ex.Message);
             }
+
+            return ret;
         }
 
-        private delegate System.Type CreateDelegateOrig(string name, System.Type ret, System.Type[] args);
-
-        // Ensures generated delegate type names stay under runtime limit
-        private static System.Type CreateDelegateSafe(CreateDelegateOrig orig, string name, System.Type ret, System.Type[] args)
+        private static void ShowMultiplayerMenu(TitleScreen screen)
         {
-            const int limit = 200; // well below 1024 to be safe
-            string shortName = name.Length > limit ? name[..limit] : name;
-            return orig(shortName, ret, args);
-        }
-
-        private static System.Type? FindUtilityDelegatesType()
-        {
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                var t = asm.GetType("Hashlink.UnsafeUtilities.UtilityDelegates");
-                if (t != null) return t;
-            }
-            return null;
-        }
-
-        // Hook User.newGame with long signature via reflection/emit
-        private static void TryAttachNewGameHook()
-        {
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
             try
             {
-                var hookType = typeof(Hook_User).GetNestedType("hook_newGame");
-                var origType = typeof(Hook_User).GetNestedType("orig_newGame");
-                if (hookType == null || origType == null || LevelDescType == null)
-                {
-                    _log?.Warning("[NetMod] User.newGame hook skipped (hookType={Hook}, origType={Orig}, descType={Desc})",
-                        hookType != null, origType != null, LevelDescType != null);
-                    return;
-                }
-
-                var dm = new DynamicMethod(
-                    "NewGameHookShim",
-                    typeof(void),
-                    new[] { origType, typeof(User), typeof(int), LevelDescType, typeof(bool), typeof(bool), typeof(LaunchMode) },
-                    typeof(GameMenu).Module,
-                    skipVisibility: true);
-
-                var il = dm.GetILGenerator();
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Castclass, typeof(Delegate));
-                il.Emit(OpCodes.Ldarg_1);
-                il.Emit(OpCodes.Ldarg_2);
-                il.Emit(OpCodes.Ldarg_3);
-                if (LevelDescType.IsValueType) il.Emit(OpCodes.Box, LevelDescType);
-                il.Emit(OpCodes.Ldarg_S, 4);
-                il.Emit(OpCodes.Ldarg_S, 5);
-                il.Emit(OpCodes.Ldarg_S, 6);
-                il.Emit(OpCodes.Call, typeof(GameMenu).GetMethod(nameof(NewGameHookImpl), BindingFlags.Static | BindingFlags.NonPublic)!);
-                il.Emit(OpCodes.Ret);
-
-                _newGameHookDelegate = dm.CreateDelegate(hookType);
-                Hook_User.newGame += (dynamic)_newGameHookDelegate;
-
-                var invokeMethod = origType.GetMethod("Invoke")!;
-                var dmInvoke = new DynamicMethod(
-                    "InvokeOrigNewGame",
-                    typeof(void),
-                    new[] { typeof(Delegate), typeof(User), typeof(int), typeof(object), typeof(bool), typeof(bool), typeof(LaunchMode) },
-                    typeof(GameMenu).Module,
-                    skipVisibility: true);
-
-                var il2 = dmInvoke.GetILGenerator();
-                il2.Emit(OpCodes.Ldarg_0);
-                il2.Emit(OpCodes.Castclass, origType);
-                il2.Emit(OpCodes.Ldarg_1);
-                il2.Emit(OpCodes.Ldarg_2);
-                il2.Emit(OpCodes.Ldarg_3);
-                if (LevelDescType.IsValueType) il2.Emit(OpCodes.Unbox_Any, LevelDescType); else il2.Emit(OpCodes.Castclass, LevelDescType);
-                il2.Emit(OpCodes.Ldarg_S, 4);
-                il2.Emit(OpCodes.Ldarg_S, 5);
-                il2.Emit(OpCodes.Ldarg_S, 6);
-                il2.Emit(OpCodes.Callvirt, invokeMethod);
-                il2.Emit(OpCodes.Ret);
-
-                _newGameInvoker = (Action<Delegate, User, int, object, bool, bool, LaunchMode>)dmInvoke.CreateDelegate(typeof(Action<Delegate, User, int, object, bool, bool, LaunchMode>));
-
-                _log?.Information("[NetMod] Hook_User.newGame attached via reflection");
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+                AddMenuButton(screen, "Host game", () => ShowConnectionMenu(screen, NetRole.Host), "Create a multiplayer session");
+                AddMenuButton(screen, "Join game", () => ShowConnectionMenu(screen, NetRole.Client), "Connect to an existing host");
+                AddMenuButton(screen, "Back", () => screen.mainMenu(), "Return to main menu");
+                RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
+                RemoveDuplicatesKeepFirst(screen, "Host game", "Join game");
             }
             catch (Exception ex)
             {
-                _log?.Warning("[NetMod] Failed to attach User.newGame hook: {Message}", ex.Message);
+                _log?.Warning("[NetMod] Failed to open multiplayer menu: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
             }
         }
 
-        private static void NewGameHookImpl(
-            Delegate orig,
-            User self,
-            int lvl,
-            object desc,
-            bool isCustom,
-            bool mode,
-            LaunchMode gdata)
+        private static void ShowConnectionMenu(TitleScreen screen, NetRole role)
         {
-            var finalSeed = lvl;
-            var incoming = lvl;
+            _menuSelection = role;
+            if (role == NetRole.Client)
+                _waitingForHost = true;
 
-            lock (Sync)
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
+            try
             {
-                if (_role == NetRole.Host && _serverSeed.HasValue)
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+
+                AddMenuButton(screen, $"IP: {_mpIp}", () =>
                 {
-                    finalSeed = _serverSeed.Value;
-                    _lastHostSeed = finalSeed;
+                    OpenTextInput(screen, "IP address", _mpIp, value =>
+                    {
+                        _mpIp = string.IsNullOrWhiteSpace(value) ? "127.0.0.1" : value;
+                        ShowConnectionMenu(screen, role);
+                    });
+                }, "Edit IP");
+
+                AddMenuButton(screen, $"Port: {_mpPort}", () =>
+                {
+                    OpenTextInput(screen, "Port", _mpPort.ToString(), value =>
+                    {
+                        if (!int.TryParse(value, out var parsed) || parsed <= 0 || parsed > 65535)
+                            parsed = 1234;
+                        _mpPort = parsed;
+                        ShowConnectionMenu(screen, role);
+                    });
+                }, "Edit port");
+
+                var actionLabel = role == NetRole.Host ? "Host" : "Join";
+                if (role == NetRole.Host)
+                {
+                    AddMenuButton(screen, actionLabel, () =>
+                    {
+                        StartHostServerOnly();
+                        ShowHostStatusMenu(screen);
+                    }, "Start hosting");
                 }
-                else if (_role == NetRole.Client && _remoteSeed.HasValue)
+                else
                 {
-                    finalSeed = _remoteSeed.Value;
+                    AddMenuButton(screen, actionLabel, () =>
+                    {
+                        StartNetwork(role, screen);
+                        ShowClientWaitingMenu(screen);
+                    }, "Connect to host");
                 }
+
+                AddMenuButton(screen, "Back", () => ShowMultiplayerMenu(screen), "Back to multiplayer menu");
+                RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
+                RemoveDuplicatesKeepFirst(screen, "Host game", "Join game", "About Core Modding");
             }
-
-            _log?.Information("[NetMod] User.newGame hook: incoming={Incoming}, final={Final}, custom={Custom}, mode={Mode}, role={Role}",
-                incoming, finalSeed, isCustom, mode, _role);
-
-            if (_newGameInvoker == null)
-                throw new InvalidOperationException("Hook_User.newGame invoker is not initialized");
-
-            _newGameInvoker(orig, self, finalSeed, desc, isCustom, mode, gdata);
-        }
-
-
-        // ---------------------------------------------------------
-        // ROLE MGMT
-        // ---------------------------------------------------------
-        public static void SetRole(NetRole role)
-        {
-            lock (Sync)
+            catch (Exception ex)
             {
-                _role = role;
-
-                if (role != NetRole.Client)
-                    _remoteSeed = null;
-
-                _log?.Information("[NetMod] SetRole -> {Role}, server={S}, remote={R}",
-                    role, _serverSeed ?? -1, _remoteSeed ?? -1);
+                _log?.Warning("[NetMod] Failed to show connection menu: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
             }
         }
 
-
-        // ---------------------------------------------------------
-        // RECEIVE SEED FROM HOST
-        // ---------------------------------------------------------
-        public static void ReceiveHostSeed(int s) => ReceiveHostRunSeed(s);
-
-        public static void ReceiveHostRunSeed(int s)
+        private static void StartNetwork(NetRole role, TitleScreen screen)
         {
-            lock (Sync)
+            try
             {
-                _remoteSeed = Normalize(s);
-            }
-
-            _log?.Information("[NetMod] Received SEED from host: {Seed}", s);
-        }
-
-
-        // ---------------------------------------------------------
-        // SEED UTILITIES
-        // ---------------------------------------------------------
-        private static int GenerateSeed()
-        {
-            int s = Random.Shared.Next(1, MaxSeed);
-            return s == 0 ? 1 : s;
-        }
-
-        private static int Normalize(int s)
-        {
-            int v = System.Math.Abs(s % MaxSeed);
-            return v == 0 ? 1 : v;
-        }
-
-        public static int ForceGenerateServerSeed(string origin)
-        {
-            lock (Sync)
-            {
-                _serverSeed = GenerateSeed();
-                _lastHostSeed = _serverSeed;
-                _log?.Information("[NetMod] Host generated run seed {Seed} ({Origin})", _serverSeed, origin);
-                if (_serverSeed.HasValue && NetRef != null)
-                    NetRef.SendSeed(_serverSeed.Value);
-                return _serverSeed ?? 1;
-            }
-        }
-
-        public static bool TryGetHostRunSeed(out int seed)
-        {
-            lock (Sync)
-            {
-                if (_lastHostSeed.HasValue)
+                if (ModEntry.Instance == null)
                 {
-                    seed = _lastHostSeed.Value;
-                    return true;
+                    _log?.Warning("[NetMod] ModEntry instance unavailable for network start");
+                    return;
                 }
-                if (_serverSeed.HasValue)
+
+                if (role == NetRole.Host)
                 {
-                    seed = _serverSeed.Value;
-                    return true;
+                    ModEntry.Instance.StartHostFromMenu(_mpIp, _mpPort);
+                    _waitingForHost = false;
+                    try
+                    {
+                        screen.startNewGame(custom: false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log?.Warning("[NetMod] Failed to start host run: {Message}", ex.Message);
+                    }
+                }
+                else if (role == NetRole.Client)
+                {
+                    ModEntry.Instance.StartClientFromMenu(_mpIp, _mpPort);
+                    lock (Sync)
+                    {
+                        _levelDescArrived = false;
+                        _gameDataArrived = false;
+                        _pendingAutoStart = false;
+                        _autoStartTriggered = false;
+                    }
+                    _waitingForHost = true;
                 }
             }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to start network: {Message}", ex.Message);
+            }
+        }
 
-            seed = 0;
+        private static void StartHostServerOnly()
+        {
+            try
+            {
+                if (ModEntry.Instance == null)
+                {
+                    _log?.Warning("[NetMod] ModEntry instance unavailable for host start");
+                    return;
+                }
+
+                if (NetRef != null && NetRef.IsAlive && NetRef.IsHost)
+                {
+                    _waitingForHost = false;
+                    return;
+                }
+
+                ModEntry.Instance.StartHostFromMenu(_mpIp, _mpPort);
+                _waitingForHost = false;
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Host start failed: {Message}", ex.Message);
+            }
+        }
+
+        private static void StartHostRun(TitleScreen screen)
+        {
+            StartHostServerOnly();
+            try
+            {
+                screen.startNewGame(custom: false);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to start host run: {Message}", ex.Message);
+            }
+        }
+
+        private static void GameDisposeHook(Hook_Game.orig_onDispose orig, Game self)
+        {
+            try
+            {
+                HandleWorldExit(isDisposeHook: true);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] onDispose hook error: {Message}", ex.Message);
+            }
+
+            orig(self);
+        }
+
+        private static void HandleWorldExit(bool isDisposeHook = false)
+        {
+            lock (Sync)
+            {
+                if (_worldExitHandled) return;
+                _worldExitHandled = true;
+            }
+
+            var roleBefore = _role;
+            if (roleBefore == NetRole.Host)
+            {
+                try { NetRef?.SendKick(); } catch { }
+            }
+
+            try
+            {
+                NetRef?.Dispose();
+            }
+            catch { }
+
+            SetRole(NetRole.None);
+            NetRef = null;
+            _waitingForHost = false;
+            _menuSelection = NetRole.None;
+
+            if (roleBefore == NetRole.Client)
+            {
+                ForceExitToMainMenu();
+            }
+
+            lock (Sync)
+            {
+                _worldExitHandled = false;
+            }
+        }
+
+        private static void ForceExitToMainMenu()
+        {
+            try
+            {
+                GetTitleScreen()?.mainMenu();
+            }
+            catch { }
+        }
+
+        private static void ShowHostStatusMenu(TitleScreen screen)
+        {
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
+            try
+            {
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+
+                AddInfoLine(screen, $"Status: {BuildStatus(NetRole.Host)}", infoColor: 0xA0C0FF);
+                AddInfoLine(screen, $"Players: {BuildPlayerList(NetRole.Host)}", infoColor: 0xA0C0FF);
+
+                AddMenuButton(screen, "Play", () => StartHostRun(screen), "Launch game");
+                AddMenuButton(screen, "Back", () => ShowConnectionMenu(screen, NetRole.Host), "Back to host setup");
+
+                RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
+                RemoveDuplicatesKeepFirst(screen, "Play", "Back");
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to open host status menu: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
+            }
+        }
+
+        private static void ShowClientWaitingMenu(TitleScreen screen)
+        {
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
+            try
+            {
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+
+                AddInfoLine(screen, "Waiting for the host", infoColor: 0xA0C0FF);
+                AddMenuButton(screen, "Disconnect", () => DisconnectFromMenu(screen), "Disconnect and return to main menu");
+
+                RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
+                RemoveDuplicatesKeepFirst(screen, "Disconnect");
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to open client waiting menu: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
+            }
+        }
+
+        private static void DisconnectFromMenu(TitleScreen screen)
+        {
+            try
+            {
+                ModEntry.Instance?.StopNetworkFromMenu();
+            }
+            catch { }
+            _waitingForHost = false;
+            _menuSelection = NetRole.None;
+            screen.mainMenu();
+        }
+
+        public static void NotifyRemoteConnected(NetRole role)
+        {
+            if (role == NetRole.Host)
+            {
+                _waitingForHost = false;
+                SendCachedDataToRemote();
+
+                if (_menuSelection == NetRole.Host)
+                {
+                    var ts = GetTitleScreen();
+                    if (ts != null) ShowHostStatusMenu(ts);
+                }
+            }
+            else if (role == NetRole.Client)
+            {
+                _waitingForHost = false;
+                if (_menuSelection == NetRole.Client)
+                {
+                    var ts = GetTitleScreen();
+                    if (ts != null) ShowClientWaitingMenu(ts);
+                }
+            }
+        }
+
+        public static void NotifyRemoteDisconnected(NetRole role)
+        {
+            if (role == NetRole.Host)
+            {
+                ForceExitToMainMenu();
+            }
+
+            SetRole(NetRole.None);
+            NetRef = null;
+            _waitingForHost = false;
+            _menuSelection = NetRole.None;
+            ClearNetworkCaches();
+        }
+
+        private static void SendCachedDataToRemote()
+        {
+            var net = NetRef;
+            if (net == null) return;
+
+            try
+            {
+                var ld = GetCachedLevelDescSync();
+                if (ld != null)
+                    net.SendLevelDesc(JsonConvert.SerializeObject(ld));
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to re-send LevelDesc: {Message}", ex.Message);
+            }
+
+            try
+            {
+                if (TryGetResolvedRunParams(out var rp) && rp != null)
+                    net.SendRunParams(JsonConvert.SerializeObject(rp.Data));
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to re-send run params: {Message}", ex.Message);
+            }
+
+            try
+            {
+                var gd = GetCachedGameDataSync();
+                if (gd != null)
+                {
+                    net.SendGameData(JsonConvert.SerializeObject(gd));
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to re-send GameDataSync: {Message}", ex.Message);
+            }
+        }
+
+        private static void ClearNetworkCaches()
+        {
+            CacheLevelDescSync(null);
+            CacheGameDataSync(null);
+            _latestResolvedRunParams = null;
+            _lastAppliedSync = null;
+        }
+
+        private static string BuildStatus(NetRole role)
+        {
+            var net = NetRef;
+            if (net != null && net.HasRemote)
+                return role == NetRole.Host ? "client connected" : "connected to host";
+
+            if (role == NetRole.Client)
+                return _waitingForHost ? "waiting for the host" : "not connected";
+
+            return "waiting for client";
+        }
+
+        private static string BuildPlayerList(NetRole role)
+        {
+            var parts = new System.Collections.Generic.List<string>();
+            parts.Add(role == NetRole.Host ? "Host (you)" : "Client (you)");
+
+            var net = NetRef;
+            if (net != null && net.HasRemote)
+            {
+                parts.Add(role == NetRole.Host ? "Client joined" : "Host online");
+            }
+            else
+            {
+                parts.Add(role == NetRole.Host ? "No client connected" : "Waiting for host");
+            }
+
+            return string.Join(", ", parts);
+        }
+
+        private static void OpenTextInput(TitleScreen screen, string title, string initial, Action<string> onValidate)
+        {
+            try
+            {
+                _ = new TextInput(
+                    screen,
+                    MakeHLString(title),
+                    MakeHLString(initial ?? string.Empty),
+                    MakeHLString("OK"),
+                    new HlAction<dc.String>(s =>
+                    {
+                        var text = s?.ToString() ?? string.Empty;
+                        onValidate(text);
+                    }),
+                    MakeHLString("Cancel"),
+                    MakeHLString(string.Empty),
+                    (dc.hxd.res.Sound?)null);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to open text input: {Message}", ex.Message);
+            }
+        }
+
+        private static void TryAddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null)
+        {
+            try
+            {
+                AddMenuButton(screen, label, onClick, help);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Menu add failed for {Label}: {Message}", label, ex.Message);
+            }
+        }
+
+        private static void AddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null)
+        {
+            var cb = new HlAction(onClick);
+            var labelStr = MakeHLString(label);
+            var helpStr = MakeHLString(help ?? string.Empty);
+            int colorVal = 0xFFFFFF;
+            var color = Ref<int>.From(ref colorVal);
+            screen.addMenu(labelStr, cb, helpStr, null, color);
+        }
+
+        private static void AddInfoLine(TitleScreen screen, string text, int? infoColor = null)
+        {
+            int colorVal = infoColor ?? 0xFFFFFF;
+            var labelStr = MakeHLString(text);
+            var helpStr = MakeHLString(string.Empty);
+            var color = Ref<int>.From(ref colorVal);
+            var cb = new HlAction(() => { });
+            screen.addMenu(labelStr, cb, helpStr, false, color);
+        }
+
+        private static bool GetIsMainMenu(TitleScreen screen)
+        {
+            try
+            {
+                var val = GetMemberValue(screen, "isMainMenu", true);
+                if (val is bool b) return b;
+            }
+            catch { }
             return false;
         }
 
-        private static bool WaitForRemote(TimeSpan timeout, out int s)
+        private static void SetIsMainMenu(TitleScreen screen, bool value)
         {
-            s = 0;
-
-            bool ok = SpinWait.SpinUntil(() =>
+            try
             {
-                lock (Sync) return _remoteSeed.HasValue;
-            }, timeout);
+                TrySetMember(screen, "isMainMenu", value);
+            }
+            catch { }
+        }
 
-            if (!ok) return false;
-
-            lock (Sync)
+        private static void EnsureMainMenuMultiplayerButton(TitleScreen screen)
+        {
+            try
             {
-                s = _remoteSeed!.Value;
-                return true;
+                var arr = GetMemberValue(screen, "menuItems", true);
+                var existingIdx = FindMenuIndexByLabel(arr, "Play multiplayer");
+                if (existingIdx < 0)
+                {
+                    TryAddMenuButton(screen, "Play multiplayer", () => ShowMultiplayerMenu(screen), "Host or join a multiplayer session");
+                    arr = GetMemberValue(screen, "menuItems", true);
+                }
+
+                _mainMenuButtonAdded = true;
+                MoveButtonAfterPlay(arr, "Play multiplayer", "Play");
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to ensure main menu button order: {Message}", ex.Message);
             }
         }
 
-
-        // ---------------------------------------------------------
-        // HOOK: Rand.initSeed — sync RNG seeds
-        // ---------------------------------------------------------
-        private static void InitSeedHook(
-            Hook_Rand.orig_initSeed orig,
-            Rand self,
-            int incomingSeed,
-            int? extra)
+        private static void MoveButtonAfterPlay(object? arrObj, string targetLabel, string anchorLabel)
         {
-            int final = incomingSeed;
-            bool wait = false;
-            int? serverCopy = null;
-            int? remoteCopy = null;
-            NetRole roleCopy;
+            if (arrObj == null) return;
 
-            lock (Sync)
+            try
             {
-                roleCopy = _role;
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var removeDyn = type.GetMethod("removeDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var insertDyn = type.GetMethod("insertDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null || removeDyn == null || insertDyn == null) return;
 
-                // HOST — always generates new seed
-                if (_role == NetRole.Host)
+                int len = GetArrayLength(arrObj);
+                int targetIdx = -1;
+                int anchorIdx = -1;
+                object? targetObj = null;
+
+                for (int i = 0; i < len; i++)
                 {
-                    _serverSeed = GenerateSeed();
-                    final = _serverSeed.Value;
-                    _lastHostSeed = final;
-
-                    serverCopy = final;
-
-                    NetRef?.SendSeed(final);
-                    _log?.Information("[NetMod] Host broadcast level-seed {Seed}", final);
-                }
-                // CLIENT — wait for host seed
-                else if (_role == NetRole.Client)
-                {
-                    if (_remoteSeed.HasValue)
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    var label = GetMenuLabel(item);
+                    if (targetIdx < 0 && label.Equals(targetLabel, StringComparison.OrdinalIgnoreCase))
                     {
-                        final = _remoteSeed.Value;
-                        remoteCopy = final;
+                        targetIdx = i;
+                        targetObj = item;
                     }
-                    else
+                    if (anchorIdx < 0 && label.Equals(anchorLabel, StringComparison.OrdinalIgnoreCase))
                     {
-                        wait = true;
+                        anchorIdx = i;
                     }
                 }
-            }
 
-            // WAIT FOR HOST SEED ON CLIENT
-            if (wait)
+                if (targetIdx < 0 || anchorIdx < 0 || targetObj == null) return;
+                var desired = anchorIdx + 1;
+                if (targetIdx == desired) return;
+
+                removeDyn.Invoke(arrObj, new[] { targetObj });
+                insertDyn.Invoke(arrObj, new object[] { desired, targetObj });
+            }
+            catch (Exception ex)
             {
-                _log?.Information("[NetMod] Client waiting for seed (Rand.initSeed)...");
-
-                if (WaitForRemote(TimeSpan.FromSeconds(2), out var hs))
-                {
-                    final = hs;
-                    remoteCopy = hs;
-                    _log?.Information("[NetMod] Client received seed {Seed}", hs);
-                }
-                else
-                {
-                    _log?.Warning("[NetMod] Client TIMEOUT — using incoming {Seed}", incomingSeed);
-                }
+                _log?.Warning("[NetMod] Failed to reposition menu button: {Message}", ex.Message);
             }
-
-            final = Normalize(final);
-
-            _log?.Information(
-                "[NetMod] initSeedHook: role={Role}, incoming={Incoming}, server={Server}, remote={Remote}, final={Final}",
-                roleCopy,
-                incomingSeed,
-                serverCopy ?? -1,
-                remoteCopy ?? -1,
-                final);
-
-            // CALL ORIGINAL HASHLINK RNG INIT
-            orig(self, final, extra);
         }
 
-
-        // ---------------------------------------------------------
-        // HOOK: LevelGen.generate — mirror seeds across peers
-        // ---------------------------------------------------------
-        private static ArrayObj GenerateHookImpl(
-            Delegate orig,
-            LevelGen self,
-            User user,
-            int ldat,
-            object desc,
-            Ref<bool> resetCount)
+        private static int GetArrayLength(object arrObj)
         {
-            int final = _serverSeed ?? _remoteSeed ?? GenerateSeed();
-            bool wait = false;
-            int? serverCopy = null;
-            int? remoteCopy = null;
-            NetRole roleCopy;
-
-            lock (Sync)
+            try
             {
-                roleCopy = _role;
-
-                // HOST
-                if (_role == NetRole.Host)
-                {
-                    _serverSeed ??= GenerateSeed();
-                    final = _serverSeed.Value;
-                    _lastHostSeed = final;
-
-                    serverCopy = final;
-
-                    NetRef?.SendSeed(final);
-                    _log?.Information("[NetMod] Host broadcast seed {Seed} (LevelGen.generate)", final);
-                }
-                // CLIENT
-                else if (_role == NetRole.Client)
-                {
-                    if (_remoteSeed.HasValue)
-                    {
-                        final = _remoteSeed.Value;
-                        remoteCopy = final;
-                    }
-                    else
-                    {
-                        wait = true;
-                    }
-                }
+                var lenObj = GetMemberValue(arrObj, "length", true);
+                if (lenObj is IConvertible conv)
+                    return conv.ToInt32(null);
             }
-
-            // CLIENT WAIT
-            if (wait)
-            {
-                _log?.Information("[NetMod] Client waiting for seed (LevelGen.generate)...");
-
-                if (WaitForRemote(TimeSpan.FromSeconds(2), out var hs))
-                {
-                    final = hs;
-                    remoteCopy = hs;
-                    _log?.Information("[NetMod] Client got seed {Seed}", hs);
-                }
-                else
-                {
-                    _log?.Warning("[NetMod] Client TIMEOUT — using fallback {Seed}", final);
-                }
-            }
-
-            final = Normalize(final);
-            _lastHostSeed ??= final;
-
-            _log?.Information(
-                "[NetMod] GenerateHook: role={Role}, ldat={Ldat}, server={Server}, remote={Remote}, final={Final}",
-                roleCopy, ldat, serverCopy ?? -1, remoteCopy ?? -1, final);
-
-            // CALL ORIGINAL
-            if (_origInvoker == null)
-                throw new InvalidOperationException("Hook_LevelGen.generate invoker is not initialized");
-
-            return _origInvoker(orig, self, user, ldat, desc, resetCount);
+            catch { }
+            return 0;
         }
 
-
-        // ---------------------------------------------------------
-        // OPTIONAL DEBUG
-        // ---------------------------------------------------------
-        public static void DebugSeeds()
+        private static int FindMenuIndexByLabel(object? arrObj, string label)
         {
-            _log?.Information("[NetMod] DEBUG: serverSeed={S}, remoteSeed={R}, lastHostSeed={L}",
-                _serverSeed ?? -1, _remoteSeed ?? -1, _lastHostSeed ?? -1);
+            if (arrObj == null) return -1;
+            try
+            {
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null) return -1;
+
+                int len = GetArrayLength(arrObj);
+                for (int i = 0; i < len; i++)
+                {
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    var text = GetMenuLabel(item);
+                    if (text.Equals(label, StringComparison.OrdinalIgnoreCase))
+                        return i;
+                }
+            }
+            catch { }
+            return -1;
+        }
+
+        private static string GetMenuLabel(object? menuItem)
+        {
+            if (menuItem == null) return string.Empty;
+
+            try
+            {
+                var t = GetMemberValue(menuItem, "t", true);
+                if (t is dc.String ds)
+                    return ds.ToString() ?? string.Empty;
+
+                var textValue = GetMemberValue(t ?? menuItem, "text", true)
+                             ?? GetMemberValue(t ?? menuItem, "str", true);
+                if (textValue != null)
+                    return textValue.ToString() ?? string.Empty;
+
+                return t?.ToString() ?? menuItem.ToString() ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static void RemoveMenuItems(TitleScreen screen, params string[] labels)
+        {
+            if (labels.Length == 0) return;
+            var arrObj = GetMemberValue(screen, "menuItems", true);
+            if (arrObj == null) return;
+
+            try
+            {
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var removeDyn = type.GetMethod("removeDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                              ?? type.GetMethod("remove", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null || removeDyn == null) return;
+
+                var targets = new System.Collections.Generic.List<object>();
+                int len = GetArrayLength(arrObj);
+                for (int i = 0; i < len; i++)
+                {
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    var label = GetMenuLabel(item);
+                    foreach (var l in labels)
+                    {
+                        if (label.Equals(l, StringComparison.OrdinalIgnoreCase))
+                        {
+                            targets.Add(item);
+                            break;
+                        }
+                    }
+                }
+
+                foreach (var it in targets)
+                {
+                    removeDyn.Invoke(arrObj, new object[] { it });
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to clean menu items: {Message}", ex.Message);
+            }
+        }
+
+        private static void RemoveDuplicatesKeepFirst(TitleScreen screen, params string[] labels)
+        {
+            if (labels.Length == 0) return;
+            var arrObj = GetMemberValue(screen, "menuItems", true);
+            if (arrObj == null) return;
+
+            try
+            {
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var removeDyn = type.GetMethod("removeDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                              ?? type.GetMethod("remove", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null || removeDyn == null) return;
+
+                var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var toRemove = new System.Collections.Generic.List<object>();
+
+                int len = GetArrayLength(arrObj);
+                for (int i = 0; i < len; i++)
+                {
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    var label = GetMenuLabel(item);
+                    foreach (var l in labels)
+                    {
+                        if (label.Equals(l, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!seen.Add(label))
+                                toRemove.Add(item);
+                            break;
+                        }
+                    }
+                }
+
+                foreach (var it in toRemove)
+                {
+                    removeDyn.Invoke(arrObj, new object[] { it });
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to clean duplicate menu items: {Message}", ex.Message);
+            }
+        }
+
+        private static void StoreTitleScreen(TitleScreen ts)
+        {
+            _titleScreenRef = new WeakReference<TitleScreen?>(ts);
+        }
+
+        private static TitleScreen? GetTitleScreen()
+        {
+            if (_titleScreenRef != null && _titleScreenRef.TryGetTarget(out var ts))
+                return ts;
+            return null;
         }
     }
 }

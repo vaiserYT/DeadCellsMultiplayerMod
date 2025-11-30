@@ -29,6 +29,8 @@ namespace DeadCellsMultiplayerMod
         private bool _registeredInLevel;
         private DateTime _lastCoordLog = DateTime.MinValue;
         private static readonly HashSet<string> LoggedLevelMembers = new();
+        private static readonly HashSet<string> LoggedSpriteTypes = new();
+        private bool _spriteOffsetApplied;
 
         private static readonly string[] DefaultHeroTypes =
         {
@@ -183,7 +185,7 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
-                _setPosCase ??= ghost.GetType().GetMethod(
+                _setPosCase = ghost.GetType().GetMethod(
                     "setPosCase",
                     AllFlags,
                     binder: null,
@@ -193,6 +195,7 @@ namespace DeadCellsMultiplayerMod
                 if (_setPosCase != null)
                 {
                     _setPosCase.Invoke(ghost, new object?[] { cx, cy, xr, yr });
+                    TryRefreshSpritePos(ghost);
                     return true;
                 }
             }
@@ -314,12 +317,6 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        /// <summary>
-        /// Best-effort hook for dc.Entity sprite smoothing helpers:
-        /// - set_easeSpritePos(false) to disable easing;
-        /// - updateLastSprPos() to resync internal last-sprite position.
-        /// If these members are missing on the current ghost type, this is a no-op.
-        /// </summary>
        private void TryRefreshSpritePos(object ghost)
         {
             const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
@@ -382,6 +379,93 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+
+        private void ApplySpriteYOffset(object sprite, double offset)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            try
+            {
+                // direct properties/fields that look like offset/pivot
+                var candidates = new[] { "yOffset", "offsetY", "offY", "yOff", "pivotY", "anchorY", "originY" };
+                foreach (var name in candidates)
+                {
+                    var prop = sprite.GetType().GetProperty(name, Flags);
+                    if (prop?.CanWrite == true && prop.PropertyType == typeof(double))
+                    {
+                        try { prop.SetValue(sprite, offset); return; } catch { }
+                    }
+                    var field = sprite.GetType().GetField(name, Flags);
+                    if (field != null && field.FieldType == typeof(double))
+                    {
+                        try { field.SetValue(sprite, offset); return; } catch { }
+                    }
+                }
+
+                // setPivot(x,y) fallback
+                var setPivot = sprite.GetType().GetMethod("setPivot", Flags, binder: null, types: new[] { typeof(double), typeof(double) }, modifiers: null);
+                if (setPivot != null)
+                {
+                    try { setPivot.Invoke(sprite, new object?[] { 0.0, offset }); return; } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogCatch(ex);
+            }
+        }
+
+        private void TryInvokeSpritePosMethod(object sprite, object? gx, object? gy, double addY, BindingFlags flags)
+        {
+            try
+            {
+                double xVal, yVal;
+                try { xVal = Convert.ToDouble(gx); } catch { return; }
+                try { yVal = Convert.ToDouble(gy) + addY; } catch { return; }
+
+                var methods = sprite.GetType().GetMethods(flags)
+                    .Where(m =>
+                    {
+                        var name = m.Name.ToLowerInvariant();
+                        if (!(name.Contains("setpos") || name.Contains("setposition"))) return false;
+                        var ps = m.GetParameters();
+                        return ps.Length == 2 &&
+                               ps[0].ParameterType == typeof(double) &&
+                               ps[1].ParameterType == typeof(double);
+                    }).ToList();
+
+                foreach (var m in methods)
+                {
+                    try { m.Invoke(sprite, new object?[] { xVal, yVal }); return; } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogCatch(ex);
+            }
+        }
+
+        private void LogSpriteIntrospectionOnce(object sprite, BindingFlags flags)
+        {
+            var key = sprite.GetType().FullName ?? sprite.GetType().Name;
+            if (!LoggedSpriteTypes.Add(key)) return;
+
+            try
+            {
+                var candidates = sprite.GetType().GetMethods(flags)
+                    .Where(m => m.Name.IndexOf("offset", StringComparison.OrdinalIgnoreCase) >= 0
+                             || m.Name.IndexOf("pivot", StringComparison.OrdinalIgnoreCase) >= 0
+                             || m.Name.IndexOf("pos", StringComparison.OrdinalIgnoreCase) >= 0)
+                    .Select(m => m.Name)
+                    .Distinct()
+                    .ToArray();
+                _log.Information("[HeroGhost] Sprite type {Type} methods: {Methods}", key, string.Join(",", candidates));
+            }
+            catch (Exception ex)
+            {
+                LogCatch(ex);
+            }
+        }
+
         public void Reset()
         {
             _ghost = null;
@@ -394,6 +478,7 @@ namespace DeadCellsMultiplayerMod
             _teleportWarningLogged = false;
             _registeredInLevel = false;
             _lastCoordLog = DateTime.MinValue;
+            _spriteOffsetApplied = false;
         }
 
         private bool TryResolveContext(object heroRef, object? levelHint, object? gameHint, out object levelObj, out object gameObj)

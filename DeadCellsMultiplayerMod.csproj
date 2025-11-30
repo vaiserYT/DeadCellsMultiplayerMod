@@ -12,8 +12,7 @@
   <!-- MDK reference -->
   <ItemGroup>
     <PackageReference Include="DeadCellsCoreModding.MDK" Version="1.0.1" />
+    <PackageReference Include="MonoMod.RuntimeDetour" Version="25.3.3" />
   </ItemGroup>
-
-
 
 </Project>

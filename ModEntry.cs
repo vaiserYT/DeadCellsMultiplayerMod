@@ -1,4 +1,4 @@
-﻿using Hashlink.Proxy.DynamicAccess;
+using Hashlink.Proxy.DynamicAccess;
 using HaxeProxy.Runtime;
 using ModCore.Events.Interfaces.Game;
 using ModCore.Events.Interfaces.Game.Hero;
@@ -10,7 +10,8 @@ using System;
 using System.IO;
 using System.Net;
 using System.Reflection;
-using System.Runtime.InteropServices;
+using System.Linq;
+using Newtonsoft.Json;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -21,12 +22,10 @@ namespace DeadCellsMultiplayerMod
         IOnFrameUpdate,
         IOnAfterLoadingSave
     {
-        private const int VK_F5 = 0x74; // Host
-        private const int VK_F6 = 0x75; // Client
-        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
-
+        public static ModEntry? Instance { get; private set; }
+        private static byte[]? _pendingGameData;
+        private static GameDataSync? _cachedGameDataSync;
         private bool _ready;
-        private bool _hotkeysEnabled = true;
 
         private HaxeObject? _heroRef;
         private object? _lastLevelRef;
@@ -36,10 +35,6 @@ namespace DeadCellsMultiplayerMod
 
         private NetRole _netRole = NetRole.None;
         private NetNode? _net;
-
-        private bool _prevF5, _prevF6;
-        private double _hotkeyCd;
-        private const double HotkeyCooldown = 0.25;
 
         private int _lastSentCx = int.MinValue;
         private int _lastSentCy = int.MinValue;
@@ -52,6 +47,7 @@ namespace DeadCellsMultiplayerMod
         private const double GhostLogInterval = 5.0;
         public override void Initialize()
         {
+            Instance = this;
             Logger.Information("[NetMod] Initialized");
             GameMenu.Initialize(Logger);
         }
@@ -59,20 +55,34 @@ namespace DeadCellsMultiplayerMod
         public void OnGameEndInit()
         {
             _ready = true;
+            GameMenu.AllowGameDataHooks = false;
             GameMenu.SetRole(NetRole.None);
             var seed = GameMenu.ForceGenerateServerSeed("OnGameEndInit");
-            Logger.Information("[NetMod] GameEndInit — ready (F5 host / F6 client) seed={Seed}", seed);
+            Logger.Information("[NetMod] GameEndInit - ready (use menu) seed={Seed}", seed);
         }
 
 
         public void OnAfterLoadingSave(dc.User data)
         {
-            // Р‘РѕР»СЊС€Рµ РќР Р”Р›РЇ Р§Р•Р“Рћ РЅРµ РёСЃРїРѕР»СЊР·СѓРµРј СЃРёРґ РёР· GameData,
-            // Рё РґР°Р¶Рµ РЅРµ Р»РѕРіРёСЂСѓРµРј РµРіРѕ, С‡С‚РѕР±С‹ РЅРµ РїСѓС‚Р°С‚СЊСЃСЏ.
+            try
+            {
+                var gd = TryGetGameData(data);
+                if (gd == null) return;
+                var dto = GameMenu.BuildGameDataSync(gd);
+                _cachedGameDataSync = dto;
+                GameMenu.CacheGameDataSync(dto);
+                Logger.Information("[NetMod] Full GameData captured after save load");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("OnAfterLoadingSave failed: " + ex);
+            }
         }
 
         public void OnHeroInit()
         {
+            GameMenu.AllowGameDataHooks = true;
+            GameMenu.MarkInRun();
             try
             {
                 var gm = Game.Instance;
@@ -88,10 +98,10 @@ namespace DeadCellsMultiplayerMod
                     {
                         dynamic h = DynamicAccessUtils.AsDynamic(_heroRef);
                         try { heroTypeStr = (string?)h.type; } catch { }
-                        // РЈ РіРµСЂРѕСЏ РµСЃС‚СЊ С‚РѕР»СЊРєРѕ _level, РЅРµ level
+                        // У героя есть только _level, не level
                         try { _lastLevelRef = (object?)h._level; } catch { }
                         
-                        // РџРѕР»СѓС‡Р°РµРј game РёР· СѓСЂРѕРІРЅСЏ РёР»Рё РёСЃРїРѕР»СЊР·СѓРµРј Game.Instance
+                        // Получаем game из уровня или используем Game.Instance
                         _lastGameRef = ExtractGameFromLevel(_lastLevelRef) ?? Game.Instance ?? _lastGameRef;
                     }
                     catch { }
@@ -119,7 +129,7 @@ namespace DeadCellsMultiplayerMod
             if (gm != null)
                 _lastGameRef = gm;
 
-            // С€Р»С‘Рј в‰€10 Р“С†
+            // шлём ≈10 Гц
             _accum += dt;
             if (_accum < 0.1) return;
             _accum = 0;
@@ -145,14 +155,14 @@ namespace DeadCellsMultiplayerMod
                     Logger.Information("[NetMod] Level changed -> reset ghost");
                 }
 
-                // РџРѕР»СѓС‡Р°РµРј game РёР· СѓСЂРѕРІРЅСЏ РёР»Рё РёСЃРїРѕР»СЊР·СѓРµРј Game.Instance
+                // Получаем game из уровня или используем Game.Instance
                 var gameObj = ExtractGameFromLevel(levelObj) ?? Game.Instance;
                 if (gameObj != null)
                     _lastGameRef = gameObj;
             }
             catch (Exception ex)
             {
-                // Р›РѕРіРёСЂСѓРµРј РѕС€РёР±РєСѓ РґР»СЏ РѕС‚Р»Р°РґРєРё, РЅРѕ РЅРµ РїР°РґР°РµРј
+                // Логируем ошибку для отладки, но не падаем
                 Logger.Warning($"[NetMod] OnHeroUpdate error: {ex.Message}");
                 return;
             }
@@ -165,7 +175,7 @@ namespace DeadCellsMultiplayerMod
                 _companion.TryLogGhostPosition();
             }
 
-            // СЃРµС‚СЊ: РѕС‚РїСЂР°РІРєР° С‚РѕР»СЊРєРѕ РїСЂРё РёР·РјРµРЅРµРЅРёСЏС…
+            // сеть: отправка только при изменениях
             if (_net != null && _net.IsAlive && _netRole != NetRole.None)
             {
                 if (cx != _lastSentCx || cy != _lastSentCy || xr != _lastSentXr || yr != _lastSentYr)
@@ -178,88 +188,95 @@ namespace DeadCellsMultiplayerMod
                 }
             }
 
-            // РїРѕСЏРІР»РµРЅРёРµ СѓРґР°Р»С‘РЅРЅС‹С… РєРѕРѕСЂРґРёРЅР°С‚ вЂ” СЌС‚Рѕ С‚СЂРёРіРіРµСЂ СЃРїР°РІРЅР° РїСЂРёР·СЂР°РєР°
+            // появление удалённых координат — это триггер спавна призрака
             if (_net == null || !_net.IsAlive || _netRole == NetRole.None) return;
             if (!_net.TryGetRemote(out var rcx, out var rcy, out var rxr, out var ryr)) return;
             if (rcx < 0 || rcy < 0) return;
 
             _companion ??= new CompanionController(Logger);
 
-            // СЃРїР°РІРЅРёРј Р РђР— РЅР° С‚РµРєСѓС‰РµРј СѓСЂРѕРІРЅРµ
+            // спавним РАЗ на текущем уровне
             if (!_companion.IsSpawned)
             {
                 if (_lastLevelRef != null && _lastGameRef != null && _heroRef != null)
                     _companion.EnsureSpawned(_heroRef, _lastLevelRef, _lastGameRef, cx, cy);
             }
 
-            // Рё РѕР±РЅРѕРІР»СЏРµРј РїРѕР·РёС†РёСЋ
+            // и обновляем позицию
             _companion?.TeleportTo(rcx, rcy, rxr, ryr);
         }
+
+        public static void OnClientReceiveGameData(byte[] bytes)
+        {
+            _pendingGameData = bytes;
+            Log.Information("[NetMod] Client received GameData blob ({0} bytes)", bytes.Length);
+            GameMenu.NotifyGameDataReceived();
+            ApplyGameDataBytes(bytes);
+        }
+
+        public static void ApplyGameDataBytes(byte[] data)
+        {
+            try
+            {
+                var packet = new
+                {
+                    payload = string.Empty,
+                    hx = Convert.ToBase64String(data),
+                    extra = (object?)null,
+                    hxbit = true
+                };
+
+                var json = Newtonsoft.Json.JsonConvert.SerializeObject(packet);
+                var obj = HaxeProxySerializer.Deserialize<dc.tool.GameData>(json);
+                if (obj != null)
+                {
+                    GameMenu.ApplyFullGameData(obj);
+                    Log.Information("[NetMod] Applied GameData binary sync.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("[NetMod] ApplyGameDataBytes failed: {Ex}", ex);
+            }
+        }
+
+
+        // GameDataSync helpers removed (using full hxbit path)
 
         public void OnFrameUpdate(double dt)
         {
             if (!_ready) return;
 
-            if (_hotkeysEnabled)
-            {
-                _hotkeyCd -= dt;
-                if (_hotkeyCd < 0) _hotkeyCd = 0;
-
-                bool f5Now = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
-                bool f6Now = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
-                bool f5Edge = f5Now && !_prevF5 && _hotkeyCd <= 0;
-                bool f6Edge = f6Now && !_prevF6 && _hotkeyCd <= 0;
-
-                if (f5Edge)
-                {
-                    Logger.Information("[NetMod] F5 (Host) pressed");
-                    TryStartHost();
-                    _hotkeyCd = HotkeyCooldown;
-                    _hotkeysEnabled = false;
-                }
-                if (f6Edge)
-                {
-                    Logger.Information("[NetMod] F6 (Client) pressed");
-                    TryStartClient();
-                    _hotkeyCd = HotkeyCooldown;
-                    _hotkeysEnabled = false;
-                }
-
-                _prevF5 = f5Now;
-                _prevF6 = f6Now;
-            }
+            GameMenu.TickMenu(dt);
         }
 
-        private IPEndPoint GetHostFromFile()
+        private IPEndPoint BuildEndpoint(string ipText, int port)
         {
-            try
+            if (port <= 0 || port > 65535) port = 1234;
+            if (!IPAddress.TryParse(ipText, out var ip))
             {
-                var baseDir = AppContext.BaseDirectory;
-                var root = Directory.GetParent(baseDir)?.Parent?.Parent?.Parent?.FullName ?? baseDir;
-                var path = Path.Combine(root, "mods", "DeadCellsMultiplayerMod", "server.txt");
-                Log.Information(path);
-                if (!File.Exists(path)) return new IPEndPoint(IPAddress.Loopback, 1234);
-
-                var parts = File.ReadAllText(path).Trim().Split(':', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length != 2) return new IPEndPoint(IPAddress.Loopback, 1234);
-
-                if (!IPAddress.TryParse(parts[0], out var ip)) ip = IPAddress.Loopback;
-                if (!int.TryParse(parts[1], out var port)) port = 1234;
-
-                return new IPEndPoint(ip, port);
+                ip = IPAddress.Loopback;
             }
-            catch
-            {
-                return new IPEndPoint(IPAddress.Loopback, 1234);
-            }
+            return new IPEndPoint(ip, port);
         }
 
-        private void TryStartHost()
+        public void StartHostFromMenu(string ipText, int port)
+        {
+            var ep = BuildEndpoint(ipText, port);
+            StartHostWithEndpoint(ep);
+        }
+
+        public void StartClientFromMenu(string ipText, int port)
+        {
+            var ep = BuildEndpoint(ipText, port);
+            StartClientWithEndpoint(ep);
+        }
+
+        private void StartHostWithEndpoint(IPEndPoint ep)
         {
             try
             {
                 _net?.Dispose();
-                var ep = GetHostFromFile();
 
                 _net = NetNode.CreateHost(Logger, ep);
                 _netRole = NetRole.Host;
@@ -275,17 +292,15 @@ namespace DeadCellsMultiplayerMod
                 Logger.Error($"[NetMod] Host start failed: {ex.Message}");
                 _netRole = NetRole.None;
                 _net = null;
-                _hotkeysEnabled = true;
                 GameMenu.SetRole(_netRole);
             }
         }
 
-        private void TryStartClient()
+        private void StartClientWithEndpoint(IPEndPoint ep)
         {
             try
             {
                 _net?.Dispose();
-                var ep = GetHostFromFile();
 
                 _net = NetNode.CreateClient(Logger, ep);
                 _netRole = NetRole.Client;
@@ -299,9 +314,21 @@ namespace DeadCellsMultiplayerMod
                 Logger.Error($"[NetMod] Client start failed: {ex.Message}");
                 _netRole = NetRole.None;
                 _net = null;
-                _hotkeysEnabled = true;
                 GameMenu.SetRole(_netRole);
             }
+        }
+
+        public void StopNetworkFromMenu()
+        {
+            try
+            {
+                _net?.Dispose();
+            }
+            catch { }
+            _net = null;
+            _netRole = NetRole.None;
+            GameMenu.NetRef = null;
+            GameMenu.SetRole(_netRole);
         }
 
         private static object? ExtractGameFromLevel(object? levelObj)
@@ -341,6 +368,39 @@ namespace DeadCellsMultiplayerMod
             {
                 Logger.Warning("[NetMod] Initial ghost spawn failed: {Message}", ex.Message);
             }
+        }
+
+        private static dc.tool.GameData? TryGetGameData(dc.User data)
+        {
+            try
+            {
+                dynamic d = DynamicAccessUtils.AsDynamic(data);
+                var gd = d?.gameData as dc.tool.GameData;
+                if (gd != null) return gd;
+            }
+            catch { }
+
+            try
+            {
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                var type = data.GetType();
+                var prop = type.GetProperty("gameData", flags);
+                if (prop != null)
+                {
+                    var gd = prop.GetValue(data) as dc.tool.GameData;
+                    if (gd != null) return gd;
+                }
+
+                var field = type.GetField("gameData", flags);
+                if (field != null)
+                {
+                    var gd = field.GetValue(data) as dc.tool.GameData;
+                    if (gd != null) return gd;
+                }
+            }
+            catch { }
+
+            return null;
         }
     }
 }
