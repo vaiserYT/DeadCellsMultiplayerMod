@@ -44,6 +44,7 @@ namespace DeadCellsMultiplayerMod
         private static bool _hostGameDataSent;
         public static bool AllowGameDataHooks;
         private static GameDataSync? _cachedGameDataSync;
+        private static LevelDescSync? _cachedLevelDescSync;
 
         private static NetRole _role = NetRole.None;
         private static int? _serverSeed;   // host-generated seed
@@ -93,6 +94,39 @@ namespace DeadCellsMultiplayerMod
             public int surv;
             public int tact;
             public double time;
+        }
+
+        private sealed class LevelDescSync
+        {
+            public string LevelId { get; set; } = string.Empty;
+            public string Name { get; set; } = string.Empty;
+            public int MapDepth { get; set; }
+            public double MobDensity { get; set; }
+            public int MinGold { get; set; }
+            public double EliteRoomChance { get; set; }
+            public double EliteWanderChance { get; set; }
+            public int DoubleUps { get; set; }
+            public int TripleUps { get; set; }
+            public int QuarterUpsBC3 { get; set; }
+            public int QuarterUpsBC4 { get; set; }
+            public int WorldDepth { get; set; }
+            public int BaseLootLevel { get; set; }
+            public double BonusTripleScrollAfterBC { get; set; }
+            public double CellBonus { get; set; }
+            public int Group { get; set; }
+        }
+
+        private static void LogLevelDesc(string title, LevelDescSync sync)
+        {
+            try
+            {
+                var json = JsonConvert.SerializeObject(sync);
+                _log?.Information("[NetMod] {Title} LevelDescSync: {Json}", title, json);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to log LevelDescSync: {Message}", ex.Message);
+            }
         }
 
         private static string BuildRunDataJson(RunParams rp)
@@ -866,6 +900,23 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        private static void CacheLevelDescSync(LevelDescSync? sync)
+        {
+            lock (Sync)
+            {
+                _cachedLevelDescSync = sync == null ? null : JsonConvert.DeserializeObject<LevelDescSync>(JsonConvert.SerializeObject(sync));
+            }
+        }
+
+        private static LevelDescSync? GetCachedLevelDescSync()
+        {
+            lock (Sync)
+            {
+                if (_cachedLevelDescSync == null) return null;
+                return JsonConvert.DeserializeObject<LevelDescSync>(JsonConvert.SerializeObject(_cachedLevelDescSync));
+            }
+        }
+
         private static GameDataSync? GetCachedGameDataSync()
         {
             lock (Sync)
@@ -922,6 +973,42 @@ namespace DeadCellsMultiplayerMod
                        ?? (instAlt?.GetValue(null) as dc.tool.GameData);
             }
             catch { return null; }
+        }
+
+        private static LevelDescSync BuildLevelDescSync(object desc)
+        {
+            var sync = new LevelDescSync();
+            try
+            {
+                sync.LevelId = ExtractLevelId(desc) ?? string.Empty;
+                sync.Name = GetMemberValue(desc, "name", true)?.ToString() ?? string.Empty;
+                sync.MapDepth = SafeToInt(GetMemberValue(desc, "mapDepth", true), 0);
+                sync.MinGold = SafeToInt(GetMemberValue(desc, "minGold", true), 0);
+                sync.WorldDepth = SafeToInt(GetMemberValue(desc, "worldDepth", true), 0);
+                sync.BaseLootLevel = SafeToInt(GetMemberValue(desc, "baseLootLevel", true), 0);
+                sync.Group = SafeToInt(GetMemberValue(desc, "group", true), 0);
+                sync.DoubleUps = SafeToInt(GetMemberValue(desc, "doubleUps", true), 0);
+                sync.TripleUps = SafeToInt(GetMemberValue(desc, "tripleUps", true), 0);
+                sync.QuarterUpsBC3 = SafeToInt(GetMemberValue(desc, "quarterUpsBC3", true), 0);
+                sync.QuarterUpsBC4 = SafeToInt(GetMemberValue(desc, "quarterUpsBC4", true), 0);
+                sync.MobDensity = SafeToDouble(GetMemberValue(desc, "mobDensity", true), 0);
+                sync.EliteRoomChance = SafeToDouble(GetMemberValue(desc, "eliteRoomChance", true), 0);
+                sync.EliteWanderChance = SafeToDouble(GetMemberValue(desc, "eliteWanderChance", true), 0);
+                sync.BonusTripleScrollAfterBC = SafeToDouble(GetMemberValue(desc, "bonusTripleScrollAfterBC", true), 0);
+                sync.CellBonus = SafeToDouble(GetMemberValue(desc, "cellBonus", true), 0);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to build LevelDescSync: {Message}", ex.Message);
+            }
+            return sync;
+        }
+
+        private static bool IsChallengeLevel(string? levelId)
+        {
+            if (string.IsNullOrWhiteSpace(levelId)) return false;
+            return levelId.Equals("Challenge", StringComparison.OrdinalIgnoreCase)
+                   || levelId.Equals("ldesc_challenge", StringComparison.OrdinalIgnoreCase);
         }
 
         private static dc.tool.GameData? GetGameDataFromContext(User user, LaunchMode gdata)
@@ -1372,6 +1459,32 @@ namespace DeadCellsMultiplayerMod
             catch (Exception ex)
             {
                 _log?.Warning("[NetMod] Failed to receive run params: {Message}", ex.Message);
+            }
+        }
+
+        public static void ReceiveLevelDesc(string json)
+        {
+            try
+            {
+                var dto = JsonConvert.DeserializeObject<LevelDescSync>(json);
+                if (dto == null)
+                {
+                    _log?.Warning("[NetMod] Failed to deserialize LevelDescSync (null)");
+                    return;
+                }
+
+                if (IsChallengeLevel(dto.LevelId))
+                {
+                    _log?.Information("[NetMod] Ignoring LevelDescSync for Challenge");
+                    return;
+                }
+
+                CacheLevelDescSync(dto);
+                _log?.Information("[NetMod] Received LevelDescSync for level {Level}", dto.LevelId);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to receive LevelDescSync: {Message}", ex.Message);
             }
         }
 
@@ -2144,7 +2257,6 @@ namespace DeadCellsMultiplayerMod
             TrySetMember(user, "custom", true);
             TrySetMember(user, "isCustom", true);
 
-            // Avoid touching LaunchMode here to prevent recursion on Haxe enums
         }
 
         private static void ApplyRunParamsToGameData(dc.tool.GameData gd, RunParams rp)
@@ -2218,7 +2330,8 @@ namespace DeadCellsMultiplayerMod
                 }
                 catch (Exception ex)
                 {
-                    _log?.Warning("[NetMod] Failed to set property {Field}: {Message}", name, ex.Message);
+                    if (!name.Equals("bonusTripleScrollAfterBC", StringComparison.OrdinalIgnoreCase))
+                        _log?.Warning("[NetMod] Failed to set property {Field}: {Message}", name, ex.Message);
                 }
             }
 
@@ -2244,8 +2357,11 @@ namespace DeadCellsMultiplayerMod
             try
             {
                 // Handle Hashlink dc.String specifically
-                if (targetType == typeof(dc.String) && value is string s)
+                if (targetType == typeof(dc.String))
+                {
+                    var s = value is string str ? str : value.ToString() ?? string.Empty;
                     return MakeHLString(s);
+                }
 
                 if (targetType.IsInstanceOfType(value))
                     return value;
@@ -2467,6 +2583,56 @@ namespace DeadCellsMultiplayerMod
                 return token.Value<double>();
             double.TryParse(token.ToString(), out var v);
             return v;
+        }
+
+        private static double SafeToDouble(object? value, double fallback = 0.0)
+        {
+            try
+            {
+                if (value == null) return fallback;
+                if (value is double d) return d;
+                if (value is float f) return f;
+                if (value is int i) return i;
+                if (value is long l) return l;
+                if (value is IConvertible) return Convert.ToDouble(value);
+                if (double.TryParse(value.ToString(), out var v)) return v;
+            }
+            catch { }
+            return fallback;
+        }
+
+        private static void ApplyLevelDescSync(object desc, LevelDescSync sync)
+        {
+            if (desc == null) return;
+            try
+            {
+                TrySetMember(desc, "mapDepth", sync.MapDepth);
+                TrySetMember(desc, "minGold", sync.MinGold);
+                TrySetMember(desc, "worldDepth", sync.WorldDepth);
+                TrySetMember(desc, "baseLootLevel", sync.BaseLootLevel);
+                TrySetMember(desc, "group", sync.Group);
+                TrySetMember(desc, "doubleUps", sync.DoubleUps);
+                TrySetMember(desc, "tripleUps", sync.TripleUps);
+                TrySetMember(desc, "quarterUpsBC3", sync.QuarterUpsBC3);
+                TrySetMember(desc, "quarterUpsBC4", sync.QuarterUpsBC4);
+                TrySetMember(desc, "mobDensity", sync.MobDensity);
+                TrySetMember(desc, "eliteRoomChance", sync.EliteRoomChance);
+                TrySetMember(desc, "eliteWanderChance", sync.EliteWanderChance);
+                TrySetMember(desc, "bonusTripleScrollAfterBC", sync.BonusTripleScrollAfterBC.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                TrySetMember(desc, "cellBonus", sync.CellBonus);
+                if (!string.IsNullOrWhiteSpace(sync.LevelId))
+                {
+                    TrySetMember(desc, "id", sync.LevelId);
+                }
+                if (!string.IsNullOrWhiteSpace(sync.Name))
+                {
+                    TrySetMember(desc, "name", sync.Name);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to apply LevelDescSync: {Message}", ex.Message);
+            }
         }
 
         private static double GetDoubleValue(object obj, string name, double fallback)
@@ -3055,6 +3221,8 @@ namespace DeadCellsMultiplayerMod
             {
                 try
                 {
+                    SendLevelDescToClient(desc);
+
                     var dto = GetCachedGameDataSync();
                     if (dto == null)
                     {
@@ -3109,15 +3277,55 @@ namespace DeadCellsMultiplayerMod
                 "[NetMod] GenerateHook: role={Role}, ldat={Ldat}, server={Server}, remote={Remote}, final={Final}",
                 roleCopy, ldat, serverCopy ?? -1, remoteCopy ?? -1, final);
 
+            if (roleCopy == NetRole.Client)
+            {
+                try
+                {
+                    var ldSync = GetCachedLevelDescSync();
+                    var currentLevelId = ExtractLevelId(desc);
+                    if (ldSync != null && !IsChallengeLevel(ldSync.LevelId) &&
+                        (string.IsNullOrWhiteSpace(ldSync.LevelId) || string.Equals(ldSync.LevelId, currentLevelId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        ApplyLevelDescSync(desc, ldSync);
+                        _log?.Information("[NetMod] Client applied LevelDescSync in LevelGen.generate");
+                        LogLevelDesc("Client LevelDesc applied", ldSync);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log?.Warning("[NetMod] Client failed to apply LevelDescSync: {Message}", ex.Message);
+                }
+            }
+
             // CALL ORIGINAL
             if (_origInvoker == null)
                 throw new InvalidOperationException("Hook_LevelGen.generate invoker is not initialized");
 
             return _origInvoker(orig, self, user, ldat, desc, resetCount);
-
-            
         }
 
+        private static void SendLevelDescToClient(object desc)
+        {
+            try
+            {
+                var sync = BuildLevelDescSync(desc);
+                if (IsChallengeLevel(sync.LevelId))
+                {
+                    _log?.Information("[NetMod] Skip sending LevelDesc (Challenge)");
+                    return;
+                }
+                CacheLevelDescSync(sync);
+                if (NetRef != null)
+                {
+                    NetRef.SendLevelDesc(JsonConvert.SerializeObject(sync));
+                }
+                LogLevelDesc("Host LevelDesc", sync);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Host failed to send LevelDesc: {Message}", ex.Message);
+            }
+        }
     }
 }
 

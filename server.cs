@@ -230,6 +230,14 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("LDESC|"))
+                    {
+                        var payload = line["LDESC|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        GameMenu.ReceiveLevelDesc(payload);
+                        continue;
+                    }
+
                     if (line.StartsWith("GDATA|"))
                     {
                         var payload = line["GDATA|".Length..];
@@ -314,6 +322,18 @@ public sealed class NetNode : IDisposable
 
         SendRaw("RUNPARAMS|" + json);
         _log.Information("[NetNode] Sent run params payload");
+    }
+
+    public void SendLevelDesc(string json)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending level desc: no connected client");
+            return;
+        }
+
+        SendRaw("LDESC|" + json);
+        _log.Information("[NetNode] Sent LevelDesc payload");
     }
 
     public void SendGameData(string json)
