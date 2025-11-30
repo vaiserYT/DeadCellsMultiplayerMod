@@ -32,23 +32,12 @@ DCCM will generate the required files on the first launch.
 Extract the **DeadCellsMultiplayerMod** folder into mods folder in coremod:
 ---
 
-### 4️⃣ Network configuration
-Open `server.txt` inside the DeadCellsMultiplayerMod folder.
-
-- **If you are the host:**
-    write 127.0.0.1:your_port
-
-- **If you are the client:**
-    write host_ip:host_port
-
-For internet play, use **Hamachi, Radmin VPN, ZeroTier**, or similar tools.
-
----
+# How to play?
 
 1. Click on Play multiplayer button
 2. For host and client write ip and port and click on host/join
 3. When host start the game, client also start the game automatically 
-
+For internet play, use **Hamachi, Radmin VPN, ZeroTier**, or similar tools.
 ---
 
 ## TODO
