@@ -25,15 +25,11 @@ And install it by insctruction on page
 
 ### 2️⃣ Run DCCM
 Start the game using:
-DCCM will generate the required files on the first launch.  
-When the game loads — simply close it.
-
+DCCM will generate the required files on the first launch.
 ---
 
 ### 3️⃣ Install the mod
 Extract the **DeadCellsMultiplayerMod** folder into mods folder in coremod:
-
-
 ---
 
 ### 4️⃣ Network configuration
@@ -49,23 +45,14 @@ For internet play, use **Hamachi, Radmin VPN, ZeroTier**, or similar tools.
 
 ---
 
-## 🕹 How to Play
-
-| Action | Key |
-|--------|-----|
-| Start server (Host) | **F5** |
-| Connect as client | **F6** |
-
-1. Launch the game with the mod installed  
-2. Host presses **F5** to start the server  
-3. Client presses **F6** to connect  
-4. Enjoy playing together!  
+1. Click on Play multiplayer button
+2. For host and client write ip and port and click on host/join
+3. When host start the game, client also start the game automatically 
 
 ---
 
 ## TODO
 - [x] Create the player's ghosts
-- [x] Sync the world's seeds
 - [x] Sync the world new game data
 - [ ] Sync level generation data
 - [ ] Better sprite for the ghost
