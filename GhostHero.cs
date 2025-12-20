@@ -16,6 +16,7 @@ namespace DeadCellsMultiplayerMod
         private readonly Hero _me;
         private Hero? _companion;
 
+        dc.ui.Text text1;
         public GhostHero(dc.pr.Game game, Hero me)
         {
             _game = game;
@@ -59,56 +60,18 @@ namespace DeadCellsMultiplayerMod
             _companion?.set_level(lvl);
         }
 
-        public void SetLabel(string? text, int? color = null, dc.ui.Text? target = null)
+        public void SetLabel(string? text, int? color = null)
         {
             if (_companion == null) return;
 
             var labelText = text ?? string.Empty;
             var colorValue = color ?? 0xFFFFFF;
 
-            try
-            {
-                var methods = _companion.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                foreach (var method in methods)
-                {
-                    if (!string.Equals(method.Name, "setLabel", StringComparison.Ordinal)) continue;
+            text1.rawText = labelText.AsHaxeString();
 
-                    var parameters = method.GetParameters();
-                    object?[] args;
-                    switch (parameters.Length)
-                    {
-                        case 3:
-                            args = new object?[] { target, labelText, colorValue };
-                            break;
-                        case 2:
-                            args = new object?[] { labelText, colorValue };
-                            break;
-                        case 1:
-                            args = new object?[] { labelText };
-                            break;
-                        default:
-                            continue;
-                    }
+            // _companion.setLabel(text1, colorValue, );
 
-                    method.Invoke(_companion, args);
-                    return;
-                }
-            }
-            catch
-            {
-            }
-
-            if (target != null)
-            {
-                try
-                {
-                    target.set_text(labelText.AsHaxeString());
-                    target.set_textColor(colorValue);
-                }
-                catch
-                {
-                }
-            }
+            
         }
     }
 }

@@ -28,7 +28,7 @@ namespace DeadCellsMultiplayerMod
 
         private object? _lastLevelRef;
         private object? _lastGameRef;
-        private string? _remoteLevelId;
+        private string? _remoteLevelText;
         private string? _lastSentLevelId;
 
         
@@ -79,13 +79,12 @@ namespace DeadCellsMultiplayerMod
             orig(self, oldLevel);
 
             if (_netRole == NetRole.None) return;
+            SendLevel();
+            var remoteCurrentLevelId = _remoteLevelText;
+            
+            Logger.Warning($"Hero level id = {self._level.uniqId}\n Ghost Level id = {remoteCurrentLevelId}");
 
-            var currentLevel = self._level;
-
-            // var netLevel = null;
-
-
-            if (oldLevel != null)
+            if (oldLevel != null && self._level.uniqId.ToString() == remoteCurrentLevelId)
             {
                 _ghost?.SetLevel(self._level);
                 _companion?.init();
@@ -110,7 +109,7 @@ namespace DeadCellsMultiplayerMod
             {
                 _ghost ??= new GhostHero(game, me);
                 _companion = _ghost.CreateGhost();
-                _ghost.SetLabel("TEST");
+                // _ghost.SetLabel("TEST");
                 Logger.Debug($"[NetMod] Hook_Hero.wakeup created ghost = {_companion}");
             }
 
@@ -257,6 +256,7 @@ namespace DeadCellsMultiplayerMod
         {
             SendHeroCoords();
             ReceiveGhostCoords();
+            ReceiveGhostLevel();
         }
 
 
@@ -267,14 +267,24 @@ namespace DeadCellsMultiplayerMod
             var hero = me;
 
             if (net == null || hero == null || _companion == null) return;
-            net.LevelSend(hero._level.ToString());
+            net.LevelSend(hero._level.uniqId.ToString());
 
         }
 
 
         private void ReceiveGhostLevel()
         {
-            
+            var net = _net;
+            var ghost = _ghost;
+            if (net == null || ghost == null || _companion == null) return;
+
+            if (!net.TryGetRemoteLevelString(out var remoteLevel) || string.IsNullOrWhiteSpace(remoteLevel))
+                return;
+
+            if (string.Equals(_remoteLevelText, remoteLevel, StringComparison.Ordinal))
+                return;
+
+            _remoteLevelText = remoteLevel;
         }
 
 
