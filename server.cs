@@ -270,6 +270,14 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("LEVEL|"))
+                    {
+                        var payload = line["LEVEL|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        _log.Information("[NetNode] Received level id {LevelId}", payload);
+                        continue;
+                    }
+
                     if (line.StartsWith("KICK"))
                     {
                         GameMenu.NotifyRemoteDisconnected(_role);
@@ -338,6 +346,15 @@ public sealed class NetNode : IDisposable
         _ = SendLineSafe(line);
     }
 
+    public void LevelSend(string lvl)
+    {
+        if (_stream == null || _client == null || !_client.Connected) return;
+        var line = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"Level|{lvl}\n");
+        _ = SendLineSafe(line);
+    }
+
     public void SendSeed(int seed)
     {
         if (_stream == null || _client == null || !_client.Connected)
@@ -396,6 +413,19 @@ public sealed class NetNode : IDisposable
 
         SendRaw("GEN|" + json);
         _log.Information("[NetNode] Sent Generate payload ({Length} bytes)", json.Length);
+    }
+
+    public void SendLevelId(string levelId)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending level id: no connected client");
+            return;
+        }
+
+        var safe = levelId.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        SendRaw("LEVEL|" + safe);
+        _log.Information("[NetNode] Sent level id {LevelId}", safe);
     }
 
     public void SendKick()

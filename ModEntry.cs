@@ -1,5 +1,5 @@
 using Hashlink.Proxy.DynamicAccess;
-using HaxeProxy.Runtime;
+using System;
 using ModCore.Events.Interfaces.Game;
 using ModCore.Events.Interfaces.Game.Hero;
 using ModCore.Mods;
@@ -26,9 +26,10 @@ namespace DeadCellsMultiplayerMod
         private static GameDataSync? _cachedGameDataSync;
         private bool _ready;
 
-        private HaxeObject? _heroRef;
         private object? _lastLevelRef;
         private object? _lastGameRef;
+        private string? _remoteLevelId;
+        private string? _lastSentLevelId;
 
         
 
@@ -76,9 +77,20 @@ namespace DeadCellsMultiplayerMod
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
             orig(self, oldLevel);
-            if(_netRole == NetRole.None) return;
-            if(oldLevel != null){
-                Logger.Debug($"[NetMod] hook_level_changed logic for change level in ghost");
+
+            if (_netRole == NetRole.None) return;
+
+            var currentLevel = self._level;
+
+            // var netLevel = null;
+
+
+            if (oldLevel != null)
+            {
+                _ghost?.SetLevel(self._level);
+                _companion?.init();
+                _companion?.initGfx();
+                Logger.Debug($"Ghost set level = {self._level}");
             }
             Logger.Debug($"[NetMod] hook_level_changed.old_level = {oldLevel}");
         }
@@ -98,6 +110,7 @@ namespace DeadCellsMultiplayerMod
             {
                 _ghost ??= new GhostHero(game, me);
                 _companion = _ghost.CreateGhost();
+                _ghost.SetLabel("TEST");
                 Logger.Debug($"[NetMod] Hook_Hero.wakeup created ghost = {_companion}");
             }
 
@@ -144,26 +157,31 @@ namespace DeadCellsMultiplayerMod
                     return;
                 }
 
+                Hero? capturedHero = null;
                 try
                 {
                     dynamic gmDyn = gmObj;
-                    _heroRef = gmDyn.hero;
+                    capturedHero = gmDyn.hero as Hero;
                 }
                 catch
                 {
-                    _heroRef = null;
+                }
+
+                if (capturedHero != null)
+                {
+                    me = capturedHero;
                 }
 
                 _lastGameRef = gmObj;
                 _initialGhostSpawned = false;
 
-                if (_heroRef != null)
+                if (me != null)
                 {
                     string? heroTypeStr = null;
                     object? heroTeam = null;
                     try
                     {
-                        dynamic h = DynamicAccessUtils.AsDynamic(_heroRef);
+                        dynamic h = DynamicAccessUtils.AsDynamic(me);
                         try { heroTypeStr = (string?)h.type; } catch { }
                         try { heroTeam = (object?)h.team; } catch { }
                         try { _lastLevelRef = (object?)h._level; } catch { }
@@ -172,7 +190,7 @@ namespace DeadCellsMultiplayerMod
                     }
                     catch { }
 
-                    heroTypeStr ??= _heroRef.GetType().FullName;
+                    heroTypeStr ??= me.GetType().FullName;
                     Logger.Information("[NetMod] Hero captured (type={Type}, team={Team})",
                         heroTypeStr ?? "unknown",
                         heroTeam ?? "unknown");
@@ -239,6 +257,24 @@ namespace DeadCellsMultiplayerMod
         {
             SendHeroCoords();
             ReceiveGhostCoords();
+        }
+
+
+        private void SendLevel()
+        {
+            if (_netRole == NetRole.None) return;
+            var net = _net;
+            var hero = me;
+
+            if (net == null || hero == null || _companion == null) return;
+            net.LevelSend(hero._level.ToString());
+
+        }
+
+
+        private void ReceiveGhostLevel()
+        {
+            
         }
 
 
@@ -366,11 +402,11 @@ namespace DeadCellsMultiplayerMod
         {
             if (_netRole == NetRole.None) return;
             if (_initialGhostSpawned) return;
-            if (_heroRef == null || _lastLevelRef == null || _lastGameRef == null) return;
+            if (me == null || _lastLevelRef == null || _lastGameRef == null) return;
 
             try
             {
-                dynamic h = DynamicAccessUtils.AsDynamic(_heroRef);
+                dynamic h = DynamicAccessUtils.AsDynamic(me);
                 int cx = 0, cy = 0;
                 double xr = 0.5, yr = 1;
                 try { cx = (int)h.cx; } catch { }
