@@ -10,6 +10,8 @@ using System.Net;
 using System.Reflection;
 using dc.en;
 using dc.pr;
+using dc.en.inter;
+using ModCore.Utitities;
 
 
 namespace DeadCellsMultiplayerMod
@@ -30,7 +32,7 @@ namespace DeadCellsMultiplayerMod
         private object? _lastLevelRef;
         private object? _lastGameRef;
 
-        
+
 
 
         private NetRole _netRole = NetRole.None;
@@ -40,13 +42,13 @@ namespace DeadCellsMultiplayerMod
 
         private bool _initialGhostSpawned;
 
-        public bool isHeroSpawned=false;
+        public bool isHeroSpawned = false;
         public dc.pr.Game? game;
 
         public Hero _companion = null;
         Hero me = null;
 
-        int cnt=0;
+        int cnt = 0;
         int players_count = 2;
 
         private GhostHero? _ghost;
@@ -71,13 +73,15 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_Hero.wakeup attached");
             Hook_Hero.onLevelChanged += hook_level_changed;
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
+
         }
 
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
             orig(self, oldLevel);
-            if(_netRole == NetRole.None) return;
-            if(oldLevel != null){
+            if (_netRole == NetRole.None) return;
+            if (oldLevel != null)
+            {
                 Logger.Debug($"[NetMod] hook_level_changed logic for change level in ghost");
             }
             Logger.Debug($"[NetMod] hook_level_changed.old_level = {oldLevel}");
@@ -90,7 +94,7 @@ namespace DeadCellsMultiplayerMod
                 me = self;
 
             orig(self, lvl, cx, cy);
-            if(_netRole == NetRole.None) return;
+            if (_netRole == NetRole.None) return;
 
             cnt++;
 
@@ -167,7 +171,7 @@ namespace DeadCellsMultiplayerMod
                         try { heroTypeStr = (string?)h.type; } catch { }
                         try { heroTeam = (object?)h.team; } catch { }
                         try { _lastLevelRef = (object?)h._level; } catch { }
-                        
+
                         _lastGameRef = ExtractGameFromLevel(_lastLevelRef) ?? gmObj ?? _lastGameRef;
                     }
                     catch { }
@@ -191,7 +195,7 @@ namespace DeadCellsMultiplayerMod
 
 
 
-       
+
 
         public static void ApplyGameDataBytes(byte[] data)
         {
@@ -250,7 +254,7 @@ namespace DeadCellsMultiplayerMod
             var hero = me;
 
             if (net == null || hero == null || _companion == null) return;
-            if(hero.cx == last_cx && hero.cy == last_cy) return;
+            if (hero.cx == last_cx && hero.cy == last_cy) return;
 
             net.TickSend(hero.cx, hero.cy, hero.xr, hero.yr);
             last_cx = hero.cx;
@@ -416,6 +420,43 @@ namespace DeadCellsMultiplayerMod
             }
             catch { }
 
+            return null;
+        }
+
+        public void ForceGhostEnterZDoor(int cx, int cy, string destMapId, int linkId)
+        {
+            if (_companion == null || game?.hero?._level == null) return;
+
+            var zDoor = FindZDoorAtPosition(cx, cy);
+            var ghostHero = _companion as Hero;
+
+            if (zDoor != null && ghostHero != null)
+            {
+                zDoor.enter(ghostHero);
+                Logger.Debug($"[NetMod] Ghost entered ZDoor at ({cx},{cy})");
+            }
+            else
+            {
+                Logger.Warning($"[NetMod] ZDoor not found at ({cx},{cy})");
+            }
+        }
+
+        private ZDoor? FindZDoorAtPosition(int cx, int cy)
+        {
+            if (game?.hero?._level == null) return null;
+
+
+            var entities = game.hero._level.entities;
+            if (entities != null)
+            {
+                foreach (var entity in entities)
+                {
+                    if (entity is ZDoor zDoor && zDoor.cx == cx && zDoor.cy == cy)
+                    {
+                        return zDoor;
+                    }
+                }
+            }
             return null;
         }
     }
