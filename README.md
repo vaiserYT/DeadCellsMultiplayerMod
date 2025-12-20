@@ -44,7 +44,7 @@ For internet play, use **Hamachi, Radmin VPN, ZeroTier**, or similar tools.
 - [x] Create the player's ghosts
 - [x] Sync the world new game data
 - [ ] Sync level generation data
-- [ ] Better sprite for the ghost
+- [x] Better sprite for the ghost
 - [ ] Add animation to the player's ghosts
 - [ ] Sync the enemies
 - [ ] Add death for the ghost

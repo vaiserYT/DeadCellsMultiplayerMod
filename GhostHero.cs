@@ -1,11 +1,12 @@
-﻿using dc.en;
+﻿using System;
+using System.Reflection;
+using dc.en;
 using dc.haxe;
 using dc.pr;
 using HaxeProxy.Runtime;
 using ModCore.Events.Interfaces.Game.Hero;
 using ModCore.Mods;
 using ModCore.Utitities;
-using Serilog.Core;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -15,6 +16,7 @@ namespace DeadCellsMultiplayerMod
         private readonly Hero _me;
         private Hero? _companion;
 
+        dc.ui.Text text1;
         public GhostHero(dc.pr.Game game, Hero me)
         {
             _game = game;
@@ -22,8 +24,6 @@ namespace DeadCellsMultiplayerMod
         }
 
         public Hero? Companion => _companion;
-
-
 
         public Hero CreateGhost()
         {
@@ -35,13 +35,11 @@ namespace DeadCellsMultiplayerMod
             _companion.set_team(_me._team);
             _companion.createHead();
             _companion.initGfx();
-            // _companion.applySkin("sdad".AsHaxeString());
             _companion.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             _companion.visible = true;
             _companion.initAnims();
             _companion.wakeup(_me._level, _me.cx, _me.cy);
             _companion.awake = false;
-
             bool disposeFlagValue = false;
             var disposeFlag = new Ref<bool>(ref disposeFlagValue);
 
@@ -55,7 +53,25 @@ namespace DeadCellsMultiplayerMod
         public void Teleport(int x, int y, double? xr, double? yr)
         {
             _companion?.setPosCase(x, y, xr, yr);
+        }
 
+        public void SetLevel(Level lvl)
+        {
+            _companion?.set_level(lvl);
+        }
+
+        public void SetLabel(string? text, int? color = null)
+        {
+            if (_companion == null) return;
+
+            var labelText = text ?? string.Empty;
+            var colorValue = color ?? 0xFFFFFF;
+
+            text1.rawText = labelText.AsHaxeString();
+
+            // _companion.setLabel(text1, colorValue, );
+
+            
         }
     }
 }
