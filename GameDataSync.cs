@@ -158,7 +158,8 @@ namespace DeadCellsMultiplayerMod
                         if (!p.CanRead) continue;
                         var dp = dstType.GetProperty(p.Name, Flags);
                         if (dp == null || !dp.CanWrite) continue;
-                        var val = p.GetValue(src);
+                        if (!TryGetPropertyValue(src, p, out var val)) continue;
+                        if (IsUnsafePropertyType(dp.PropertyType)) continue;
                         if (val == null || dp.PropertyType.IsInstanceOfType(val))
                         {
                             dp.SetValue(dst, val);
@@ -1014,7 +1015,7 @@ namespace DeadCellsMultiplayerMod
                 var instField = typeof(dc.tool.GameData).GetField("instance", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
                 var instAlt = typeof(dc.tool.GameData).GetField("inst", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
 
-                return (instProp?.GetValue(null) as dc.tool.GameData)
+                return (instProp != null && TryGetPropertyValue(null, instProp, out var propVal) ? propVal as dc.tool.GameData : null)
                        ?? (instField?.GetValue(null) as dc.tool.GameData)
                        ?? (instAlt?.GetValue(null) as dc.tool.GameData);
             }
@@ -1904,7 +1905,8 @@ namespace DeadCellsMultiplayerMod
                 if (!p.CanRead || !p.CanWrite) continue;
                 try
                 {
-                    var v = p.GetValue(source);
+                    if (!TryGetPropertyValue(source, p, out var v)) continue;
+                    if (IsUnsafePropertyType(p.PropertyType)) continue;
                     p.SetValue(target, v);
                 }
                 catch { }
@@ -1986,9 +1988,8 @@ namespace DeadCellsMultiplayerMod
 
             foreach (var prop in type.GetProperties(flags))
             {
-                if (!prop.CanRead) continue;
                 object? val = null;
-                try { val = prop.GetValue(obj); } catch { }
+                if (!TryGetPropertyValue(obj, prop, out val)) continue;
                 if (IsPrimitiveLike(val)) continue;
                 yield return val;
             }
@@ -2461,6 +2462,35 @@ namespace DeadCellsMultiplayerMod
             return fallback;
         }
 
+        private static bool IsUnsafePropertyType(System.Type type)
+        {
+            if (type.IsPointer || type.IsByRef) return true;
+            try
+            {
+                if (type.IsByRefLike) return true;
+                if (type.IsFunctionPointer) return true;
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool TryGetPropertyValue(object? obj, PropertyInfo prop, out object? value)
+        {
+            value = null;
+            if (prop == null || !prop.CanRead) return false;
+            if (prop.GetIndexParameters().Length != 0) return false;
+            if (IsUnsafePropertyType(prop.PropertyType)) return false;
+            try
+            {
+                value = prop.GetValue(obj);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static object? GetMemberValue(object obj, string name, bool ignoreCase = false)
         {
             if (obj == null) return null;
@@ -2468,10 +2498,8 @@ namespace DeadCellsMultiplayerMod
             if (ignoreCase) flags |= BindingFlags.IgnoreCase;
             var type = obj.GetType();
             var prop = type.GetProperty(name, flags);
-            if (prop != null && prop.CanRead)
-            {
-                try { return prop.GetValue(obj); } catch { }
-            }
+            if (prop != null && TryGetPropertyValue(obj, prop, out var propVal))
+                return propVal;
             var field = type.GetField(name, flags);
             if (field != null)
             {
@@ -2549,13 +2577,23 @@ namespace DeadCellsMultiplayerMod
                     ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
                     Error = (sender, args) => { args.ErrorContext.Handled = true; }
                 };
-                return JsonConvert.SerializeObject(obj, settings);
+                var json = JsonConvert.SerializeObject(obj, settings);
+                return IsEmptyJsonPayload(json) ? null : json;
             }
             catch (Exception ex)
             {
                 _log?.Warning("[NetMod] Failed to serialize object: {Message}", ex.Message);
                 return null;
             }
+        }
+
+        private static bool IsEmptyJsonPayload(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return true;
+            var trimmed = json.Trim();
+            return trimmed == "{}"
+                   || trimmed == "[]"
+                   || string.Equals(trimmed, "null", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void ClearArray(object arrayObj)
@@ -2892,7 +2930,7 @@ namespace DeadCellsMultiplayerMod
             {
                 try
                 {
-                    if (arrProp.GetValue(value) is Array raw)
+                    if (TryGetPropertyValue(value, arrProp, out var arrVal) && arrVal is Array raw)
                     {
                         foreach (var o in raw) list.Add(o);
                         return list;
@@ -2931,9 +2969,8 @@ namespace DeadCellsMultiplayerMod
 
             foreach (var prop in type.GetProperties(flags))
             {
-                if (!prop.CanRead) continue;
                 object? val = null;
-                try { val = prop.GetValue(obj); } catch { }
+                if (!TryGetPropertyValue(obj, prop, out val)) continue;
                 if (val == null) continue;
 
                 if (string.Equals(prop.Name, targetName, StringComparison.OrdinalIgnoreCase))
@@ -2952,9 +2989,8 @@ namespace DeadCellsMultiplayerMod
 
             foreach (var prop in type.GetProperties(flags))
             {
-                if (!prop.CanRead) continue;
                 object? val = null;
-                try { val = prop.GetValue(obj); } catch { }
+                if (!TryGetPropertyValue(obj, prop, out val)) continue;
                 if (val == null) continue;
 
                 var found = FindMemberRecursive(val, targetName, depth - 1, visited);
@@ -3006,9 +3042,8 @@ namespace DeadCellsMultiplayerMod
 
             foreach (var prop in type.GetProperties(flags))
             {
-                if (!prop.CanRead) continue;
                 object? val = null;
-                try { val = prop.GetValue(obj); } catch { }
+                if (!TryGetPropertyValue(obj, prop, out val)) continue;
                 if (val == null) continue;
 
                 if (prop.Name.IndexOf(targetName, StringComparison.OrdinalIgnoreCase) >= 0)
@@ -3027,9 +3062,8 @@ namespace DeadCellsMultiplayerMod
 
             foreach (var prop in type.GetProperties(flags))
             {
-                if (!prop.CanRead) continue;
                 object? val = null;
-                try { val = prop.GetValue(obj); } catch { }
+                if (!TryGetPropertyValue(obj, prop, out val)) continue;
                 if (val == null) continue;
 
                 var found = FindMemberRecursiveContains(val, targetName, depth - 1, visited);
