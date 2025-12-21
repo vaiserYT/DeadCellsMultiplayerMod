@@ -19,6 +19,8 @@ using ModCore.Utitities;
 using dc.level;
 using dc;
 
+using dc.en.inter;
+
 namespace DeadCellsMultiplayerMod
 {
     public partial class ModEntry(ModInfo info) : ModBase(info),
@@ -80,7 +82,7 @@ namespace DeadCellsMultiplayerMod
             Hook_Hero.onLevelChanged += hook_level_changed;
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
 
-            Hook__LevelStruct.get += Hook__LevelStruct_get;
+            // Hook__LevelStruct.get += Hook__LevelStruct_get;
 
 
         }
@@ -215,7 +217,6 @@ namespace DeadCellsMultiplayerMod
                     Logger.Information("[NetMod] Hero captured (type={Type}, team={Team})",
                         heroTypeStr ?? "unknown",
                         heroTeam ?? "unknown");
-                    TryInitialGhostSpawn();
                 }
                 else
                 {
@@ -428,30 +429,6 @@ namespace DeadCellsMultiplayerMod
             var type = levelObj.GetType();
             return type.GetProperty("game", Flags)?.GetValue(levelObj) ??
                    type.GetField("game", Flags)?.GetValue(levelObj);
-        }
-
-        private void TryInitialGhostSpawn()
-        {
-            if (_netRole == NetRole.None) return;
-            if (_initialGhostSpawned) return;
-            if (me == null || _lastLevelRef == null || _lastGameRef == null) return;
-
-            try
-            {
-                dynamic h = DynamicAccessUtils.AsDynamic(me);
-                int cx = 0, cy = 0;
-                double xr = 0.5, yr = 1;
-                try { cx = (int)h.cx; } catch { }
-                try { cy = (int)h.cy; } catch { }
-                try { xr = (double)h.xr; } catch { }
-                try { yr = (double)h.yr; } catch { }
-                if (cx < 0 || cy < 0) return;
-
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning("[NetMod] Initial ghost spawn failed: {Message}", ex.Message);
-            }
         }
 
         private static dc.tool.GameData? TryGetGameData(dc.User data)
