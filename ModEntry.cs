@@ -9,10 +9,9 @@ using System.Net;
 using System.Reflection;
 using dc.en;
 using dc.pr;
-
+using dc.cine;
 using ModCore.Utitities;
 using ModCore.Events;
-using DeadCellsMultiplayerMod.Interface;
 
 using dc.en.inter;
 
@@ -23,8 +22,7 @@ namespace DeadCellsMultiplayerMod
         IOnHeroInit,
         IOnHeroUpdate,
         IOnFrameUpdate,
-        IOnAfterLoadingSave,
-        IOnZDoorEntering
+        IOnAfterLoadingSave
     {
         public static ModEntry? Instance { get; private set; }
         private static byte[]? _pendingGameData;
@@ -58,8 +56,9 @@ namespace DeadCellsMultiplayerMod
         private GhostHero? _ghost;
 
         private ZDoor zDoor;
-        private string mapid;
-        private int link;
+        dc.level.LevelMap Map;
+        private int? link;
+
 
 
         public void OnGameEndInit()
@@ -83,37 +82,25 @@ namespace DeadCellsMultiplayerMod
 
             Hook_Hero.onLevelChanged += hook_level_changed;
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
-            Hook_ZDoor.enter += Hook_ZDoor_enter;
-            Logger.Debug("[NetMod] Hook_ZDoor.enter attached");
-            Hook_ZDoor.dispose += Hook_ZDoor_dispose;
-            Logger.Debug("[NetMod] Hook_ZDoor.dispose attached");
+            Hook__LevelTransition.gotoSub += hook_gotosub;
+            Logger.Debug("[NetMod] Hook__LevelTransition.gotoSub attached");
+
         }
 
-        // Zdoor code
-        public void OnEnterZdoor(ZDoor zDoor)
-        { 
-            if (zDoor == null) return;
-            this.zDoor = zDoor;
-            mapid = Convert.ToString(zDoor.destMap) ?? string.Empty;
-            link = zDoor.linkId;
-            Logger.Information($"HERO MapId:{mapid} LinkId:{link} {zDoor.cx},{zDoor.cy}");
-        }
 
-        private void Hook_ZDoor_dispose(Hook_ZDoor.orig_dispose orig, ZDoor self)
+        public LevelTransition hook_gotosub(Hook__LevelTransition.orig_gotoSub orig, dc.level.LevelMap map, int? linkId)
         {
-            EventSystem.BroadcastEvent<IOnZDoorEntry, ZDoor>(self);
-            orig(self);
+            Map = map;
+            link = linkId;
+
+
+            Logger.Debug($"[NetMod] map = {map.id}");
+
+            return orig(map, linkId);
         }
 
-        private void Hook_ZDoor_enter(Hook_ZDoor.orig_enter orig, ZDoor self, Hero h)
-        {
-            {
-                me = h;
-                EventSystem.BroadcastEvent<IOnZDoorEntering, ZDoor>(self);
-            }
-            orig(self, h);
-        }
-        // Zdore code end
+        
+
     
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
@@ -125,8 +112,6 @@ namespace DeadCellsMultiplayerMod
             var remoteCurrentLevelId = _remoteLevelText;
             if(oldLevel == null) return;
             if (zDoor == null) return;
-            dc.cine.LevelTransition.Class.gotoSub(zDoor.destMap, zDoor.linkId);
-            dc.cine.LevelTransition.Class.gotoSub(zDoor.destMap, zDoor.linkId);
             Logger.Warning($"Hero: {me.cx}:{me.cy}, \n Ghost: {_companion.cx}:{_companion.cy}");
         }
 
