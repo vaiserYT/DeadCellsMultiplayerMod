@@ -3,20 +3,21 @@ using System;
 using ModCore.Events.Interfaces.Game;
 using ModCore.Events.Interfaces.Game.Hero;
 using ModCore.Mods;
-using ModCore.Modules;
 using ModCore.Events.Interfaces.Game.Save;
 using Serilog;
 using System.Net;
 using System.Reflection;
+using System.Collections;
 using dc.en;
 using dc.pr;
-using ModCore.Storage;
-
-using dc.tool.mod.script;
-using dc.pow;
+using dc.cine;
 using ModCore.Utitities;
+using ModCore.Events;
 
+using dc.en.inter;
 using dc.level;
+using dc.hl.types;
+using HaxeProxy.Runtime;
 using dc;
 
 namespace DeadCellsMultiplayerMod
@@ -25,53 +26,47 @@ namespace DeadCellsMultiplayerMod
         IOnGameEndInit,
         IOnHeroInit,
         IOnHeroUpdate,
-        IOnFrameUpdate,
-        IOnAfterLoadingSave
+        IOnFrameUpdate
     {
         public static ModEntry? Instance { get; private set; }
-        private static byte[]? _pendingGameData;
-        private static GameDataSync? _cachedGameDataSync;
         private bool _ready;
 
-        private object? _lastLevelRef;
-        private object? _lastGameRef;
         private string? _remoteLevelText;
-        private string? _lastSentLevelId;
-
-
-
 
         private NetRole _netRole = NetRole.None;
         private NetNode? _net;
 
-        private static int _beheadedWakeCounter;
 
-        private bool _initialGhostSpawned;
-
-        public bool isHeroSpawned = false;
         public dc.pr.Game? game;
 
         public Hero _companion = null;
         Hero me = null;
 
-        int cnt = 0;
         int players_count = 2;
 
         private GhostHero? _ghost;
 
+        private GameDataSync gds;
+
+
+        public Hero[] heroes = Array.Empty<Hero>();
+
+
+        private string roomsMap;
+
+
+
+
         public void OnGameEndInit()
         {
             _ready = true;
-            _beheadedWakeCounter = 0;
-            GameMenu.AllowGameDataHooks = false;
             GameMenu.SetRole(NetRole.None);
-            var seed = GameMenu.ForceGenerateServerSeed("OnGameEndInit");
-            Logger.Information("[NetMod] GameEndInit - ready (use menu) seed={Seed}", seed);
         }
 
         public override void Initialize()
         {
             Instance = this;
+            gds = new GameDataSync(Logger);
             GameMenu.Initialize(Logger);
             Hook_Game.init += Hook_mygameinit;
             Logger.Debug("[NetMod] Hook_mygameinit attached");
@@ -79,64 +74,108 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_Hero.wakeup attached");
             Hook_Hero.onLevelChanged += hook_level_changed;
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
-
-            Hook__LevelStruct.get += Hook__LevelStruct_get;
+            Hook__LevelTransition.gotoSub += hook_gotosub;
+            Logger.Debug("[NetMod] Hook__LevelTransition.gotoSub attached");
+            Hook_ZDoor.enter += Hook_ZDoor_enter;
+            Logger.Debug("[NetMod] Hook_ZDoor.ente attached");
+            Hook_LevelTransition.loadNewLevel += Hook__LevelTransition_loadnewlevel;
+            Logger.Debug("[NetMod] Hook_LevelTransition.loadNewLevel attached");
+            Hook_Game.initHero += Hook_Game_inithero;
+            Logger.Debug("[NetMod] Hook_Game.initHero attached");
+            Hook_Game.activateSubLevel += hook_game_activateSubLevel;
+            Logger.Debug("[NetMod] Hook_Game.activateSubLevel attached");
+            Hook__AfterZDoor.__constructor__ += Hook__AfterZDoor_intcompanion;
+            Logger.Debug("[NetMod] Hook__AfterZDoor.__constructor__ attached");
+            Hook_User.newGame += GameDataSync.user_hook_new_game;
+            Logger.Debug("[NetMod] Hook_User.newGame attached");
 
 
         }
 
-        
-        LevelStruct Hook__LevelStruct_get
-        (
-            Hook__LevelStruct.orig_get orig, dc.User user, 
-            Hashlink.Virtuals.virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ l, 
-            dc.libs.Rand rng
-        )
-        {  
-            
-            return orig(user, l, rng);
+
+        private void Hook__AfterZDoor_intcompanion(Hook__AfterZDoor.orig___constructor__ orig, AfterZDoor arg1, Hero hero)
+        {
+            hero = heroes[0];
+            orig(arg1, hero);
         }
+
+        private void hook_game_activateSubLevel(Hook_Game.orig_activateSubLevel orig, Game self, LevelMap linkId, int? shouldSave, Ref<bool> outAnim, Ref<bool> shouldSave2)
+        {
+            roomsMap = linkId.rooms.ToString();
+            SendLevel(roomsMap);
+            orig(self, linkId, shouldSave, outAnim, shouldSave2);
+        }
+
+        private Hero Hook_Game_inithero(Hook_Game.orig_initHero orig, Game self, Level cx, int cy, int from, UsableBody fromDeadBody, bool oldLevel, Level e)
+        {
+            return orig(self, cx, cy, from, fromDeadBody, oldLevel, e);
+        }
+
+        private void Hook__LevelTransition_loadnewlevel(Hook_LevelTransition.orig_loadNewLevel orig, LevelTransition self)
+        {
+            orig(self);
+        }
+
+
+        private void Hook_ZDoor_enter(Hook_ZDoor.orig_enter orig, ZDoor self, Hero h)
+        {
+            HlAction onComplete = new HlAction(() =>
+            {
+                var game = Game.Class.ME;
+                game.subLevels = me._level.game.subLevels = _companion._level.game.subLevels;
+                _LevelTransition levelTransition = LevelTransition.Class;
+                if (me._level.map == _companion._level.map)
+                {
+                    self.destMap = self.destMap;
+                }
+                levelTransition.gotoSub(self.destMap, self.linkId);
+            });
+            UseZDoor useZDoor = new UseZDoor(_companion, self, onComplete);
+            UseZDoor useZDoor2 = new UseZDoor(me, self, onComplete);
+        }
+
+
+
+
+        public LevelTransition hook_gotosub(Hook__LevelTransition.orig_gotoSub orig, dc.level.LevelMap map, int? linkId)
+        {
+            return orig(map, linkId);
+        }
+
+
+
+
+
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
+            self = heroes[0];
             orig(self, oldLevel);
-
-            if (_netRole == NetRole.None) return;
-            SendLevel();
-            var remoteCurrentLevelId = _remoteLevelText;
-
-            
-
-            if (oldLevel != null && self._level.uniqId.ToString() == remoteCurrentLevelId)
-            {
-                _ghost?.SetLevel(self._level);
-                _companion?.init();
-                _companion?.initGfx();
-                Logger.Debug($"Ghost set level = {self._level}");
-            }
-            Logger.Debug($"[NetMod] hook_level_changed.old_level = {oldLevel}");
+            _companion.awake = false;
         }
 
 
         public void hook_hero_wakeup(Hook_Hero.orig_wakeup orig, Hero self, Level lvl, int cx, int cy)
         {
-            if (cnt == 0)
-                me = self;
-
+            if (Array.IndexOf(heroes, self) < 0)
+            {
+                var newLen = heroes.Length + 1;
+                Array.Resize(ref heroes, newLen);
+                heroes[newLen - 1] = self;
+            }
+            me = heroes[0];
+            Logger.Warning($"self: {self}");
+            Logger.Warning($"heroes[0].lastRoomId: {self.lastRoomId}");
             orig(self, lvl, cx, cy);
             if (_netRole == NetRole.None) return;
 
-            cnt++;
 
-            if (cnt < players_count && game != null && me != null)
+            if (heroes.Length < players_count && game != null && me != null)
             {
                 _ghost ??= new GhostHero(game, me);
                 _companion = _ghost.CreateGhost();
-                // _ghost.SetLabel("TEST");
                 Logger.Debug($"[NetMod] Hook_Hero.wakeup created ghost = {_companion}");
             }
 
-            if (cnt >= players_count)
-                cnt = 0;
         }
 
 
@@ -146,124 +185,10 @@ namespace DeadCellsMultiplayerMod
             orig(self);
         }
 
-
-
-        public void OnAfterLoadingSave(dc.User data)
-        {
-            try
-            {
-                var gd = TryGetGameData(data);
-                if (gd == null) return;
-                var dto = GameMenu.BuildGameDataSync(gd);
-                _cachedGameDataSync = dto;
-                GameMenu.CacheGameDataSync(dto);
-                Logger.Information("[NetMod] Full GameData captured after save load");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("OnAfterLoadingSave failed: " + ex);
-            }
-        }
-
         public void OnHeroInit()
         {
-            GameMenu.AllowGameDataHooks = true;
             GameMenu.MarkInRun();
-            try
-            {
-                object? gmObj = game ?? (object?)ModCore.Modules.Game.Instance;
-                if (gmObj == null)
-                {
-                    Logger.Warning("[NetMod] OnHeroInit: game instance is null");
-                    return;
-                }
-
-                Hero? capturedHero = null;
-                try
-                {
-                    dynamic gmDyn = gmObj;
-                    capturedHero = gmDyn.hero as Hero;
-                }
-                catch
-                {
-                }
-
-                if (capturedHero != null)
-                {
-                    me = capturedHero;
-                }
-
-                _lastGameRef = gmObj;
-                _initialGhostSpawned = false;
-
-                if (me != null)
-                {
-                    string? heroTypeStr = null;
-                    object? heroTeam = null;
-                    try
-                    {
-                        dynamic h = DynamicAccessUtils.AsDynamic(me);
-                        try { heroTypeStr = (string?)h.type; } catch { }
-                        try { heroTeam = (object?)h.team; } catch { }
-                        try { _lastLevelRef = (object?)h._level; } catch { }
-
-                        _lastGameRef = ExtractGameFromLevel(_lastLevelRef) ?? gmObj ?? _lastGameRef;
-                    }
-                    catch { }
-
-                    heroTypeStr ??= me.GetType().FullName;
-                    Logger.Information("[NetMod] Hero captured (type={Type}, team={Team})",
-                        heroTypeStr ?? "unknown",
-                        heroTeam ?? "unknown");
-                    TryInitialGhostSpawn();
-                }
-                else
-                {
-                    Logger.Information("[NetMod] Hero is null");
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"[NetMod] OnHeroInit error: {ex.Message}");
-            }
         }
-
-
-
-
-
-        public static void ApplyGameDataBytes(byte[] data)
-        {
-            try
-            {
-                var packet = new
-                {
-                    payload = string.Empty,
-                    hx = Convert.ToBase64String(data),
-                    extra = (object?)null,
-                    hxbit = true
-                };
-
-                var json = Newtonsoft.Json.JsonConvert.SerializeObject(packet);
-                var obj = HaxeProxySerializer.Deserialize<dc.tool.GameData>(json);
-                if (obj != null)
-                {
-                    GameMenu.ApplyFullGameData(obj);
-                    Log.Information("[NetMod] Applied GameData binary sync.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error("[NetMod] ApplyGameDataBytes failed: {Ex}", ex);
-            }
-        }
-
-        public static void OnClientReceiveGameData(byte[] bytes)
-        {
-            ApplyGameDataBytes(bytes);
-        }
-
-
 
         public void OnFrameUpdate(double dt)
         {
@@ -273,23 +198,41 @@ namespace DeadCellsMultiplayerMod
 
 
         public int last_cx, last_cy;
+        private const double CellSizePixels = 16.0;
 
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
+            if (_companion == null) return;
             SendHeroCoords();
             ReceiveGhostCoords();
+            checkOnLevel();
+        }
+
+        void checkOnLevel()
+        {
+            if(_companion.awake == true) return;
             ReceiveGhostLevel();
+            if(roomsMap != _remoteLevelText) return;
+            Level level = _companion.set_level(me._level);
+            _companion.awake = false;
+            me.awake = false;
+            _companion.wakeup(level, me.cx, me.cy);
+            me.wakeup(level, me.cx, me.cy);
+            _ghost.ReinitGFX(_companion);
+            _ghost.DisableHero(_companion);
+            _ghost.ReinitGFX(me);
+            _companion.awake = true;
         }
 
 
-        private void SendLevel()
+        private void SendLevel(string lvl)
         {
             if (_netRole == NetRole.None) return;
             var net = _net;
             var hero = me;
 
             if (net == null || hero == null || _companion == null) return;
-            net.LevelSend(hero._level.uniqId.ToString());
+            net.LevelSend(lvl);
 
         }
 
@@ -421,107 +364,5 @@ namespace DeadCellsMultiplayerMod
             GameMenu.SetRole(_netRole);
         }
 
-        private static object? ExtractGameFromLevel(object? levelObj)
-        {
-            if (levelObj == null) return null;
-            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var type = levelObj.GetType();
-            return type.GetProperty("game", Flags)?.GetValue(levelObj) ??
-                   type.GetField("game", Flags)?.GetValue(levelObj);
-        }
-
-        private void TryInitialGhostSpawn()
-        {
-            if (_netRole == NetRole.None) return;
-            if (_initialGhostSpawned) return;
-            if (me == null || _lastLevelRef == null || _lastGameRef == null) return;
-
-            try
-            {
-                dynamic h = DynamicAccessUtils.AsDynamic(me);
-                int cx = 0, cy = 0;
-                double xr = 0.5, yr = 1;
-                try { cx = (int)h.cx; } catch { }
-                try { cy = (int)h.cy; } catch { }
-                try { xr = (double)h.xr; } catch { }
-                try { yr = (double)h.yr; } catch { }
-                if (cx < 0 || cy < 0) return;
-
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning("[NetMod] Initial ghost spawn failed: {Message}", ex.Message);
-            }
-        }
-
-        private static dc.tool.GameData? TryGetGameData(dc.User data)
-        {
-            try
-            {
-                dynamic d = DynamicAccessUtils.AsDynamic(data);
-                var gd = d?.gameData as dc.tool.GameData;
-                if (gd != null) return gd;
-            }
-            catch { }
-
-            try
-            {
-                const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-                var type = data.GetType();
-                var prop = type.GetProperty("gameData", flags);
-                if (prop != null)
-                {
-                    var gd = prop.GetValue(data) as dc.tool.GameData;
-                    if (gd != null) return gd;
-                }
-
-                var field = type.GetField("gameData", flags);
-                if (field != null)
-                {
-                    var gd = field.GetValue(data) as dc.tool.GameData;
-                    if (gd != null) return gd;
-                }
-            }
-            catch { }
-
-            return null;
-        }
-
-        public void ForceGhostEnterZDoor(int cx, int cy, string destMapId, int linkId)
-        {
-            if (_companion == null || game?.hero?._level == null) return;
-
-            var zDoor = FindZDoorAtPosition(cx, cy);
-            var ghostHero = _companion as Hero;
-
-            if (zDoor != null && ghostHero != null)
-            {
-                zDoor.enter(ghostHero);
-                Logger.Debug($"[NetMod] Ghost entered ZDoor at ({cx},{cy})");
-            }
-            else
-            {
-                Logger.Warning($"[NetMod] ZDoor not found at ({cx},{cy})");
-            }
-        }
-
-        private ZDoor? FindZDoorAtPosition(int cx, int cy)
-        {
-            if (game?.hero?._level == null) return null;
-
-
-            var entities = game.hero._level.entities;
-            if (entities != null)
-            {
-                foreach (var entity in entities)
-                {
-                    if (entity is ZDoor zDoor && zDoor.cx == cx && zDoor.cy == cy)
-                    {
-                        return zDoor;
-                    }
-                }
-            }
-            return null;
-        }
     }
 }

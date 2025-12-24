@@ -9,11 +9,22 @@ using dc.ui;
 using HaxeProxy.Runtime;
 using Newtonsoft.Json;
 using Hashlink.Virtuals;
+using Serilog;
+using ModCore.Utitities;
 
 namespace DeadCellsMultiplayerMod
 {
     internal static partial class GameMenu
     {
+        private static readonly object Sync = new();
+        private static ILogger? _log;
+        private static NetRole _role = NetRole.None;
+        private static bool _inActualRun;
+        private static int? _serverSeed;
+        private static int? _remoteSeed;
+        private const int MaxSeed = 999_999;
+        public static NetNode? NetRef { get; set; }
+
         private static bool _menuHooksAttached;
         private static WeakReference<TitleScreen?>? _titleScreenRef;
         private static string _mpIp = "127.0.0.1";
@@ -22,11 +33,11 @@ namespace DeadCellsMultiplayerMod
         private static bool _waitingForHost;
         private static bool _pendingAutoStart;
         private static bool _levelDescArrived;
-        private static bool _gameDataArrived;
         private static bool _autoStartTriggered;
         private static bool _mainMenuButtonAdded;
         private static bool _suppressAutoButton;
         private static bool _worldExitHandled;
+        private static bool _seedArrived;
         private static string _username = "guest";
         private static string _playerId = Guid.NewGuid().ToString("N");
         public static string Username => _username;
@@ -36,8 +47,9 @@ namespace DeadCellsMultiplayerMod
         private static List<PlayerInfo> _playersDisplay = new();
         private static bool _inHostStatusMenu;
         private static bool _inClientWaitingMenu;
-        private static GameDataSync? _clientSaveBackup;
         private static bool _genArrived;
+        private static LevelDescSync? _cachedLevelDescSync;
+        private static RunParamsResolved? _latestResolvedRunParams;
 
         private static void InitializeMenuUiHooks()
         {
@@ -57,6 +69,190 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        public static void Initialize(ILogger logger)
+        {
+            lock (Sync)
+            {
+                _log = logger;
+                _role = NetRole.None;
+                _inActualRun = false;
+                _serverSeed = null;
+                _remoteSeed = null;
+                _levelDescArrived = false;
+                _pendingAutoStart = false;
+                _autoStartTriggered = false;
+                _genArrived = false;
+                _seedArrived = false;
+                _cachedLevelDescSync = null;
+                _latestResolvedRunParams = null;
+            }
+
+            InitializeMenuUiHooks();
+        }
+
+        public static void MarkInRun()
+        {
+            lock (Sync)
+            {
+                _inActualRun = true;
+            }
+        }
+
+        public static void SetRole(NetRole role)
+        {
+            lock (Sync)
+            {
+                _role = role;
+            }
+        }
+
+        public static int ForceGenerateServerSeed(string reason)
+        {
+            var seed = Random.Shared.Next(1, MaxSeed + 1);
+            lock (Sync)
+            {
+                _serverSeed = seed;
+            }
+            _log?.Information("[NetMod] Generated host seed {Seed} ({Reason})", seed, reason);
+            return seed;
+        }
+
+        public static bool TryGetHostRunSeed(out int seed)
+        {
+            lock (Sync)
+            {
+                if (_serverSeed.HasValue)
+                {
+                    seed = _serverSeed.Value;
+                    return true;
+                }
+            }
+
+            seed = 0;
+            return false;
+        }
+
+        public static void ReceiveHostRunSeed(int seed)
+        {
+            lock (Sync)
+            {
+                _remoteSeed = seed;
+                if (_role == NetRole.Client && !_inActualRun)
+                {
+                    _seedArrived = true;
+                    _pendingAutoStart = true;
+                }
+            }
+            _log?.Information("[NetMod] Client received host seed {Seed}", seed);
+        }
+
+        public static bool TryGetRemoteSeed(out int seed)
+        {
+            lock (Sync)
+            {
+                if (_remoteSeed.HasValue)
+                {
+                    seed = _remoteSeed.Value;
+                    return true;
+                }
+            }
+
+            seed = 0;
+            return false;
+        }
+
+        public static void ReceiveRunParams(string json)
+        {
+            try
+            {
+                var rp = JsonConvert.DeserializeObject<RunParams>(json);
+                if (rp == null) return;
+
+                UpdateResolvedRunParams(rp, fromNetwork: true);
+                _log?.Information("[NetMod] Client received run params");
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to parse run params: {Message}", ex.Message);
+            }
+        }
+
+        public static void ReceiveLevelDesc(string json)
+        {
+            try
+            {
+                var sync = JsonConvert.DeserializeObject<LevelDescSync>(json);
+                if (sync == null) return;
+
+                CacheLevelDescSync(sync);
+                NotifyLevelDescReceived();
+                _log?.Information("[NetMod] Client received LevelDesc");
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to parse LevelDesc: {Message}", ex.Message);
+            }
+        }
+
+        private static void SendCachedGeneratePayload()
+        {
+            var net = NetRef;
+            if (net == null) return;
+
+            LevelDescSync? levelDesc;
+            RunParams? runParams;
+            lock (Sync)
+            {
+                levelDesc = _cachedLevelDescSync;
+                runParams = _latestResolvedRunParams?.Data;
+            }
+
+            if (levelDesc == null && runParams == null)
+                return;
+
+            var payload = new
+            {
+                levelDesc = levelDesc ?? new LevelDescSync(),
+                runParams = runParams ?? new RunParams(),
+                rawDesc = string.Empty
+            };
+            var json = JsonConvert.SerializeObject(payload);
+            net.SendGeneratePayload(json);
+        }
+
+        private static void CacheLevelDescSync(LevelDescSync? sync)
+        {
+            lock (Sync)
+            {
+                _cachedLevelDescSync = sync;
+            }
+        }
+
+        private static LevelDescSync? GetCachedLevelDescSync()
+        {
+            lock (Sync)
+            {
+                return _cachedLevelDescSync;
+            }
+        }
+
+        private static void UpdateResolvedRunParams(RunParams rp, bool fromNetwork)
+        {
+            lock (Sync)
+            {
+                _latestResolvedRunParams = new RunParamsResolved { Data = rp };
+            }
+        }
+
+        private static bool TryGetResolvedRunParams(out RunParamsResolved? rp)
+        {
+            lock (Sync)
+            {
+                rp = _latestResolvedRunParams;
+                return rp != null;
+            }
+        }
+
         public static void TickMenu(double dt)
         {
             bool shouldStart = false;
@@ -66,9 +262,7 @@ namespace DeadCellsMultiplayerMod
                 if (_role == NetRole.Client &&
                     !_inActualRun &&
                     _pendingAutoStart &&
-                    _levelDescArrived &&
-                    _gameDataArrived &&
-                    _genArrived &&
+                    _seedArrived &&
                     !_autoStartTriggered)
                 {
                     _autoStartTriggered = true;
@@ -85,7 +279,7 @@ namespace DeadCellsMultiplayerMod
                 try
                 {
                     ts.startNewGame(custom: true);
-                    _log?.Information("[NetMod] Auto-started new game after LDESC+GDATA");
+                    _log?.Information("[NetMod] Auto-started new game after seed");
                 }
                 catch (Exception ex)
                 {
@@ -102,18 +296,6 @@ namespace DeadCellsMultiplayerMod
                 lock (Sync)
                 {
                     _autoStartTriggered = false;
-                    _pendingAutoStart = true;
-                }
-            }
-        }
-
-        public static void NotifyGameDataReceived()
-        {
-            lock (Sync)
-            {
-                if (_role == NetRole.Client && !_inActualRun)
-                {
-                    _gameDataArrived = true;
                     _pendingAutoStart = true;
                 }
             }
@@ -309,14 +491,13 @@ namespace DeadCellsMultiplayerMod
                 }
                 else if (role == NetRole.Client)
                 {
-                    BackupClientSave();
                     ModEntry.Instance.StartClientFromMenu(_mpIp, _mpPort);
                     lock (Sync)
                     {
                         _levelDescArrived = false;
-                        _gameDataArrived = false;
                         _pendingAutoStart = false;
                         _autoStartTriggered = false;
+                        _seedArrived = false;
                     }
                     _waitingForHost = true;
                 }
@@ -391,11 +572,6 @@ namespace DeadCellsMultiplayerMod
             if (roleBefore == NetRole.Host)
             {
                 try { NetRef?.SendKick(); } catch { }
-            }
-
-            if (roleBefore == NetRole.Client)
-            {
-                RestoreClientSave();
             }
 
             try
@@ -589,18 +765,6 @@ namespace DeadCellsMultiplayerMod
                 _log?.Warning("[NetMod] Failed to re-send run params: {Message}", ex.Message);
             }
 
-            try
-            {
-                var gd = GetCachedGameDataSync();
-                if (gd != null)
-                {
-                    net.SendGameData(JsonConvert.SerializeObject(gd));
-                }
-            }
-            catch (Exception ex)
-            {
-                _log?.Warning("[NetMod] Failed to re-send GameDataSync: {Message}", ex.Message);
-            }
         }
 
         private static bool AllPlayersReady()
@@ -610,84 +774,12 @@ namespace DeadCellsMultiplayerMod
             return _playersDisplay.All(p => p.Ready);
         }
 
-        private static string GetBackupPath()
-        {
-            var configDir = Path.GetDirectoryName(GetConfigPath()) ?? Environment.CurrentDirectory;
-            return Path.Combine(configDir, "client_backup.json");
-        }
-
-        private static void BackupClientSave()
-        {
-            try
-            {
-                if (_role != NetRole.None && _role != NetRole.Client) return;
-
-                var gd = GetGameDataInstance();
-                if (gd == null) return;
-
-                var sync = BuildGameDataSync(gd);
-                _clientSaveBackup = sync;
-
-                try
-                {
-                    var json = JsonConvert.SerializeObject(sync);
-                    File.WriteAllText(GetBackupPath(), json);
-                }
-                catch { }
-
-                _log?.Information("[NetMod] Client save backed up before multiplayer connect");
-            }
-            catch (Exception ex)
-            {
-                _log?.Warning("[NetMod] Failed to backup client save: {Message}", ex.Message);
-            }
-        }
-
-        private static void RestoreClientSave()
-        {
-            try
-            {
-                GameDataSync? sync = _clientSaveBackup;
-                if (sync == null)
-                {
-                    try
-                    {
-                        var path = GetBackupPath();
-                        if (File.Exists(path))
-                        {
-                            var json = File.ReadAllText(path);
-                            sync = JsonConvert.DeserializeObject<GameDataSync>(json);
-                        }
-                    }
-                    catch { }
-                }
-
-                if (sync == null) return;
-
-                var gd = GetGameDataInstance();
-                if (gd != null)
-                {
-                    ApplyGameDataSyncToInstance(gd, sync, null);
-                    _log?.Information("[NetMod] Client save restored after multiplayer");
-                }
-
-                _clientSaveBackup = null;
-            }
-            catch (Exception ex)
-            {
-                _log?.Warning("[NetMod] Failed to restore client save: {Message}", ex.Message);
-            }
-        }
-
         private static void ClearNetworkCaches()
         {
             CacheLevelDescSync(null);
-            CacheGameDataSync(null);
             _latestResolvedRunParams = null;
-            _lastAppliedSync = null;
             _genArrived = false;
-            _cachedRawLevelDesc = null;
-            _clientSaveBackup = null;
+            _seedArrived = false;
         }
 
         public static void ReceiveGeneratePayload(string json)
@@ -732,6 +824,61 @@ namespace DeadCellsMultiplayerMod
             {
                 _log?.Warning("[NetMod] Failed to receive generate payload: {Message}", ex.Message);
             }
+        }
+
+        private static bool IsChallengeLevel(string levelId)
+        {
+            if (string.IsNullOrWhiteSpace(levelId)) return false;
+            return levelId.IndexOf("challenge", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private sealed class RunParams
+        {
+            public int lvl;
+            public bool isCustom;
+            public bool mode;
+            public int bossRune;
+            public List<double>? forge;
+            public List<HistoryEntry>? history;
+            public List<string>? meta;
+            public int? runNum;
+            public string? endKind;
+            public bool? hasMods;
+        }
+
+        private sealed class RunParamsResolved
+        {
+            public RunParams Data = null!;
+        }
+
+        private sealed class HistoryEntry
+        {
+            public int brut;
+            public int cellsEarned;
+            public string? level;
+            public int surv;
+            public int tact;
+            public double time;
+        }
+
+        private sealed class LevelDescSync
+        {
+            public string LevelId { get; set; } = string.Empty;
+            public string Name { get; set; } = string.Empty;
+            public int MapDepth { get; set; }
+            public double MobDensity { get; set; }
+            public int MinGold { get; set; }
+            public double EliteRoomChance { get; set; }
+            public double EliteWanderChance { get; set; }
+            public int DoubleUps { get; set; }
+            public int TripleUps { get; set; }
+            public int QuarterUpsBC3 { get; set; }
+            public int QuarterUpsBC4 { get; set; }
+            public int WorldDepth { get; set; }
+            public int BaseLootLevel { get; set; }
+            public double BonusTripleScrollAfterBC { get; set; }
+            public double CellBonus { get; set; }
+            public int Group { get; set; }
         }
 
         private sealed class MenuConfig
@@ -907,6 +1054,58 @@ namespace DeadCellsMultiplayerMod
             var color = Ref<int>.From(ref colorVal);
             var cb = new HlAction(() => { });
             screen.addMenu(labelStr, cb, helpStr, false, color);
+        }
+
+        private static object? GetMemberValue(object? obj, string name, bool ignoreCase)
+        {
+            if (obj == null || string.IsNullOrWhiteSpace(name)) return null;
+
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var type = obj.GetType();
+            var flags = ignoreCase ? Flags | BindingFlags.IgnoreCase : Flags;
+            try
+            {
+                var prop = type.GetProperty(name, flags);
+                if (prop != null) return prop.GetValue(obj);
+
+                var field = type.GetField(name, flags);
+                if (field != null) return field.GetValue(obj);
+            }
+            catch { }
+
+            return null;
+        }
+
+        private static bool TrySetMember(object? obj, string name, object? value)
+        {
+            if (obj == null || string.IsNullOrWhiteSpace(name)) return false;
+
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+            var type = obj.GetType();
+            try
+            {
+                var prop = type.GetProperty(name, Flags);
+                if (prop != null && prop.CanWrite)
+                {
+                    prop.SetValue(obj, value);
+                    return true;
+                }
+
+                var field = type.GetField(name, Flags);
+                if (field != null)
+                {
+                    field.SetValue(obj, value);
+                    return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private static dc.String MakeHLString(string value)
+        {
+            return value.AsHaxeString();
         }
 
         private static bool GetIsMainMenu(TitleScreen screen)

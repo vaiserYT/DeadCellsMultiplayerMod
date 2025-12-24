@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using System.Globalization;
 using DeadCellsMultiplayerMod;
 using HaxeProxy.Runtime;
-using Newtonsoft.Json;
 using Serilog;
 using dc;
 
@@ -247,22 +246,6 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
-                    if (line.StartsWith("GDATA|"))
-                    {
-                        var payload = line["GDATA|".Length..];
-                        lock (_sync) _hasRemote = true;
-                        ReceiveGameData(payload);
-                        continue;
-                    }
-
-                    if (line.StartsWith("GDB|"))
-                    {
-                        var payload = line["GDB|".Length..];
-                        lock (_sync) _hasRemote = true;
-                        ReceiveGameDataBytes(payload);
-                        continue;
-                    }
-
                     if (line.StartsWith("GEN|"))
                     {
                         var payload = line["GEN|".Length..];
@@ -393,18 +376,6 @@ public sealed class NetNode : IDisposable
         _log.Information("[NetNode] Sent LevelDesc payload");
     }
 
-    public void SendGameData(string json)
-    {
-        if (_stream == null || _client == null || !_client.Connected)
-        {
-            _log.Information("[NetNode] Skip sending GameData: no connected client");
-            return;
-        }
-
-        SendRaw("GDATA|" + json);
-        _log.Information("[NetNode] Sent GameData payload ({Length} bytes)", json.Length);
-    }
-
     public void SendGeneratePayload(string json)
     {
         if (_stream == null || _client == null || !_client.Connected)
@@ -434,54 +405,6 @@ public sealed class NetNode : IDisposable
     {
         if (_stream == null || _client == null || !_client.Connected) return;
         SendRaw("KICK");
-    }
-
-    public void ReceiveGameData(string json)
-    {
-            try
-            {
-                var sync = JsonConvert.DeserializeObject<GameDataSync>(json);
-                if (sync != null)
-                {
-                    GameMenu.ApplyGameDataSync(sync);
-                    GameMenu.NotifyGameDataReceived();
-                    _log.Information("[NetNode] Applied GameDataSync");
-                }
-                else
-                {
-                    _log.Warning("[NetNode] Received GameData, but deserializer returned null");
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.Error("[NetNode] Failed to apply GameDataSync: {Message}", ex);
-        }
-    }
-
-    public void SendGameDataBytes(byte[] bytes)
-    {
-        if (_stream == null || _client == null || !_client.Connected)
-        {
-            _log.Information("[NetNode] Skip sending GameData bytes: no connected client");
-            return;
-        }
-
-        var b64 = Convert.ToBase64String(bytes);
-        SendRaw("GDB|" + b64);
-        _log.Information("[NetNode] Sent GameData bytes ({Length} bytes)", bytes.Length);
-    }
-
-    private void ReceiveGameDataBytes(string b64)
-    {
-        try
-        {
-            var bytes = Convert.FromBase64String(b64);
-            ModEntry.OnClientReceiveGameData(bytes);
-        }
-        catch (Exception ex)
-        {
-            _log.Error("[NetNode] Failed to receive GameData bytes: {Error}", ex);
-        }
     }
 
     private void SendRaw(string payload)
