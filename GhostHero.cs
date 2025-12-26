@@ -6,6 +6,7 @@ using Serilog;
 using dc.en;
 using dc.tool;
 using dc.h3d.mat;
+using dc.libs.heaps.slib;
 
 
 
@@ -18,25 +19,24 @@ namespace DeadCellsMultiplayerMod
 
         private Texture hero_nrmTex;
 
+        private SpriteLib hero_lib;
+
         private dc.String hero_group;
         private static ILogger? _log;
 
         private KingSkin king;
 
         
-        public GhostHero(dc.pr.Game game, Hero me, Texture texture, dc.String group)
+        public GhostHero(dc.pr.Game game, Hero me)
         {
             _game = game;
             _me = me;
-            hero_nrmTex = texture;
-            hero_group = group;
         }
 
 
         public KingSkin CreateGhostKing(Level level)
         {
             king = new KingSkin(level, (int)_me.spr.x + 10, (int)_me.spr.y);
-            king.initSprite(_me.spr.lib, hero_group, 0.5, 0.5, 9, true, null, hero_nrmTex);
             king.init();
             king.set_level(level);
             king.set_team(_me._team);

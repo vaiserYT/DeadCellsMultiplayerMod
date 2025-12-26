@@ -56,10 +56,6 @@ namespace DeadCellsMultiplayerMod
 
         public Hero[] heroes = Array.Empty<Hero>();
 
-        public Texture hero_nrmTex;
-
-        public dc.String hero_group;
-
         public static string roomsMap;
 
 
@@ -98,19 +94,6 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
-            Hook_Entity.initSprite += Hook_Entity_initSprite;
-        }
-
-
-        private void Hook_Entity_initSprite(Hook_Entity.orig_initSprite orig, Entity self, SpriteLib lib, dc.String group, double? xr, double? yr, int? layer, bool? lighted, double? depth, Texture nrmTex)
-        {
-            if(self == me)
-            {
-                // Logger.Warning($"lib={lib}|group={group}|xr={xr}|yr={yr}|layer={layer}lighted={lighted}|depth={depth}|nrmTex={nrmTex.toString()}");
-                hero_group = group;
-                hero_nrmTex = nrmTex;
-            }
-            orig(self, lib, group, xr, yr, layer, lighted, depth, nrmTex);
         }
 
 
@@ -187,7 +170,7 @@ namespace DeadCellsMultiplayerMod
             // Logger.Warning($"self: {self}");
             // Logger.Warning($"heroes[0].lastRoomId: {self.lastRoomId}");
             orig(self, lvl, cx, cy);
-            if(_ghost == null) _ghost = new GhostHero(game, me, hero_nrmTex, hero_group);
+            if(_ghost == null) _ghost = new GhostHero(game, me);
             if (_netRole == NetRole.None) return;
 
             // if (heroes.Length < players_count && game != null && me != null)
