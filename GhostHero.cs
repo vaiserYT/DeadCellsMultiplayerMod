@@ -4,6 +4,8 @@ using HaxeProxy.Runtime;
 using ModCore.Utitities;
 using Serilog;
 using dc.en;
+using dc.tool;
+using dc.h3d.mat;
 
 
 
@@ -13,23 +15,28 @@ namespace DeadCellsMultiplayerMod
     {
         private readonly dc.pr.Game _game;
         private readonly Hero _me;
-        private Hero? _companion;
+
+        private Texture hero_nrmTex;
+
+        private dc.String hero_group;
         private static ILogger? _log;
 
         private KingSkin king;
 
         
-        public GhostHero(dc.pr.Game game, Hero me)
+        public GhostHero(dc.pr.Game game, Hero me, Texture texture, dc.String group)
         {
             _game = game;
             _me = me;
+            hero_nrmTex = texture;
+            hero_group = group;
         }
 
-        public Hero? Companion => _companion;
 
         public KingSkin CreateGhostKing(Level level)
         {
             king = new KingSkin(level, (int)_me.spr.x + 10, (int)_me.spr.y);
+            king.initSprite(_me.spr.lib, hero_group, 0.5, 0.5, 9, true, null, hero_nrmTex);
             king.init();
             king.set_level(level);
             king.set_team(_me._team);
@@ -45,57 +52,21 @@ namespace DeadCellsMultiplayerMod
             king.setPosCase(x, y, xr, yr);
         }
 
-        public Hero? CreateGhost(Level level)
-        {
-            if (level == null) return null;
-            _companion = Hero.Class.create(_game, "Beheaded".AsHaxeString());
-            _companion.init();
-            _companion.awake = false;
-
-            _companion.set_level(level);
-            _companion.set_team(_me._team);
-            _companion.initGfx();
-            _companion.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
-            _companion.visible = true;
-            _companion.initAnims();
-            _companion.wakeup(level, _me.cx, _me.cy);
-            DisableHero(_companion);
-            SetLabel("TEST");
-            // _companion.activeSkillsManager.dispose();
-
-            return _companion;
-        }
-
-        public void ReinitGFX(Hero h)
-        {
-            h.disposeGfx();
-            h.initGfx();
-        }
-        public void DisableHero(Hero h)
-        {
-            if(h == null) return;
-            bool disposeFlagValue = false;
-            var disposeFlag = new Ref<bool>(ref disposeFlagValue);
-            h.controller?.dispose(disposeFlag);
-            h.mainSkillsManager.dispose();
-            h.awake = false;
-
-        }
 
         public void Teleport(int x, int y, double? xr, double? yr)
         {
-            _companion?.setPosCase(x, y, xr, yr);
+            king?.setPosCase(x, y, xr, yr);
         }
 
         public void TeleportByPixels(double x, double y)
         {
-            _companion?.setPosPixel(x, y);
+            king?.setPosPixel(x, y);
         }
 
         public void SetLabel(string? text, int? color = null)
         {
-            if (_companion == null || _me == null) return;
-            _companion.say(text.AsHaxeString(), 0, 0, 8);
+            if (king == null || _me == null) return;
+            king.say(text.AsHaxeString(), 0, 0, 8);
         //    _Assets _Assets = Assets.Class;
             // dc.h2d.Text text_h2d = _Assets.makeText(text.AsHaxeString(), dc.ui.Text.Class.COLORS.get("ST".AsHaxeString()), true, _companion.spr);
 

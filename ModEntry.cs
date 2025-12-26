@@ -20,6 +20,8 @@ using dc.hl.types;
 using HaxeProxy.Runtime;
 using dc;
 using dc.shader;
+using dc.libs.heaps.slib;
+using dc.h3d.mat;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -54,6 +56,9 @@ namespace DeadCellsMultiplayerMod
 
         public Hero[] heroes = Array.Empty<Hero>();
 
+        public Texture hero_nrmTex;
+
+        public dc.String hero_group;
 
         public static string roomsMap;
 
@@ -93,6 +98,19 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
+            Hook_Entity.initSprite += Hook_Entity_initSprite;
+        }
+
+
+        private void Hook_Entity_initSprite(Hook_Entity.orig_initSprite orig, Entity self, SpriteLib lib, dc.String group, double? xr, double? yr, int? layer, bool? lighted, double? depth, Texture nrmTex)
+        {
+            if(self == me)
+            {
+                // Logger.Warning($"lib={lib}|group={group}|xr={xr}|yr={yr}|layer={layer}lighted={lighted}|depth={depth}|nrmTex={nrmTex.toString()}");
+                hero_group = group;
+                hero_nrmTex = nrmTex;
+            }
+            orig(self, lib, group, xr, yr, layer, lighted, depth, nrmTex);
         }
 
 
@@ -169,11 +187,12 @@ namespace DeadCellsMultiplayerMod
             // Logger.Warning($"self: {self}");
             // Logger.Warning($"heroes[0].lastRoomId: {self.lastRoomId}");
             orig(self, lvl, cx, cy);
-            // if (_netRole == NetRole.None) return;
+            if(_ghost == null) _ghost = new GhostHero(game, me, hero_nrmTex, hero_group);
+            if (_netRole == NetRole.None) return;
 
             // if (heroes.Length < players_count && game != null && me != null)
             // {
-            //     TryCreateGhost(me._level);
+            //     _companion = _ghost.CreateGhost(me._level);
             // }
         }
 
@@ -200,11 +219,10 @@ namespace DeadCellsMultiplayerMod
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
             // if (_companion == null) return;
-            // _ghost.Teleport(me.cx + 5, me.cy, me.xr, me.yr);
-            // SendHeroCoords();
-            // ReceiveGhostCoords();
+            // _ghost.Teleport(me.cx - 5, me.cy, me.xr, me.yr);
+            SendHeroCoords();
+            ReceiveGhostCoords();
             // checkOnLevel();
-            _ghost = new GhostHero(game, me);
             if(_ghost == null || me == null || _companionKing != null || me.cx == 0 || me.cy == 0) return; 
             _companionKing = _ghost.CreateGhostKing(me._level);
             Logger.Debug($"cx: {_companionKing.cx}, cy: {_companionKing.cy}");
@@ -223,9 +241,6 @@ namespace DeadCellsMultiplayerMod
             me.awake = false;
             _companion.wakeup(level, me.cx, me.cy);
             me.wakeup(level, me.cx, me.cy);
-            _ghost.ReinitGFX(_companion);
-            _ghost.DisableHero(_companion);
-            _ghost.ReinitGFX(me);
             _companion.awake = true;
         }
 
@@ -284,7 +299,7 @@ namespace DeadCellsMultiplayerMod
 
             if (net.TryGetRemote(out var rcx, out var rcy, out var rxr, out var ryr))
             {
-                ghost.Teleport(rcx, rcy, rxr, ryr);
+                ghost.TeleportKing(rcx, rcy, rxr, ryr);
             }
         }
 
@@ -371,24 +386,6 @@ namespace DeadCellsMultiplayerMod
             GameMenu.SetRole(_netRole);
         }
 
-        private void TryCreateGhost(Level? level)
-        {
-            if (_netRole == NetRole.None || _ghost != null || _companion != null) return;
-            if (game == null || me == null) return;
-
-            var resolvedLevel = level ?? me._level;
-            if (resolvedLevel == null)
-            {
-                _ghostPending = true;
-                return;
-            }
-
-            _ghostPending = false;
-            _ghost ??= new GhostHero(game, me);
-            _companion = _ghost.CreateGhost(resolvedLevel);
-            if (_companion != null)
-                Logger.Debug($"[NetMod] Hook_Hero.wakeup created ghost = {_companion}");
-        }
 
     }
 }
