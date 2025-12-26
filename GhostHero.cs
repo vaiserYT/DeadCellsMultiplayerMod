@@ -1,18 +1,10 @@
-﻿using System;
-using System.Reflection;
-using dc.en;
-using dc.en.hero;
-using dc.haxe;
-using dc.level;
+﻿using dc.en;
 using dc.pr;
-using dc.tool.heroHeads;
 using HaxeProxy.Runtime;
-using ModCore.Events.Interfaces.Game.Hero;
-using ModCore.Mods;
 using ModCore.Utitities;
-using Serilog.Core;
 using Serilog;
-using dc.tool;
+using dc.en;
+
 
 
 namespace DeadCellsMultiplayerMod
@@ -24,6 +16,8 @@ namespace DeadCellsMultiplayerMod
         private Hero? _companion;
         private static ILogger? _log;
 
+        private KingSkin king;
+
         
         public GhostHero(dc.pr.Game game, Hero me)
         {
@@ -32,6 +26,24 @@ namespace DeadCellsMultiplayerMod
         }
 
         public Hero? Companion => _companion;
+
+        public KingSkin CreateGhostKing(Level level)
+        {
+            king = new KingSkin(level, (int)_me.spr.x + 10, (int)_me.spr.y);
+            king.init();
+            king.set_level(level);
+            king.set_team(_me._team);
+            king.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
+            king.visible = true;
+            king.initGfx();
+            Log.Debug($"king.initDone = {king.initDone}");
+            return king;
+        }
+
+        public void TeleportKing(int x, int y, double? xr, double? yr)
+        {
+            king.setPosCase(x, y, xr, yr);
+        }
 
         public Hero? CreateGhost(Level level)
         {
@@ -42,14 +54,13 @@ namespace DeadCellsMultiplayerMod
 
             _companion.set_level(level);
             _companion.set_team(_me._team);
-            SetLabel("TEST");
             _companion.initGfx();
             _companion.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             _companion.visible = true;
             _companion.initAnims();
             _companion.wakeup(level, _me.cx, _me.cy);
             DisableHero(_companion);
-            
+            SetLabel("TEST");
             // _companion.activeSkillsManager.dispose();
 
             return _companion;
@@ -83,26 +94,10 @@ namespace DeadCellsMultiplayerMod
 
         public void SetLabel(string? text, int? color = null)
         {
-            if (_companion == null) return;
-
-            var labelText = text;
-            var colorValue = color ?? 0xFFFFFF;
-
-
-            var text1 = new dc.ui.Text(
-                _companion.heroHead.parent,
-                true,
-                false,
-                Ref<double>.Null,
-                new dc.ui.ImageVerticalAlign.Middle(),
-                null);
-
-            text1.rawText = labelText.AsHaxeString();
-
-
-            var colorValueRef = new Ref<int>(ref colorValue);
-
-            _companion.setLabel(text1, colorValue, colorValueRef);
+            if (_companion == null || _me == null) return;
+            _companion.say(text.AsHaxeString(), 0, 0, 8);
+        //    _Assets _Assets = Assets.Class;
+            // dc.h2d.Text text_h2d = _Assets.makeText(text.AsHaxeString(), dc.ui.Text.Class.COLORS.get("ST".AsHaxeString()), true, _companion.spr);
 
             
         }

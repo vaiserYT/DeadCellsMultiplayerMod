@@ -19,6 +19,7 @@ using dc.level;
 using dc.hl.types;
 using HaxeProxy.Runtime;
 using dc;
+using dc.shader;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -40,6 +41,7 @@ namespace DeadCellsMultiplayerMod
         public dc.pr.Game? game;
 
         public static Hero _companion = null;
+        public static KingSkin _companionKing = null;
         static Hero me = null;
 
         int players_count = 2;
@@ -73,8 +75,8 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_mygameinit attached");
             Hook_Hero.wakeup += hook_hero_wakeup;
             Logger.Debug("[NetMod] Hook_Hero.wakeup attached");
-            Hook_Hero.onLevelChanged += hook_level_changed;
-            Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
+            // Hook_Hero.onLevelChanged += hook_level_changed;
+            // Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
             Hook__LevelTransition.gotoSub += hook_gotosub;
             Logger.Debug("[NetMod] Hook__LevelTransition.gotoSub attached");
             Hook_ZDoor.enter += Hook_ZDoor_enter;
@@ -91,9 +93,6 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
-
-
-
         }
 
 
@@ -160,23 +159,22 @@ namespace DeadCellsMultiplayerMod
 
         public void hook_hero_wakeup(Hook_Hero.orig_wakeup orig, Hero self, Level lvl, int cx, int cy)
         {
-            if (Array.IndexOf(heroes, self) < 0)
-            {
-                var newLen = heroes.Length + 1;
-                Array.Resize(ref heroes, newLen);
-                heroes[newLen - 1] = self;
-            }
-            me = heroes[0];
-            Logger.Warning($"self: {self}");
-            Logger.Warning($"heroes[0].lastRoomId: {self.lastRoomId}");
+            // if (Array.IndexOf(heroes, self) < 0)
+            // {
+            //     var newLen = heroes.Length + 1;
+            //     Array.Resize(ref heroes, newLen);
+            //     heroes[newLen - 1] = self;
+            // }
+            me = self;
+            // Logger.Warning($"self: {self}");
+            // Logger.Warning($"heroes[0].lastRoomId: {self.lastRoomId}");
             orig(self, lvl, cx, cy);
-            if (_netRole == NetRole.None) return;
+            // if (_netRole == NetRole.None) return;
 
-            if (heroes.Length < players_count && game != null && me != null)
-            {
-                TryCreateGhost(me._level);
-            }
-
+            // if (heroes.Length < players_count && game != null && me != null)
+            // {
+            //     TryCreateGhost(me._level);
+            // }
         }
 
 
@@ -201,14 +199,17 @@ namespace DeadCellsMultiplayerMod
 
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
-            if (_ghostPending && _companion == null)
-            {
-                TryCreateGhost(null);
-            }
-            if (_companion == null) return;
-            SendHeroCoords();
-            ReceiveGhostCoords();
-            checkOnLevel();
+            // if (_companion == null) return;
+            // _ghost.Teleport(me.cx + 5, me.cy, me.xr, me.yr);
+            // SendHeroCoords();
+            // ReceiveGhostCoords();
+            // checkOnLevel();
+            _ghost = new GhostHero(game, me);
+            if(_ghost == null || me == null || _companionKing != null || me.cx == 0 || me.cy == 0) return; 
+            _companionKing = _ghost.CreateGhostKing(me._level);
+            Logger.Debug($"cx: {_companionKing.cx}, cy: {_companionKing.cy}");
+            Logger.Debug($"hero cx: {me.cx}, hero cy: {me.cy}");
+
         }
 
         public static void checkOnLevel()
