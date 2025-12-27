@@ -208,15 +208,13 @@ namespace DeadCellsMultiplayerMod
             SendHeroCoords();
             ReceiveGhostCoords();
             ReceiveGhostAnim();
-            ResendCurrentAnim(dt);
+            if(_lastAnimSent == "idle" || _lastAnimSent == "run" || _lastAnimSent == "jumpUp" || _lastAnimSent == "jumpDown" || _lastAnimSent == "crouch" || _lastAnimSent == "land" || _lastAnimSent == "rollStart" || _lastAnimSent == "rolling" || _lastAnimSent == "rollEnd")
+            {
+                ResendCurrentAnim(dt);
+            }
             checkOnLevel();
 
         }
-
-        // public void kingPlayAnim()
-        // {
-        //     _companionKing.spr._animManager.play
-        // }
 
         public void checkOnLevel()
         {
@@ -255,7 +253,6 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             _remoteLevelText = remoteLevel;
-            // Remote changed level; force a re-init pass so players already in the room can see the companion.
             kingInitialized = false;
         }
 
@@ -336,11 +333,17 @@ namespace DeadCellsMultiplayerMod
         {
             if (_netRole == NetRole.None) return;
             var net = _net;
+            double AnimResendInterval_local;
             if (net == null) return;
             if (string.IsNullOrWhiteSpace(_lastAnimSent)) return;
+            if(_lastAnimSent == "idle")
+            {
+                AnimResendInterval_local = 1;
+            }
+            else AnimResendInterval_local = AnimResendInterval;
 
             _animResendElapsed += dt;
-            if (_animResendElapsed < AnimResendInterval) return;
+            if (_animResendElapsed < AnimResendInterval_local) return;
 
             net.SendAnim(_lastAnimSent, _lastAnimQueueSent, _lastAnimGSent);
             _animResendElapsed = 0;

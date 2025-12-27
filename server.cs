@@ -458,7 +458,6 @@ public sealed class NetNode : IDisposable
     {
         if (_stream == null || _client == null || !_client.Connected)
         {
-            _log.Information("[NetNode] Skip sending anim: no connected client");
             return;
         }
 
