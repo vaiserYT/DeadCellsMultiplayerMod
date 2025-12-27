@@ -42,19 +42,17 @@ namespace DeadCellsMultiplayerMod
             king.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             king.visible = true;
             king.initGfx();
-            king.set_easeSpritePos(true);
-
-            reInitKing();
+            ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            SetLabel(king, GameMenu.RemoteUsername);
             return king;
         }
 
-        public void reInitKing()
+        public void reInitKing(Level level)
         {
-            ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
-            king.set_level(_me._level);
+            king.set_level(level);
             king.initGfx();
+            ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             SetLabel(king, GameMenu.RemoteUsername);
-            king.spr.visible = true;
         }
 
         public void Teleport(int x, int y, double? xr, double? yr)

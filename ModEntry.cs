@@ -62,6 +62,8 @@ namespace DeadCellsMultiplayerMod
 
         public static MiniMap miniMap;
 
+        public static bool kingInitialized=false;
+
         public void OnGameEndInit()
         {
             _ready = true;
@@ -134,15 +136,15 @@ namespace DeadCellsMultiplayerMod
         //     HlAction onComplete = new HlAction(() =>
         //     {
         //         var game = Game.Class.ME;
-        //         game.subLevels = me._level.game.subLevels = _companion._level.game.subLevels;
+        //         game.subLevels = me._level.game.subLevels = _companionKing._level.game.subLevels;
         //         _LevelTransition levelTransition = LevelTransition.Class;
-        //         if (me._level.map == _companion._level.map)
+        //         if (me._level.map == _companionKing._level.map)
         //         {
         //             self.destMap = self.destMap;
         //         }
         //         levelTransition.gotoSub(self.destMap, self.linkId);
         //     });
-        //     UseZDoor useZDoor = new UseZDoor(_companion, self, onComplete);
+        //     UseZDoor useZDoor = new UseZDoor(_companionKing, self, onComplete);
         //     UseZDoor useZDoor2 = new UseZDoor(me, self, onComplete);
         // }
 
@@ -160,22 +162,23 @@ namespace DeadCellsMultiplayerMod
 
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
+            kingInitialized = false;   
             me = self;
             orig(self, oldLevel);
-            Logger.Debug($"Hero spr: {me.spr}");
-            if(_ghost == null) _ghost = new GhostHero(game, self);
+            if(_ghost == null) _ghost = new GhostHero(game, me);
             _ghost.SetLabel(me, GameMenu.Username);
 
             if(_companionKing == null)
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
+                kingInitialized = true;
                 return;
             }
             
             ReceiveGhostLevel();
-            if(roomsMap != _remoteLevelText) return;
-                _companionKing.set_level(me._level);
-                _ghost.reInitKing();
+            if(roomsMap != _remoteLevelText || oldLevel == null || kingInitialized) return;
+                _ghost.reInitKing(me._level);
+                kingInitialized = true;
         }
 
 
@@ -195,6 +198,7 @@ namespace DeadCellsMultiplayerMod
         public void OnHeroInit()
         {
             GameMenu.MarkInRun();
+
         }
 
         public void OnFrameUpdate(double dt)
@@ -216,11 +220,11 @@ namespace DeadCellsMultiplayerMod
 
         public void checkOnLevel()
         {
+            if(kingInitialized) return;
             if(_companionKing == null || me == null) return;
             ReceiveGhostLevel();
             if(roomsMap != _remoteLevelText) return;
-                _companionKing.set_level(me._level);
-                _ghost.reInitKing();
+                _ghost.reInitKing(me._level);
         }
 
 
@@ -230,7 +234,7 @@ namespace DeadCellsMultiplayerMod
             var net = _net;
             var hero = me;
 
-            if (net == null || hero == null || _companionKing == null) return;
+            // if (net == null || hero == null || _companionKing == null) return;
             net.LevelSend(lvl);
 
         }
