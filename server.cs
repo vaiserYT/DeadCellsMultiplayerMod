@@ -31,10 +31,13 @@ public sealed class NetNode : IDisposable
     private bool _disposed;
 
     private readonly object _sync = new();
-    private int    _rcx, _rcy;
-    private double _rxr, _ryr;
-    private bool   _hasRemote;
+    private double _rx, _ry;
+    private bool _hasRemote;
     private string? _remoteLevelText;
+    private string? _remoteAnim;
+    private int? _remoteAnimQueue;
+    private bool? _remoteAnimG;
+    private bool _hasRemoteAnim;
 
     public bool HasRemote { get { lock (_sync) return _hasRemote; } }
     public bool IsAlive =>
@@ -200,7 +203,6 @@ public sealed class NetNode : IDisposable
                     sb.Remove(0, idx + 1);
                     if (line.Length == 0) continue;
 
-                    _log.Information("[NetNode] recv line: \"{line}\"", line);
 
                     if (line.StartsWith("WELCOME"))
                     {
@@ -238,6 +240,14 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("USER|"))
+                    {
+                        var payload = line["USER|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        GameMenu.ReceiveRemoteUsername(payload);
+                        continue;
+                    }
+
                     if (line.StartsWith("LDESC|"))
                     {
                         var payload = line["LDESC|".Length..];
@@ -265,6 +275,28 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("ANIM|", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = line[(line.IndexOf('|') + 1)..];
+                        var partsAnim = payload.Split('|');
+                        string animName = partsAnim.Length >= 1 ? partsAnim[0] : string.Empty;
+                        int? q = null;
+                        bool? gFlag = null;
+                        if (partsAnim.Length >= 2 && int.TryParse(partsAnim[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedQ))
+                            q = parsedQ;
+                        if (partsAnim.Length >= 3 && TryParseBool(partsAnim[2], out var parsedBool))
+                            gFlag = parsedBool;
+                        lock (_sync)
+                        {
+                            _hasRemote = true;
+                            _remoteAnim = animName;
+                            _remoteAnimQueue = q;
+                            _remoteAnimG = gFlag;
+                            _hasRemoteAnim = true;
+                        }
+                        continue;
+                    }
+
                     if (line.StartsWith("KICK"))
                     {
                         GameMenu.NotifyRemoteDisconnected(_role);
@@ -272,15 +304,13 @@ public sealed class NetNode : IDisposable
                     }
 
                     var parts = line.Split('|');
-                    if (parts.Length == 4 &&
-                        int.TryParse(parts[0], out var cx) &&
-                        int.TryParse(parts[1], out var cy) &&
-                        double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var xr) &&
-                        double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var yr))
+                    if (parts.Length == 2 &&
+                        double.TryParse(parts[0], out var cx) &&
+                        double.TryParse(parts[1], out var cy))
                     {
                         lock (_sync)
                         {
-                            _rcx = cx; _rcy = cy; _rxr = xr; _ryr = yr; _hasRemote = true;
+                            _rx = cx; _ry = cy; _hasRemote = true;
                         }
                     }
                 }
@@ -298,6 +328,10 @@ public sealed class NetNode : IDisposable
             {
                 _hasRemote = false;
                 _remoteLevelText = null;
+                _remoteAnim = null;
+                _remoteAnimQueue = null;
+                _remoteAnimG = null;
+                _hasRemoteAnim = false;
             }
             GameMenu.NotifyRemoteDisconnected(_role);
         }
@@ -328,12 +362,12 @@ public sealed class NetNode : IDisposable
         }
     }
 
-    public void TickSend(int cx, int cy, double xr, double yr)
+    public void TickSend(double cx, double cy)
     {
         if (_stream == null || _client == null || !_client.Connected) return;
         var line = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{cx}|{cy}|{xr}|{yr}\n");
+            $"{cx}|{cy}\n");
         _ = SendLineSafe(line);
     }
 
@@ -349,6 +383,21 @@ public sealed class NetNode : IDisposable
         var line = $"SEED|{seed}\n";
         _ = SendLineSafe(line);
         _log.Information("[NetNode] Sent seed {Seed}", seed);
+    }
+
+    public void SendUsername(string username)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending username: no connected client");
+            return;
+        }
+
+        var safe = (username ?? "guest").Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (safe.Length == 0) safe = "guest";
+
+        SendRaw("USER|" + safe);
+        _log.Information("[NetNode] Sent username {Username}", safe);
     }
 
     public void SendRunParams(string json)
@@ -405,17 +454,32 @@ public sealed class NetNode : IDisposable
         SendRaw("KICK");
     }
 
+    public void SendAnim(string anim, int? queueAnim = null, bool? g = null)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending anim: no connected client");
+            return;
+        }
+
+        var safe = (anim ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (safe.Length == 0) safe = "idle";
+        var queuePart = queueAnim.HasValue ? queueAnim.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
+        var gPart = g.HasValue ? (g.Value ? "1" : "0") : string.Empty;
+        SendRaw($"ANIM|{safe}|{queuePart}|{gPart}");
+    }
+
     private void SendRaw(string payload)
     {
         var line = payload.EndsWith('\n') ? payload : payload + "\n";
         _ = SendLineSafe(line);
     }
 
-    public bool TryGetRemote(out int rcx, out int rcy, out double rxr, out double ryr)
+    public bool TryGetRemote(out double rx, out double ry)
     {
         lock (_sync)
         {
-            rcx = _rcx; rcy = _rcy; rxr = _rxr; ryr = _ryr;
+            rx = _rx; ry = _ry;
             return _hasRemote;
         }
     }
@@ -427,6 +491,39 @@ public sealed class NetNode : IDisposable
             levelText = _remoteLevelText;
             return _hasRemote && levelText != null;
         }
+    }
+
+    public bool TryGetRemoteAnim(out string? anim, out int? queueAnim, out bool? g)
+    {
+        lock (_sync)
+        {
+            if (!_hasRemoteAnim)
+            {
+                anim = null; queueAnim = null; g = null;
+                return false;
+            }
+            anim = _remoteAnim;
+            queueAnim = _remoteAnimQueue;
+            g = _remoteAnimG;
+            _hasRemoteAnim = false;
+            return _hasRemote && anim != null;
+        }
+    }
+
+    private static bool TryParseBool(string text, out bool value)
+    {
+        if (string.Equals(text, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            value = true;
+            return true;
+        }
+        if (string.Equals(text, "0", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "false", StringComparison.OrdinalIgnoreCase))
+        {
+            value = false;
+            return true;
+        }
+        value = false;
+        return false;
     }
 
     public void Dispose()
