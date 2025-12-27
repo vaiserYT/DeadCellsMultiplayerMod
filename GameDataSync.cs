@@ -60,6 +60,7 @@ namespace DeadCellsMultiplayerMod
         virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ resetCount, 
         Ref<bool> resetCount2)
         {
+            ModEntry._companionKing = null;
             return orig(self, seed, ldat, resetCount, resetCount2);
         }
     }

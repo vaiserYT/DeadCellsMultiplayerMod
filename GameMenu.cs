@@ -39,8 +39,10 @@ namespace DeadCellsMultiplayerMod
         private static bool _worldExitHandled;
         private static bool _seedArrived;
         private static string _username = "guest";
+        private static string _remoteUsername = "guest";
         private static string _playerId = Guid.NewGuid().ToString("N");
         public static string Username => _username;
+        public static string RemoteUsername => _remoteUsername;
         public static string PlayerId => _playerId;
         private static bool _localReady;
         private static readonly Dictionary<string, PlayerInfo> _clientPlayers = new();
@@ -192,6 +194,16 @@ namespace DeadCellsMultiplayerMod
             {
                 _log?.Warning("[NetMod] Failed to parse LevelDesc: {Message}", ex.Message);
             }
+        }
+
+        public static void ReceiveRemoteUsername(string username)
+        {
+            var cleaned = CleanUsername(username);
+            lock (Sync)
+            {
+                _remoteUsername = cleaned;
+            }
+            _log?.Information("[NetMod] Received remote username {Username}", cleaned);
         }
 
         private static void SendCachedGeneratePayload()
@@ -689,15 +701,18 @@ namespace DeadCellsMultiplayerMod
         {
             OpenTextInput(screen, "Username", _username, value =>
             {
-                var cleaned = string.IsNullOrWhiteSpace(value) ? "guest" : value.Trim();
+                var cleaned = CleanUsername(value);
                 _username = cleaned;
                 SaveConfig();
+                SendUsernameToRemote();
                 ShowConnectionMenu(screen, _menuSelection == NetRole.None ? NetRole.Host : _menuSelection);
             });
         }
 
         public static void NotifyRemoteConnected(NetRole role)
         {
+            SendUsernameToRemote();
+
             if (role == NetRole.Host)
             {
                 _waitingForHost = false;
@@ -735,8 +750,24 @@ namespace DeadCellsMultiplayerMod
             ClearNetworkCaches();
             _inHostStatusMenu = false;
             _inClientWaitingMenu = false;
+            _remoteUsername = "guest";
             _localReady = false;
             _genArrived = false;
+        }
+
+        private static void SendUsernameToRemote()
+        {
+            var net = NetRef;
+            if (net == null || !net.HasRemote) return;
+
+            try
+            {
+                net.SendUsername(_username);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to send username: {Message}", ex.Message);
+            }
         }
 
         private static void SendCachedDataToRemote()
@@ -908,7 +939,7 @@ namespace DeadCellsMultiplayerMod
                     var cfg = JsonConvert.DeserializeObject<MenuConfig>(json);
                     if (cfg != null)
                     {
-                        _username = string.IsNullOrWhiteSpace(cfg.user) ? GetDefaultUsername() : cfg.user.Trim();
+                        _username = CleanUsername(string.IsNullOrWhiteSpace(cfg.user) ? GetDefaultUsername() : cfg.user);
                         _mpIp = string.IsNullOrWhiteSpace(cfg.last_ip) ? "127.0.0.1" : cfg.last_ip.Trim();
                         _mpPort = cfg.last_port <= 0 || cfg.last_port > 65535 ? 1234 : cfg.last_port;
                         _playerId = string.IsNullOrWhiteSpace(cfg.player_id) ? Guid.NewGuid().ToString("N") : cfg.player_id.Trim();
@@ -921,7 +952,7 @@ namespace DeadCellsMultiplayerMod
                 _log?.Warning("[NetMod] Failed to load config: {Message}", ex.Message);
             }
 
-            _username = GetDefaultUsername();
+            _username = CleanUsername(GetDefaultUsername());
             _mpIp = "127.0.0.1";
             _mpPort = 1234;
             _playerId = Guid.NewGuid().ToString("N");
@@ -958,13 +989,20 @@ namespace DeadCellsMultiplayerMod
             return Path.Combine(dir, "config.json");
         }
 
+        private static string CleanUsername(string? value)
+        {
+            var cleaned = string.IsNullOrWhiteSpace(value) ? "guest" : value.Trim();
+            cleaned = cleaned.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+            return cleaned.Length == 0 ? "guest" : cleaned;
+        }
+
         private static string GetDefaultUsername()
         {
             try
             {
                 var env = Environment.UserName;
                 if (!string.IsNullOrWhiteSpace(env))
-                    return env;
+                    return CleanUsername(env);
             }
             catch { }
             return "guest";

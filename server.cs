@@ -237,6 +237,14 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("USER|"))
+                    {
+                        var payload = line["USER|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        GameMenu.ReceiveRemoteUsername(payload);
+                        continue;
+                    }
+
                     if (line.StartsWith("LDESC|"))
                     {
                         var payload = line["LDESC|".Length..];
@@ -346,6 +354,21 @@ public sealed class NetNode : IDisposable
         var line = $"SEED|{seed}\n";
         _ = SendLineSafe(line);
         _log.Information("[NetNode] Sent seed {Seed}", seed);
+    }
+
+    public void SendUsername(string username)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending username: no connected client");
+            return;
+        }
+
+        var safe = (username ?? "guest").Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (safe.Length == 0) safe = "guest";
+
+        SendRaw("USER|" + safe);
+        _log.Information("[NetNode] Sent username {Username}", safe);
     }
 
     public void SendRunParams(string json)

@@ -42,8 +42,19 @@ namespace DeadCellsMultiplayerMod
             king.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             king.visible = true;
             king.initGfx();
-            SetLabel("TEST");
+            king.set_easeSpritePos(true);
+
+            reInitKing();
             return king;
+        }
+
+        public void reInitKing()
+        {
+            ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            king.set_level(_me._level);
+            king.initGfx();
+            SetLabel(king, GameMenu.RemoteUsername);
+            king.spr.visible = true;
         }
 
         public void Teleport(int x, int y, double? xr, double? yr)
@@ -54,18 +65,21 @@ namespace DeadCellsMultiplayerMod
 
         public void TeleportByPixels(double x, double y)
         {
-            king?.setPosPixel(x, y);
+            king?.setPosPixel(x, y-0.1d);
         }
 
-        public void SetLabel(string? text)
+        public void SetLabel(Entity entity, string? text)
         {
-            if (king == null || _me == null) return;
+            if (entity == null) return;
             _Assets _Assets = Assets.Class;
-            dc.h2d.Text text_h2d = _Assets.makeText(text.AsHaxeString(), dc.ui.Text.Class.COLORS.get("ST".AsHaxeString()), true, king.spr);
-            text_h2d.y -= 20;
-            // text_h2d.x = (double)king.spr.x / 2;
-            // text_h2d.scaleX = 1d;
-            // text_h2d.scaleY = 1d;
+            dc.h2d.Text text_h2d = _Assets.makeText(text.AsHaxeString(), dc.ui.Text.Class.COLORS.get("ST".AsHaxeString()), true, entity.spr);
+            text_h2d.y -= 80;
+            text_h2d.x -= 15;
+            text_h2d.font.size = 18;
+            text_h2d.alpha = 0.8;
+            text_h2d.scaleX = 0.6d;
+            text_h2d.scaleY = 0.6d;
+            text_h2d.textColor = 0;
 
             
         }

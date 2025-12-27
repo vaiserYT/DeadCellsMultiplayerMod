@@ -23,6 +23,9 @@ using dc.shader;
 using dc.libs.heaps.slib;
 using dc.h3d.mat;
 using Serilog.Core;
+using dc.ui.hud;
+using dc.haxe.io;
+using dc.h2d;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -54,8 +57,10 @@ namespace DeadCellsMultiplayerMod
 
         public static string roomsMap;
 
+        public static SpriteLib heroLib; 
+        public static dc.String heroGroup; 
 
-
+        public static MiniMap miniMap;
 
         public void OnGameEndInit()
         {
@@ -90,8 +95,15 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
+            Hook__MiniMap.__constructor__ += Hook__MiniMap__constructor__;
+            Logger.Debug("[NetMod] Hook__MiniMap.__constructor__ attached");
         }
 
+        private void Hook__MiniMap__constructor__(Hook__MiniMap.orig___constructor__ orig, MiniMap p, dc.libs.Process lvl, Level fowPNG, dc.haxe.io.Bytes RGBReplace)
+        {
+            miniMap = p;
+            orig(p, lvl, fowPNG, RGBReplace);
+        }
 
         private void Hook__AfterZDoor_intcompanion(Hook__AfterZDoor.orig___constructor__ orig, AfterZDoor arg1, Hero hero)
         {
@@ -150,12 +162,20 @@ namespace DeadCellsMultiplayerMod
         {
             me = self;
             orig(self, oldLevel);
+            Logger.Debug($"Hero spr: {me.spr}");
             if(_ghost == null) _ghost = new GhostHero(game, self);
+            _ghost.SetLabel(me, GameMenu.Username);
+
             if(_companionKing == null)
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
+                return;
             }
-            else _companionKing.set_level(me._level);
+            
+            ReceiveGhostLevel();
+            if(roomsMap != _remoteLevelText) return;
+                _companionKing.set_level(me._level);
+                _ghost.reInitKing();
         }
 
 
@@ -187,7 +207,7 @@ namespace DeadCellsMultiplayerMod
 
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
-            // if (_companion == null) return;
+            // if(_companionKing != null) _ghost.TeleportByPixels(me.spr.x + 100, me.spr.y);
             SendHeroCoords();
             ReceiveGhostCoords();
             checkOnLevel();
@@ -199,10 +219,8 @@ namespace DeadCellsMultiplayerMod
             if(_companionKing == null || me == null) return;
             ReceiveGhostLevel();
             if(roomsMap != _remoteLevelText) return;
-            _companionKing.set_level(me._level);
-            // Logger.Warning($"Hero level = {me._level}; \n King level = {_companionKing._level}");
-            // _companionKing.disposeGfx();
-            // _companionKing.initGfx();
+                _companionKing.set_level(me._level);
+                _ghost.reInitKing();
         }
 
 
