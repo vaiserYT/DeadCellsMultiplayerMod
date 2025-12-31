@@ -72,13 +72,7 @@ namespace DeadCellsMultiplayerMod
             SetLabel(king, GameMenu.RemoteUsername);
             return king;
         }
-
-        public void Teleport(int x, int y, double? xr, double? yr)
-        {
-            if (king == null) return;
-            king?.setPosCase(x, y, xr, yr);
-        }
-
+        
         public void TeleportByPixels(double x, double y)
         {
             king?.setPosPixel(x, y - 0.2d);

@@ -71,6 +71,9 @@ namespace DeadCellsMultiplayerMod
         {
             ldat = Seed;
             ModEntry._companionKing = null;
+            var net = GameMenu.NetRef;
+            SendBrData(seed, net);
+            _log.Debug($"meta: {seed}| meta is null? {seed.meta is null}");
             return orig(self, seed, ldat, resetCount, resetCount2);
         }
 

@@ -26,6 +26,7 @@ using Serilog.Core;
 using dc.ui.hud;
 using dc.haxe.io;
 using dc.h2d;
+using Hashlink.Virtuals;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -37,8 +38,6 @@ namespace DeadCellsMultiplayerMod
     {
         public static ModEntry? Instance { get; private set; }
         private bool _ready;
-
-        public static int? _remoteLevelUid;
 
         private NetRole _netRole = NetRole.None;
         private static NetNode? _net;
@@ -65,6 +64,10 @@ namespace DeadCellsMultiplayerMod
 
         public static bool kingInitialized = false;
 
+        public string levelId;
+
+        public static string remoteLevelId;
+
         private string remoteSkin;
 
         internal static void SetRemoteSkin(string? skin)
@@ -90,28 +93,36 @@ namespace DeadCellsMultiplayerMod
             Instance = this;
             gds = new GameDataSync(Logger);
             GameMenu.Initialize(Logger);
-            Hook_Game.init += Hook_mygameinit;
+            Hook_Game.init += Hook_gameinit;
             Logger.Debug("[NetMod] Hook_mygameinit attached");
             Hook_Hero.wakeup += hook_hero_wakeup;
             Logger.Debug("[NetMod] Hook_Hero.wakeup attached");
             Hook_Hero.onLevelChanged += hook_level_changed;
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
-            Hook__LevelTransition.gotoSub += hook_gotosub;
-            Logger.Debug("[NetMod] Hook__LevelTransition.gotoSub attached");
-            Hook_Game.initHero += Hook_Game_inithero;
-            Logger.Debug("[NetMod] Hook_Game.initHero attached");
-            Hook_Game.activateSubLevel += hook_game_activateSubLevel;
-            Logger.Debug("[NetMod] Hook_Game.activateSubLevel attached");
             Hook_User.newGame += GameDataSync.user_hook_new_game;
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
             Hook_AnimManager.play += Hook_AnimManager_play;
-            Logger.Debug("[NetMod] Hook_AnimManager.play");
+            Logger.Debug("[NetMod] Hook_AnimManager.play attached");
             Hook_MiniMap.track += Hook_MiniMap_track;
-            Logger.Debug("[NetMod] Hook_MiniMap.track");
+            Logger.Debug("[NetMod] Hook_MiniMap.track attached");
             Hook_KingSkin.initGfx += Hook_KingSkin_initgfx;
-            Logger.Debug("[NetMod] Hook_KingSkin.initGfx");
+            Logger.Debug("[NetMod] Hook_KingSkin.initGfx attached");
+            Hook__LevelStruct.get += Hook__LevelStruct_get;
+            Logger.Debug("[NetMod] Hook__LevelStruct.get attached");
+        }
+
+        private LevelStruct Hook__LevelStruct_get(Hook__LevelStruct.orig_get orig, 
+        User user, 
+        virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ l, 
+        dc.libs.Rand rng)
+        {
+
+            levelId = l.id.ToString();
+            
+            SendLevel(levelId);
+            return orig(user, l, rng);
         }
 
 
@@ -127,6 +138,7 @@ namespace DeadCellsMultiplayerMod
             int? dp_ROOM_MAIN_HERO = Const.Class.DP_ROOM_MAIN_HERO;
             self.initSprite(heroLib, group, 0.5, 0.5, dp_ROOM_MAIN_HERO, true, null, normalMapFromGroup);
             self.initColorMap(Cdb.Class.getSkinInfo(remoteSkin.AsHaxeString()));
+            self.createLight(10, 10, 0, 1);
         }
 
 
@@ -147,28 +159,15 @@ namespace DeadCellsMultiplayerMod
 
             return orig(self, plays, queueAnim, g);
         }
-        private void hook_game_activateSubLevel(Hook_Game.orig_activateSubLevel orig, Game self, LevelMap linkId, int? shouldSave, Ref<bool> outAnim, Ref<bool> shouldSave2)
-        {
-            orig(self, linkId, shouldSave, outAnim, shouldSave2);
-        }
 
-        private Hero Hook_Game_inithero(Hook_Game.orig_initHero orig, Game self, Level cx, int cy, int from, UsableBody fromDeadBody, bool oldLevel, Level e)
-        {
-            return orig(self, cx, cy, from, fromDeadBody, oldLevel, e);
-        }
-
-
-        public LevelTransition hook_gotosub(Hook__LevelTransition.orig_gotoSub orig, dc.level.LevelMap map, int? linkId)
-        {
-            return orig(map, linkId);
-        }
 
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
+            ReceiveGhostLevel();
             kingInitialized = false;
             me = self;
-            SendLevel(me._level.uniqId);
-            Logger.Debug($"HERO LEVEL uid: {self._level.uniqId}");
+            Log.Debug($"Hero level map rooms {me._level.map.infos}");
+            SendLevel(levelId);
             orig(self, oldLevel);
             if (_ghost == null) _ghost = new GhostHero(game, me, Logger);
             _ghost.SetLabel(me, GameMenu.Username);
@@ -176,20 +175,23 @@ namespace DeadCellsMultiplayerMod
             if (_companionKing == null)
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
-                if (me._level.uniqId != _companionKing._level.uniqId)
+                if (levelId != remoteLevelId)
                 {
                     _companionKing.destroy();
+                    // _companionKing.dispose();
+                    // _companionKing.disposeGfx();
                 }
             }
             else
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
-                if (me._level.uniqId != _companionKing._level.uniqId)
+                if (levelId != remoteLevelId)
                 {
                     _companionKing.destroy();
+                    // _companionKing.dispose();
+                    // _companionKing.disposeGfx();
                 }
             }
-            ReceiveGhostLevel();
         }
 
 
@@ -200,7 +202,7 @@ namespace DeadCellsMultiplayerMod
         }
 
 
-        public void Hook_mygameinit(Hook_Game.orig_init orig, dc.pr.Game self)
+        public void Hook_gameinit(Hook_Game.orig_init orig, dc.pr.Game self)
         {
             game = self;
             orig(self);
@@ -242,21 +244,21 @@ namespace DeadCellsMultiplayerMod
             if (kingInitialized) return;
             var hero = me;
             if (hero == null || hero._level == null) return;
-            if (!_remoteLevelUid.HasValue) return;
-            if (hero._level.uniqId != _remoteLevelUid.Value) return;
+            if (string.IsNullOrWhiteSpace(remoteLevelId)) return;
+            if (!string.Equals(levelId, remoteLevelId, StringComparison.Ordinal)) return;
             if (_companionKing == null || _ghost == null) return;
             _companionKing = _ghost.reInitKing(hero._level);
             kingInitialized = true;
         }
 
 
-        private void SendLevel(int lvl)
+        private void SendLevel(string lvl)
         {
             if (_netRole == NetRole.None) return;
             var net = _net;
             var hero = me;
 
-            // if (net == null || hero == null || _companionKing == null) return;
+            if (net == null) return;
             net.LevelSend(lvl);
 
         }
@@ -265,16 +267,15 @@ namespace DeadCellsMultiplayerMod
         private static void ReceiveGhostLevel()
         {
             var net = _net;
-            var ghost = _ghost;
-            if (net == null || ghost == null || _companionKing == null) return;
+            if (net == null) return;
 
-            if (!net.TryGetRemoteLevelUid(out var remoteLevelUid))
+            if (!net.TryGetRemoteLevelId(out var remoteLevel))
                 return;
 
-            if (int.Equals(_remoteLevelUid, remoteLevelUid))
+            if (string.Equals(remoteLevelId, remoteLevel))
                 return;
 
-            _remoteLevelUid = remoteLevelUid;
+            remoteLevelId = remoteLevel;
         }
 
 

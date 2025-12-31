@@ -34,7 +34,7 @@ public sealed class NetNode : IDisposable
     private readonly object _sync = new();
     private double _rx, _ry;
     private bool _hasRemote;
-    private int? _remoteLevelText;
+    private string? _remoteLevelId;
     private string? _remoteAnim;
     private int? _remoteAnimQueue;
     private bool? _remoteAnimG;
@@ -286,7 +286,7 @@ public sealed class NetNode : IDisposable
                         lock (_sync)
                         {
                             _hasRemote = true;
-                            _remoteLevelText = int.Parse(payload);
+                            _remoteLevelId = payload;
                         }
                         continue;
                     }
@@ -343,7 +343,7 @@ public sealed class NetNode : IDisposable
             lock (_sync)
             {
                 _hasRemote = false;
-                _remoteLevelText = null;
+                _remoteLevelId = null;
                 _remoteAnim = null;
                 _remoteAnimQueue = null;
                 _remoteAnimG = null;
@@ -387,7 +387,7 @@ public sealed class NetNode : IDisposable
         _ = SendLineSafe(line);
     }
 
-    public void LevelSend(int lvl) => SendLevelId(lvl);
+    public void LevelSend(string lvl) => SendLevelId(lvl);
 
     public void SendSeed(int seed)
     {
@@ -452,7 +452,7 @@ public sealed class NetNode : IDisposable
         _log.Information("[NetNode] Sent Generate payload ({Length} bytes)", json.Length);
     }
 
-    public void SendLevelId(int levelId)
+    public void SendLevelId(string levelId)
     {
         if (_stream == null || _client == null || !_client.Connected)
         {
@@ -460,7 +460,7 @@ public sealed class NetNode : IDisposable
             return;
         }
 
-        var safe = levelId.ToString().Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        var safe = levelId.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
         SendRaw("LEVEL|" + safe);
     }
 
@@ -511,12 +511,12 @@ public sealed class NetNode : IDisposable
         }
     }
 
-    public bool TryGetRemoteLevelUid(out int? levelUid)
+    public bool TryGetRemoteLevelId(out string? levelId)
     {
         lock (_sync)
         {
-            levelUid = _remoteLevelText;
-            return _hasRemote && levelUid != null;
+            levelId = _remoteLevelId;
+            return _hasRemote && !string.IsNullOrEmpty(levelId);
         }
     }
 
