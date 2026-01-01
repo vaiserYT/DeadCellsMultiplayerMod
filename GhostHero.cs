@@ -8,6 +8,7 @@ using dc.libs.heaps.slib;
 using dc;
 using Hashlink.Virtuals;
 using dc.hl.types;
+using dc.en.inter.door;
 
 
 
@@ -19,7 +20,11 @@ namespace DeadCellsMultiplayerMod
         private readonly Hero _me;
         private static ILogger? _log;
 
+        private string? _lastRemoteAnim;
+        private int? _lastRemoteAnimQueue;
+        private bool? _lastRemoteAnimG;
 
+        private const double RestartFrameIndex = 0;
 
         public KingSkin king;
 
@@ -82,7 +87,29 @@ namespace DeadCellsMultiplayerMod
         {
             if (king == null || king.spr == null || king.spr._animManager == null) return;
             if (string.IsNullOrWhiteSpace(anim)) return;
-            king.spr._animManager.play(anim.AsHaxeString(), queueAnim, g);
+            var animManager = king.spr._animManager;
+
+            try
+            {
+                animManager.stopWithoutStateAnims(anim.AsHaxeString(), queueAnim);
+                animManager.setFrame((int)RestartFrameIndex);
+            }
+            catch { }
+
+            animManager.play(anim.AsHaxeString(), queueAnim, g);
+        }
+
+        public void HandleRemoteAnim(NetNode? net)
+        {
+            if (net == null || king == null || king.spr == null) return;
+
+            if (net.TryGetRemoteAnim(out var anim, out var queueAnim, out var g) && !string.IsNullOrWhiteSpace(anim))
+            {
+                _lastRemoteAnim = anim;
+                _lastRemoteAnimQueue = queueAnim;
+                _lastRemoteAnimG = g;
+                PlayAnimation(anim, queueAnim, g);
+            }
         }
 
         public void SetLabel(Entity entity, string? text)
@@ -91,7 +118,7 @@ namespace DeadCellsMultiplayerMod
             _Assets _Assets = Assets.Class;
             dc.h2d.Text text_h2d = _Assets.makeText(text.AsHaxeString(), dc.ui.Text.Class.COLORS.get("ST".AsHaxeString()), true, entity.spr);
             text_h2d.y -= 80;
-            text_h2d.x -= 15;
+            text_h2d.x -= 2.5 * text.Length;
             text_h2d.font.size = 18;
             text_h2d.alpha = 0.8;
             text_h2d.scaleX = 0.6d;

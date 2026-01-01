@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
+using ModCore.Utitities;
 
 
 namespace DeadCellsMultiplayerMod
@@ -58,6 +59,10 @@ namespace DeadCellsMultiplayerMod
                 }
             }
             lvl = Seed;
+            // self.bossRuneActivated
+            // self.deathMoney
+            // self.mainGameData.blueprints
+            // 
             SendBrData(self, net);
             orig(self, lvl, isTwitch, isCustom, mode, gdata);
         }
@@ -72,8 +77,8 @@ namespace DeadCellsMultiplayerMod
             ldat = Seed;
             ModEntry._companionKing = null;
             var net = GameMenu.NetRef;
+
             SendBrData(seed, net);
-            _log.Debug($"meta: {seed}| meta is null? {seed.meta is null}");
             return orig(self, seed, ldat, resetCount, resetCount2);
         }
 

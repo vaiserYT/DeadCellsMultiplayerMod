@@ -54,11 +54,16 @@ namespace DeadCellsMultiplayerMod
         private string? _lastAnimSent;
         private int? _lastAnimQueueSent;
         private bool? _lastAnimGSent;
-        private string? _lastRemoteAnim;
-        private int? _lastRemoteAnimQueue;
-        private bool? _lastRemoteAnimG;
         private double _animResendElapsed;
         private const double AnimResendInterval = 0.4;
+        private double _currentAnimDuration = AnimResendInterval;
+        private double? _lastAnimPlayRatio;
+        private const double AnimLoopThreshold = 0.995;
+        private const double RatioDropThreshold = 0.5;
+        private const double DefaultAnimFps = 60d;
+        private const double MinAnimDuration = 0.05;
+        private const double MaxAnimDuration = 3.0;
+        private const double LoopDetectionCooldown = 0.08;
 
         public static MiniMap miniMap;
 
@@ -113,6 +118,7 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook__LevelStruct.get attached");
         }
 
+
         private LevelStruct Hook__LevelStruct_get(Hook__LevelStruct.orig_get orig, 
         User user, 
         virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ l, 
@@ -160,17 +166,18 @@ namespace DeadCellsMultiplayerMod
             return orig(self, plays, queueAnim, g);
         }
 
-
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
             ReceiveGhostLevel();
             kingInitialized = false;
             me = self;
-            Log.Debug($"Hero level map rooms {me._level.map.infos}");
             SendLevel(levelId);
             orig(self, oldLevel);
+            // Log.Debug($"Hero level room {me._level.map.getRoomAt(me.cy, me._level.uniqId)}");
+            Logger.Debug($"game.user.meta: {game.data.blueprints}");
             if (_ghost == null) _ghost = new GhostHero(game, me, Logger);
             _ghost.SetLabel(me, GameMenu.Username);
+
 
             if (_companionKing == null)
             {
@@ -228,7 +235,7 @@ namespace DeadCellsMultiplayerMod
             // if(_companionKing != null) _ghost.TeleportByPixels(me.spr.x + 100, me.spr.y);
             SendHeroCoords();
             ReceiveGhostCoords();
-            ReceiveGhostAnim();
+            _ghost?.HandleRemoteAnim(_net);
             if (_lastAnimSent == "idle" || _lastAnimSent == "run" || _lastAnimSent == "jumpUp" || _lastAnimSent == "jumpDown" || _lastAnimSent == "crouch" || _lastAnimSent == "land" || _lastAnimSent == "rollStart" || _lastAnimSent == "rolling" || _lastAnimSent == "rollEnd")
             {
                 ResendCurrentAnim(dt);
@@ -321,6 +328,7 @@ namespace DeadCellsMultiplayerMod
         {
             if (_netRole == NetRole.None) return;
             var net = _net;
+            var animManager = me?.spr?._animManager;
             if (net == null || string.IsNullOrWhiteSpace(anim)) return;
             if (!force &&
                 string.Equals(_lastAnimSent, anim, StringComparison.Ordinal) &&
@@ -333,41 +341,100 @@ namespace DeadCellsMultiplayerMod
             _lastAnimQueueSent = queueAnim;
             _lastAnimGSent = g;
             _animResendElapsed = 0;
-        }
-
-        private void ReceiveGhostAnim()
-        {
-            var net = _net;
-            var ghost = _ghost;
-            if (net == null || ghost == null || _companionKing == null) return;
-
-            if (net.TryGetRemoteAnim(out var anim, out var queueAnim, out var g) && !string.IsNullOrWhiteSpace(anim))
-            {
-                _lastRemoteAnim = anim;
-                _lastRemoteAnimQueue = queueAnim;
-                _lastRemoteAnimG = g;
-                _ghost.PlayAnimation(anim, queueAnim, g);
-            }
+            _lastAnimPlayRatio = null;
+            _currentAnimDuration = CalculateAnimDurationSeconds(animManager);
         }
 
         private void ResendCurrentAnim(double dt)
         {
             if (_netRole == NetRole.None) return;
             var net = _net;
-            double AnimResendInterval_local;
-            if (net == null) return;
+            var animManager = me?.spr?._animManager;
+            if (net == null || animManager == null) return;
             if (string.IsNullOrWhiteSpace(_lastAnimSent)) return;
-            if (_lastAnimSent == "idle")
-            {
-                AnimResendInterval_local = 1;
-            }
-            else AnimResendInterval_local = AnimResendInterval;
 
             _animResendElapsed += dt;
-            if (_animResendElapsed < AnimResendInterval_local) return;
+
+            var duration = _currentAnimDuration > 0 ? _currentAnimDuration : AnimResendInterval;
+            var timerElapsed = _animResendElapsed >= duration;
+
+            bool looped = DidLoop(animManager);
+
+            if (!looped && !timerElapsed) return;
 
             net.SendAnim(_lastAnimSent, _lastAnimQueueSent, _lastAnimGSent);
             _animResendElapsed = 0;
+            _currentAnimDuration = CalculateAnimDurationSeconds(animManager);
+        }
+
+        private bool DidLoop(AnimManager animManager)
+        {
+            double currentRatio = 0;
+            if (!TryGetPlayRatio(animManager, out currentRatio))
+            {
+                _lastAnimPlayRatio = null;
+                return false;
+            }
+
+            bool looped = false;
+            if (_lastAnimPlayRatio.HasValue)
+            {
+                var prev = _lastAnimPlayRatio.Value;
+                var enoughTime = _animResendElapsed >= LoopDetectionCooldown;
+
+                if (enoughTime && prev >= RatioDropThreshold && currentRatio < prev)
+                {
+                    looped = true;
+                }
+                else if (enoughTime && currentRatio >= AnimLoopThreshold && prev < AnimLoopThreshold)
+                {
+                    looped = true;
+                }
+            }
+
+            _lastAnimPlayRatio = currentRatio;
+            return looped;
+        }
+
+        private double CalculateAnimDurationSeconds(AnimManager? animManager)
+        {
+            if (animManager == null)
+                return AnimResendInterval;
+
+            try
+            {
+                var durationSeconds = animManager.getDurationS(DefaultAnimFps);
+                if (durationSeconds > 0)
+                    return ClampDuration(durationSeconds);
+            }
+            catch { }
+
+            try
+            {
+                var frames = animManager.getDurationF();
+                if (frames > 0)
+                    return ClampDuration(frames / DefaultAnimFps);
+            }
+            catch { }
+
+            return AnimResendInterval;
+        }
+
+        private static double ClampDuration(double value) =>
+            System.Math.Max(MinAnimDuration, System.Math.Min(MaxAnimDuration, value));
+
+        private bool TryGetPlayRatio(AnimManager animManager, out double ratio)
+        {
+            try
+            {
+                ratio = animManager.getPlayRatio();
+                return true;
+            }
+            catch
+            {
+                ratio = 0;
+                return false;
+            }
         }
 
 
