@@ -38,15 +38,12 @@ namespace DeadCellsMultiplayerMod
         private static bool _suppressAutoButton;
         private static bool _worldExitHandled;
         private static bool _seedArrived;
-        private static bool _brDataArrived;
         private static string _username = "guest";
         private static string _remoteUsername = "guest";
         private static string _playerId = Guid.NewGuid().ToString("N");
         public static string Username => _username;
         public static string RemoteUsername => _remoteUsername;
-        public static string PlayerId => _playerId;
         private static bool _localReady;
-        private static readonly Dictionary<string, PlayerInfo> _clientPlayers = new();
         private static List<PlayerInfo> _playersDisplay = new();
         private static bool _inHostStatusMenu;
         private static bool _inClientWaitingMenu;
@@ -86,7 +83,6 @@ namespace DeadCellsMultiplayerMod
                 _autoStartTriggered = false;
                 _genArrived = false;
                 _seedArrived = false;
-                _brDataArrived = false;
                 _cachedLevelDescSync = null;
                 _latestResolvedRunParams = null;
             }
@@ -277,7 +273,6 @@ namespace DeadCellsMultiplayerMod
                     !_inActualRun &&
                     _pendingAutoStart &&
                     _seedArrived &&
-                    _brDataArrived &&
                     !_autoStartTriggered)
                 {
                     _autoStartTriggered = true;
@@ -323,18 +318,6 @@ namespace DeadCellsMultiplayerMod
                 if (_role == NetRole.Client && !_inActualRun)
                 {
                     _levelDescArrived = true;
-                    _pendingAutoStart = true;
-                }
-            }
-        }
-
-        public static void NotifyBrDataArrived()
-        {
-            lock (Sync)
-            {
-                _brDataArrived = true;
-                if (_role == NetRole.Client && !_inActualRun)
-                {
                     _pendingAutoStart = true;
                 }
             }
@@ -826,7 +809,6 @@ namespace DeadCellsMultiplayerMod
             _latestResolvedRunParams = null;
             _genArrived = false;
             _seedArrived = false;
-            _brDataArrived = false;
         }
 
         public static void ReceiveGeneratePayload(string json)

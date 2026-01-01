@@ -9,7 +9,6 @@ using DeadCellsMultiplayerMod;
 using HaxeProxy.Runtime;
 using Serilog;
 using dc;
-using System.Collections.Immutable;
 
 public enum NetRole { None, Host, Client }
 
@@ -217,21 +216,6 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
-                    if (line.StartsWith("BRDATA|", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var payload = line["BRDATA|".Length..];
-                        lock (_sync) _hasRemote = true;
-                        try
-                        {
-                            GameDataSync.ReceiveBrData(payload);
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.Warning("[NetNode] Failed to handle BRDATA: {msg}", ex.Message);
-                        }
-                        continue;
-                    }
-
                     if (line.StartsWith("SEED|"))
                     {
                         var partsSeed = line.Split('|');
@@ -269,6 +253,21 @@ public sealed class NetNode : IDisposable
                         var payload = line["LDESC|".Length..];
                         lock (_sync) _hasRemote = true;
                         GameMenu.ReceiveLevelDesc(payload);
+                        continue;
+                    }
+
+                    if (line.StartsWith("SKIN|", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = line["SKIN|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        try
+                        {
+                            GameDataSync.ReceiveHeroSkin(payload);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warning("[NetNode] Failed to handle hero skin: {msg}", ex.Message);
+                        }
                         continue;
                     }
 
@@ -484,16 +483,20 @@ public sealed class NetNode : IDisposable
         SendRaw($"ANIM|{safe}|{queuePart}|{gPart}");
     }
 
-    public void SendBrData(string payload)
+    public void SendHeroSkin(string skin)
     {
         if (_stream == null || _client == null || !_client.Connected)
         {
-            _log.Information("[NetNode] Skip sending BRDATA: no connected client");
+            _log.Information("[NetNode] Skip sending hero skin: no connected client");
             return;
         }
 
-        SendRaw("BRDATA|" + payload);
-        _log.Information("[NetNode] Sent BRDATA payload ({Length} bytes)", payload?.Length ?? 0);
+        var safe = (skin ?? "PrisonerDefault").Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (string.IsNullOrWhiteSpace(safe))
+            safe = "PrisonerDefault";
+
+        SendRaw("SKIN|" + safe);
+        _log.Information("[NetNode] Sent hero skin {Skin}", safe);
     }
 
     private void SendRaw(string payload)
