@@ -326,7 +326,7 @@ namespace DeadCellsMultiplayerMod
 
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
-            // if(_companionKing != null) _ghost.TeleportByPixels(me.spr.x + 100, me.spr.y);
+            if(_companionKing == null || me == null || _ghost == null) return;
             SendHeroCoords();
             var fx = Assets.Class.fx;
             var tile = fx.pages.array[0];
@@ -406,7 +406,7 @@ namespace DeadCellsMultiplayerMod
         {
             var net = _net;
             var ghost = _ghost;
-            if (net == null || ghost == null) return;
+            if (net == null || ghost == null || me == null || _ghost == null || _companionKing == null) return;
 
             if (net.TryGetRemote(out var rx, out var ry))
             {

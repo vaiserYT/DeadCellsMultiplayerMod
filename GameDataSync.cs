@@ -41,6 +41,8 @@ namespace DeadCellsMultiplayerMod
             if (net != null && net.IsHost)
             {
                 Seed = GameMenu.ForceGenerateServerSeed("NewGame_hook");
+                try
+                {
                 var bossRune = self.mainGame.serverStats.bossRune;
                 var endKind = self.mainGame.serverStats.endKind;
                 var forge = self.mainGame.serverStats.forge;
@@ -48,6 +50,8 @@ namespace DeadCellsMultiplayerMod
                 var history = self.mainGame.serverStats.history;
                 var Custom = self.mainGame.serverStats.isCustom;
                 var meta = self.mainGame.serverStats.meta;
+                }
+                catch{}
                 net.SendSeed(Seed);
             }
             else if (net != null)
