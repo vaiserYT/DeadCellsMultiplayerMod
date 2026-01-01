@@ -27,6 +27,9 @@ using dc.ui.hud;
 using dc.haxe.io;
 using dc.h2d;
 using Hashlink.Virtuals;
+using dc.tool;
+using dc.light;
+using System.ComponentModel;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -116,17 +119,24 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_KingSkin.initGfx attached");
             Hook__LevelStruct.get += Hook__LevelStruct_get;
             Logger.Debug("[NetMod] Hook__LevelStruct.get attached");
+            Hook_HeroHead.customHeadFx += Hook_HeroHead_headfx;
+
         }
 
+        private void Hook_HeroHead_headfx(Hook_HeroHead.orig_customHeadFx orig, HeroHead self)
+        {
+            orig(self);
 
-        private LevelStruct Hook__LevelStruct_get(Hook__LevelStruct.orig_get orig, 
-        User user, 
-        virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ l, 
+        }
+
+        private LevelStruct Hook__LevelStruct_get(Hook__LevelStruct.orig_get orig,
+        User user,
+        virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ l,
         dc.libs.Rand rng)
         {
 
             levelId = l.id.ToString();
-            
+
             SendLevel(levelId);
             return orig(user, l, rng);
         }
@@ -144,8 +154,92 @@ namespace DeadCellsMultiplayerMod
             int? dp_ROOM_MAIN_HERO = Const.Class.DP_ROOM_MAIN_HERO;
             self.initSprite(heroLib, group, 0.5, 0.5, dp_ROOM_MAIN_HERO, true, null, normalMapFromGroup);
             self.initColorMap(Cdb.Class.getSkinInfo(remoteSkin.AsHaxeString()));
-            self.createLight(10, 10, 0, 1);
+
+            //glow
+            ArrayObj glowData = CdbTypeConverter.Class.getGlowData(Cdb.Class.getSkinInfo(remoteSkin.AsHaxeString()));
+            GlowKey s2 = new GlowKey(glowData);
+            self.spr.addShader(s2);
+
+
+            //Ambient light
+            var General = 2.0;
+            var radiusCase = 1.2 * General;
+            var Math = dc.Math.Class.random() * 0.20000000000000007;
+            General = 0.9 + Math;
+            var decayStart = 5.0 * General;
+            self.createLight(1161471, radiusCase, decayStart, 0.35);
+
+
+
+            //head
+            var fx = Assets.Class.fx;
+            var tile = fx.pages.array[0];
+
+            var fxspr = Assets.Class.getDynamicLoadAtlasEnumFromString("customHead".AsHaxeString());
+            Log.Debug($"[GATASSETS|DEBUG]获取assets{fxspr}");
+
+            int db = 0;
+            var particle = new HSprite(fx, "fxSmallStar".AsHaxeString(), new Ref<int>(ref db), self.spr);
+            particle.pivot.centerFactorX = 0.5;
+            particle.pivot.centerFactorY = 0.5;
+            particle.pivot.usingFactor = true;
+            particle.x = self.get_headX();
+            particle.y = self.get_headY();
+            particle.scaleX = particle.scaleY = 1.0;
+            particle.alpha = 1.0;
+            particle.rotation = 90f;
+
+
+            self._level.scroller.addChildAt(particle, Const.Class.DP_ROOM_MAIN_HERO);
+
+            HeroHead h = new HeroHead();
+            virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_;
+            virtual_atlas_glowData_item_particleEffects_properties_ = Main.Class.ME.user.getHeroHeadSkinInfos();
+            h._customHeadInfoCache = virtual_atlas_glowData_item_particleEffects_properties_;
+            DynamicLoadAtlas dynamicLoadAtlasEnumFromString = Assets.Class.getDynamicLoadAtlasEnumFromString(virtual_atlas_glowData_item_particleEffects_properties_.atlas);
+
+            kinghd();
         }
+
+        public void kinghd()
+        {
+            // HSprite hsprite;
+            // HeroHead h = Game.Class.ME.hero.heroHead;
+            // SpriteLib g = Assets.Class.fx;
+
+            // virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_;
+            // virtual_atlas_glowData_item_particleEffects_properties_ = Main.Class.ME.user.getHeroHeadSkinInfos();
+
+            // virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_3 = virtual_atlas_glowData_item_particleEffects_properties_;
+            // ArrayObj propertiesArray = virtual_atlas_glowData_item_particleEffects_properties_3.properties;
+
+            // for (int i = 0; i < propertiesArray.length; i++)
+            // {
+            //     dynamic prop = propertiesArray.array[i];
+            //     Log.Debug($"[GATASSETS|DEBUG]获取prop:{prop}");
+            //     int part = prop.part;
+            //     dc.String baseSpr = prop.baseSpr;
+            //     ArrayObj anims = prop.anims;
+            //     int offsetX = prop.offsetX;
+            //     int offsetY = prop.offsetY;
+            //     double scale = prop.scale;
+            //     int? colorDark = prop.colorDark;
+            //     int? colorLight = prop.colorLight;
+
+            //     if (baseSpr == null)
+            //     {
+            //         baseSpr = "fxSmallStar".AsHaxeString();
+            //     }
+            //     dc.h2d.Object parent = h.parent;
+            //     int pr = 0;
+            //     hsprite = new HSprite(g, baseSpr, new Ref<int>(ref pr), null);
+            //     if (parent != null)
+            //     {
+            //         parent.addChild(hsprite);
+            //     }
+            // }
+        }
+
 
 
         private void Hook_MiniMap_track(Hook_MiniMap.orig_track orig, MiniMap self, Entity col, int? iconId, dc.String forcedIconColor, int? blink, bool? customTile, Tile text, dc.String itemKind, dc.String isInfectedFood)
@@ -234,6 +328,8 @@ namespace DeadCellsMultiplayerMod
         {
             // if(_companionKing != null) _ghost.TeleportByPixels(me.spr.x + 100, me.spr.y);
             SendHeroCoords();
+            var fx = Assets.Class.fx;
+            var tile = fx.pages.array[0];
             ReceiveGhostCoords();
             _ghost?.HandleRemoteAnim(_net);
             if (_lastAnimSent == "idle" || _lastAnimSent == "run" || _lastAnimSent == "jumpUp" || _lastAnimSent == "jumpDown" || _lastAnimSent == "crouch" || _lastAnimSent == "land" || _lastAnimSent == "rollStart" || _lastAnimSent == "rolling" || _lastAnimSent == "rollEnd")
