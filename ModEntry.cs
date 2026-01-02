@@ -30,6 +30,8 @@ using Hashlink.Virtuals;
 using dc.tool;
 using dc.light;
 using System.ComponentModel;
+using dc.libs.heaps;
+using Math = System.Math;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -198,47 +200,12 @@ namespace DeadCellsMultiplayerMod
             h._customHeadInfoCache = virtual_atlas_glowData_item_particleEffects_properties_;
             DynamicLoadAtlas dynamicLoadAtlasEnumFromString = Assets.Class.getDynamicLoadAtlasEnumFromString(virtual_atlas_glowData_item_particleEffects_properties_.atlas);
 
-            kinghd();
+            Kinghead kinghead = new Kinghead(me);
+            kinghead.kinghd(self);
+
         }
 
-        public void kinghd()
-        {
-            // HSprite hsprite;
-            // HeroHead h = Game.Class.ME.hero.heroHead;
-            // SpriteLib g = Assets.Class.fx;
 
-            // virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_;
-            // virtual_atlas_glowData_item_particleEffects_properties_ = Main.Class.ME.user.getHeroHeadSkinInfos();
-
-            // virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_3 = virtual_atlas_glowData_item_particleEffects_properties_;
-            // ArrayObj propertiesArray = virtual_atlas_glowData_item_particleEffects_properties_3.properties;
-
-            // for (int i = 0; i < propertiesArray.length; i++)
-            // {
-            //     dynamic prop = propertiesArray.array[i];
-            //     Log.Debug($"[GATASSETS|DEBUG]获取prop:{prop}");
-            //     int part = prop.part;
-            //     dc.String baseSpr = prop.baseSpr;
-            //     ArrayObj anims = prop.anims;
-            //     int offsetX = prop.offsetX;
-            //     int offsetY = prop.offsetY;
-            //     double scale = prop.scale;
-            //     int? colorDark = prop.colorDark;
-            //     int? colorLight = prop.colorLight;
-
-            //     if (baseSpr == null)
-            //     {
-            //         baseSpr = "fxSmallStar".AsHaxeString();
-            //     }
-            //     dc.h2d.Object parent = h.parent;
-            //     int pr = 0;
-            //     hsprite = new HSprite(g, baseSpr, new Ref<int>(ref pr), null);
-            //     if (parent != null)
-            //     {
-            //         parent.addChild(hsprite);
-            //     }
-            // }
-        }
 
 
 
@@ -285,12 +252,13 @@ namespace DeadCellsMultiplayerMod
             }
             else
             {
+                _companionKing.destroy();
+                _companionKing.dispose();
+                _companionKing.disposeGfx();
                 _companionKing = _ghost.CreateGhostKing(me._level);
                 if (levelId != remoteLevelId)
                 {
-                    _companionKing.destroy();
-                    // _companionKing.dispose();
-                    // _companionKing.disposeGfx();
+
                 }
             }
         }
@@ -326,7 +294,9 @@ namespace DeadCellsMultiplayerMod
 
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
-            if(_companionKing == null || me == null || _ghost == null) return;
+            if (_companionKing == null || me == null || _ghost == null) return;
+            Kinghead kinghead = new Kinghead(me);
+            kinghead.kinghd(_companionKing);
             SendHeroCoords();
             var fx = Assets.Class.fx;
             var tile = fx.pages.array[0];
