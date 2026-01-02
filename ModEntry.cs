@@ -171,37 +171,8 @@ namespace DeadCellsMultiplayerMod
             var decayStart = 5.0 * General;
             self.createLight(1161471, radiusCase, decayStart, 0.35);
 
-
-
-            //head
-            var fx = Assets.Class.fx;
-            var tile = fx.pages.array[0];
-
-            var fxspr = Assets.Class.getDynamicLoadAtlasEnumFromString("customHead".AsHaxeString());
-            Log.Debug($"[GATASSETS|DEBUG]获取assets{fxspr}");
-
-            int db = 0;
-            var particle = new HSprite(fx, "fxSmallStar".AsHaxeString(), new Ref<int>(ref db), self.spr);
-            particle.pivot.centerFactorX = 0.5;
-            particle.pivot.centerFactorY = 0.5;
-            particle.pivot.usingFactor = true;
-            particle.x = self.get_headX();
-            particle.y = self.get_headY();
-            particle.scaleX = particle.scaleY = 1.0;
-            particle.alpha = 1.0;
-            particle.rotation = 90f;
-
-
-            self._level.scroller.addChildAt(particle, Const.Class.DP_ROOM_MAIN_HERO);
-
-            HeroHead h = new HeroHead();
-            virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_;
-            virtual_atlas_glowData_item_particleEffects_properties_ = Main.Class.ME.user.getHeroHeadSkinInfos();
-            h._customHeadInfoCache = virtual_atlas_glowData_item_particleEffects_properties_;
-            DynamicLoadAtlas dynamicLoadAtlasEnumFromString = Assets.Class.getDynamicLoadAtlasEnumFromString(virtual_atlas_glowData_item_particleEffects_properties_.atlas);
-
-            Kinghead kinghead = new Kinghead(me);
-            kinghead.kinghd(self);
+            // Kinghead kinghead = new Kinghead(me);
+            // kinghead.kinghd(self);
 
         }
 
@@ -256,10 +227,6 @@ namespace DeadCellsMultiplayerMod
                 _companionKing.dispose();
                 _companionKing.disposeGfx();
                 _companionKing = _ghost.CreateGhostKing(me._level);
-                if (levelId != remoteLevelId)
-                {
-
-                }
             }
         }
 
@@ -295,11 +262,7 @@ namespace DeadCellsMultiplayerMod
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
             if (_companionKing == null || me == null || _ghost == null) return;
-            Kinghead kinghead = new Kinghead(me);
-            kinghead.kinghd(_companionKing);
             SendHeroCoords();
-            var fx = Assets.Class.fx;
-            var tile = fx.pages.array[0];
             ReceiveGhostCoords();
             _ghost?.HandleRemoteAnim(_net);
             if (_lastAnimSent == "idle" || _lastAnimSent == "run" || _lastAnimSent == "jumpUp" || _lastAnimSent == "jumpDown" || _lastAnimSent == "crouch" || _lastAnimSent == "land" || _lastAnimSent == "rollStart" || _lastAnimSent == "rolling" || _lastAnimSent == "rollEnd")
