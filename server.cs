@@ -33,7 +33,7 @@ public sealed class NetNode : IDisposable
     private readonly object _sync = new();
     private double _rx, _ry;
     private bool _hasRemote;
-    private string? _remoteLevelText;
+    private string? _remoteLevelId;
     private string? _remoteAnim;
     private int? _remoteAnimQueue;
     private bool? _remoteAnimG;
@@ -256,6 +256,21 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("SKIN|", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = line["SKIN|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        try
+                        {
+                            GameDataSync.ReceiveHeroSkin(payload);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warning("[NetNode] Failed to handle hero skin: {msg}", ex.Message);
+                        }
+                        continue;
+                    }
+
                     if (line.StartsWith("GEN|"))
                     {
                         var payload = line["GEN|".Length..];
@@ -270,7 +285,7 @@ public sealed class NetNode : IDisposable
                         lock (_sync)
                         {
                             _hasRemote = true;
-                            _remoteLevelText = payload;
+                            _remoteLevelId = payload;
                         }
                         continue;
                     }
@@ -320,14 +335,14 @@ public sealed class NetNode : IDisposable
         catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
-            _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
+                _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
         }
         finally
         {
             lock (_sync)
             {
                 _hasRemote = false;
-                _remoteLevelText = null;
+                _remoteLevelId = null;
                 _remoteAnim = null;
                 _remoteAnimQueue = null;
                 _remoteAnimG = null;
@@ -458,7 +473,6 @@ public sealed class NetNode : IDisposable
     {
         if (_stream == null || _client == null || !_client.Connected)
         {
-            _log.Information("[NetNode] Skip sending anim: no connected client");
             return;
         }
 
@@ -467,6 +481,22 @@ public sealed class NetNode : IDisposable
         var queuePart = queueAnim.HasValue ? queueAnim.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
         var gPart = g.HasValue ? (g.Value ? "1" : "0") : string.Empty;
         SendRaw($"ANIM|{safe}|{queuePart}|{gPart}");
+    }
+
+    public void SendHeroSkin(string skin)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending hero skin: no connected client");
+            return;
+        }
+
+        var safe = (skin ?? "PrisonerDefault").Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (string.IsNullOrWhiteSpace(safe))
+            safe = "PrisonerDefault";
+
+        SendRaw("SKIN|" + safe);
+        _log.Information("[NetNode] Sent hero skin {Skin}", safe);
     }
 
     private void SendRaw(string payload)
@@ -484,12 +514,12 @@ public sealed class NetNode : IDisposable
         }
     }
 
-    public bool TryGetRemoteLevelString(out string? levelText)
+    public bool TryGetRemoteLevelId(out string? levelId)
     {
         lock (_sync)
         {
-            levelText = _remoteLevelText;
-            return _hasRemote && levelText != null;
+            levelId = _remoteLevelId;
+            return _hasRemote && !string.IsNullOrEmpty(levelId);
         }
     }
 
@@ -534,7 +564,7 @@ public sealed class NetNode : IDisposable
         try { _stream?.Close(); } catch { }
         try { _client?.Close(); } catch { }
         try { _listener?.Stop(); } catch { }
-        GameDataSync.seed = 0;
+        GameDataSync.Seed = 0;
         _stream = null; _client = null; _listener = null;
         try { _sendLock.Dispose(); } catch { }
     }

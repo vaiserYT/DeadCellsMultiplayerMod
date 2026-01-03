@@ -43,9 +43,7 @@ namespace DeadCellsMultiplayerMod
         private static string _playerId = Guid.NewGuid().ToString("N");
         public static string Username => _username;
         public static string RemoteUsername => _remoteUsername;
-        public static string PlayerId => _playerId;
         private static bool _localReady;
-        private static readonly Dictionary<string, PlayerInfo> _clientPlayers = new();
         private static List<PlayerInfo> _playersDisplay = new();
         private static bool _inHostStatusMenu;
         private static bool _inClientWaitingMenu;
