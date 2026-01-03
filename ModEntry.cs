@@ -256,10 +256,6 @@ namespace DeadCellsMultiplayerMod
                 _companionKing.dispose();
                 _companionKing.disposeGfx();
                 _companionKing = _ghost.CreateGhostKing(me._level);
-                if (levelId != remoteLevelId)
-                {
-
-                }
             }
         }
 
@@ -298,8 +294,6 @@ namespace DeadCellsMultiplayerMod
             // Kinghead kinghead = new Kinghead(me);
             // kinghead.kinghd(_companionKing);
             SendHeroCoords();
-            var fx = Assets.Class.fx;
-            var tile = fx.pages.array[0];
             ReceiveGhostCoords();
             _ghost?.HandleRemoteAnim(_net);
             if (_lastAnimSent == "idle" || _lastAnimSent == "run" || _lastAnimSent == "jumpUp" || _lastAnimSent == "jumpDown" || _lastAnimSent == "crouch" || _lastAnimSent == "land" || _lastAnimSent == "rollStart" || _lastAnimSent == "rolling" || _lastAnimSent == "rollEnd")
