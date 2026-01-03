@@ -157,14 +157,14 @@ namespace DeadCellsMultiplayerMod
             self.initSprite(heroLib, group, 0.5, 0.5, dp_ROOM_MAIN_HERO, true, null, normalMapFromGroup);
             self.initColorMap(Cdb.Class.getSkinInfo(remoteSkin.AsHaxeString()));
 
-            //glow
+            // glow
             ArrayObj glowData = CdbTypeConverter.Class.getGlowData(Cdb.Class.getSkinInfo(remoteSkin.AsHaxeString()));
             GlowKey s2 = new GlowKey(glowData);
             self.spr.addShader(s2);
 
 
-            //Ambient light
-            var General = 2.0;
+            // Ambient light
+            var General = 1.0;
             var radiusCase = 1.2 * General;
             var Math = dc.Math.Class.random() * 0.20000000000000007;
             General = 0.9 + Math;
@@ -174,34 +174,34 @@ namespace DeadCellsMultiplayerMod
 
 
             //head
-            var fx = Assets.Class.fx;
-            var tile = fx.pages.array[0];
+            // var fx = Assets.Class.fx;
+            // var tile = fx.pages.array[0];
 
-            var fxspr = Assets.Class.getDynamicLoadAtlasEnumFromString("customHead".AsHaxeString());
-            Log.Debug($"[GATASSETS|DEBUG]获取assets{fxspr}");
+            // var fxspr = Assets.Class.getDynamicLoadAtlasEnumFromString("customHead".AsHaxeString());
+            // Log.Debug($"[GATASSETS|DEBUG]获取assets{fxspr}");
 
-            int db = 0;
-            var particle = new HSprite(fx, "fxSmallStar".AsHaxeString(), new Ref<int>(ref db), self.spr);
-            particle.pivot.centerFactorX = 0.5;
-            particle.pivot.centerFactorY = 0.5;
-            particle.pivot.usingFactor = true;
-            particle.x = self.get_headX();
-            particle.y = self.get_headY();
-            particle.scaleX = particle.scaleY = 1.0;
-            particle.alpha = 1.0;
-            particle.rotation = 90f;
+            // int db = 0;
+            // var particle = new HSprite(fx, "fxSmallStar".AsHaxeString(), new Ref<int>(ref db), self.spr);
+            // particle.pivot.centerFactorX = 0.5;
+            // particle.pivot.centerFactorY = 0.5;
+            // particle.pivot.usingFactor = true;
+            // particle.x = self.get_headX();
+            // particle.y = self.get_headY();
+            // particle.scaleX = particle.scaleY = 1.0;
+            // particle.alpha = 1.0;
+            // particle.rotation = 90f;
 
 
-            self._level.scroller.addChildAt(particle, Const.Class.DP_ROOM_MAIN_HERO);
+            // self._level.scroller.addChildAt(particle, Const.Class.DP_ROOM_MAIN_HERO);
 
-            HeroHead h = new HeroHead();
-            virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_;
-            virtual_atlas_glowData_item_particleEffects_properties_ = Main.Class.ME.user.getHeroHeadSkinInfos();
-            h._customHeadInfoCache = virtual_atlas_glowData_item_particleEffects_properties_;
-            DynamicLoadAtlas dynamicLoadAtlasEnumFromString = Assets.Class.getDynamicLoadAtlasEnumFromString(virtual_atlas_glowData_item_particleEffects_properties_.atlas);
+            // HeroHead h = new HeroHead();
+            // virtual_atlas_glowData_item_particleEffects_properties_ virtual_atlas_glowData_item_particleEffects_properties_;
+            // virtual_atlas_glowData_item_particleEffects_properties_ = Main.Class.ME.user.getHeroHeadSkinInfos();
+            // h._customHeadInfoCache = virtual_atlas_glowData_item_particleEffects_properties_;
+            // DynamicLoadAtlas dynamicLoadAtlasEnumFromString = Assets.Class.getDynamicLoadAtlasEnumFromString(virtual_atlas_glowData_item_particleEffects_properties_.atlas);
 
-            Kinghead kinghead = new Kinghead(me);
-            kinghead.kinghd(self);
+            // Kinghead kinghead = new Kinghead(me);
+            // kinghead.kinghd(self);
 
         }
 
@@ -295,8 +295,8 @@ namespace DeadCellsMultiplayerMod
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
             if (_companionKing == null || me == null || _ghost == null) return;
-            Kinghead kinghead = new Kinghead(me);
-            kinghead.kinghd(_companionKing);
+            // Kinghead kinghead = new Kinghead(me);
+            // kinghead.kinghd(_companionKing);
             SendHeroCoords();
             var fx = Assets.Class.fx;
             var tile = fx.pages.array[0];
