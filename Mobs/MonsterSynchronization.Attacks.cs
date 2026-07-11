@@ -319,6 +319,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 generationAfterRebuild,
                 s_levelIdentityToken);
 
+            ClearSyncQuiesceAfterRebuild();
+
             for (int i = 0; i < s_batchMobsScratch.Count; i++)
                 QueueInitialMobSync(s_batchMobsScratch[i]);
 
@@ -519,6 +521,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             IdToMob.Clear();
             MobToId.Clear();
             nextRuntimeSyncId = 0;
+            s_pendingCulledMobDeaths.Clear();
             clientMobTargets.Clear();
             clientCachedAttackTargetByMob.Clear();
             clientQueuedOldSkillMarkers.Clear();
@@ -782,6 +785,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (!IdToMob.TryGetValue(syncId, out var mappedMob) || !ReferenceEquals(mappedMob, mob))
                     MobSyncTrace.LogInvariantViolation(reason, $"IdToMob mismatch syncId={syncId} localIndex={i}");
             }
+
+            // The first pass intentionally records every tracked mob/id. Start fresh before
+            // validating IdToMob itself; otherwise every valid dictionary entry is reported as a
+            // duplicate merely because it was already seen through trackedMobs.
+            s_validationSeenMobsScratch.Clear();
+            s_validationSeenSyncIdsScratch.Clear();
 
             foreach (var pair in IdToMob)
             {

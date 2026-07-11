@@ -1,128 +1,131 @@
+# DeadCellsCoopPlus — Stable Co-op v0.8.38
+
+DeadCellsCoopPlus is a community-maintained fork of Vaiser’s original **Dead Cells Multiplayer Mod**, built with the **Dead Cells Core Modding API (DCCM)**.
+
+This release keeps the stable v0.8.36 co-op fixes and gives the main-menu **Play Multiplayer** entry a soft blue highlight.
+
+See `CHANGELOG.md` for the complete version history and `SUBLEVEL_REWARD_DOOR_NOTES_v0.8.36.md` for the latest transition fix.
+
+---
+
 <div align="center">
 
 English • [Русский](README_ru.md)
-  
+
 </div>
-<h1>Dead Cells Multiplayer Mod</h1>
 
-**DeadCellsMultiplayerMod** is a **multiplayer / co-op mod for Dead Cells**, built using the **Dead Cells Core Modding API (DCCM)**.
+## Latest release highlights
 
-The mod adds **co-op / multiplayer gameplay** via a **local or virtual network**:  
-one player hosts a server, another connects — and both players can **play through levels together in real time**.
+- Fixed normal biome transition crashes caused by invalid remote-player render state.
+- Fixed timed and no-hit reward-room crashes through `ZDoor` sublevel transitions.
+- Uses the current vanilla `Level.init` path for better compatibility with newer Dead Cells builds.
+- Includes hardened host-authoritative enemy synchronization and cleanup.
+- Includes the newer Party HUD with player name, segmented health, and percentage display.
+- Supports Steam P2P and direct TCP hosting/joining.
 
----
+## Features
 
-## 🎮 Features
+- Real-time synchronization between two players
+- Local TCP or Steam P2P multiplayer
+- Host/client architecture
+- Automatic game start for connected clients
+- Camera spectate controls with keyboard or gamepad
+- Boss HP scaling and boss-rune synchronization
+- Enemy movement, damage, attack, death, and despawn synchronization
+- Remote weapon, head, skin, and cosmetic synchronization
+- Death, downed-state, revive, and restart handling
+- Level generation and transition synchronization
+- Timed/no-hit reward-room transition protection
+- Multiplayer save slots
+- Party HUD for the remote player
 
-- ✅ Real-time synchronization between two players  
-- ✅ Local TCP or Steam P2P multiplayer  
-- ✅ Host / Client architecture  
-- ✅ Automatic game start for connected clients  
-- ✅ Camera spectate — cycle between players with `,` / `.` keys or gamepad  
-- ✅ Boss HP scaling and boss rune sync  
-- ✅ Client mob attack synchronization and interruption  
-- ✅ Ghost weapon, head, and cosmetic sync  
-- ✅ Death/revive handling and restart sync  
-- ✅ Level graph reload sync (boss cell doors, level transitions)  
-- ✅ Multiplayer save slots  
-
----
-
-## ⭐ Support the Project
-
-If you find this project interesting:
-- ⭐ Star the repository  
-- 🍴 Fork the project and experiment  
-
-Every bit of feedback helps improve multiplayer support for **Dead Cells**.
-
----
-
-## 🧰 Requirements
+## Requirements
 
 - **Dead Cells (PC)**
 - **Dead Cells Core Modding API (DCCM)**
-- Local network, Steam, or virtual LAN software (for online play)
+- Steam, a local network, or a compatible virtual LAN for online TCP play
 
----
+## Installation
 
-## 📦 Installation
+### 1. Install DCCM
 
-### 1️⃣ Install Dead Cells Core Modding API (DCCM)
+For the Steam version of Dead Cells, follow the official DCCM installation guide:
 
-If you are using the **Steam version** of the game, follow the official installation guide:
+https://dead-cells-core-modding.github.io/docs/docs/tutorial/install-workshop/
 
-👉 [https://dead-cells-core-modding.github.io/docs/docs/tutorial/install-workshop/](https://dead-cells-core-modding.github.io/docs/docs/tutorial/install-workshop/)
+### 2. Install the mod
 
-This method will automatically install and keep DCCM up to date.
+Copy the built mod folder into:
 
-### 2️⃣ Install DeadCellsMultiplayerMod
-
-If you are using the **Steam version** of the game:
-1. Open [https://steamcommunity.com/sharedfiles/filedetails/?id=3657857836](https://steamcommunity.com/sharedfiles/filedetails/?id=3657857836)
-2. Install the mod in one click.
-
-If you are using a **non-Steam version** of Dead Cells (DCCM required):
-1. Navigate to your **DCCM directory**
-2. Create a folder named `mods` (if it doesn't exist)
-3. Extract the **DeadCellsMultiplayerMod** folder into the `mods` directory
-
-Example:
-```
-Your game path/
- └──coremod/
+```text
+Dead Cells/
+└── coremod/
     └── mods/
         └── DeadCellsMultiplayerMod/
 ```
 
-### 3️⃣ Run the game via DCCM
+The installed folder should contain the compiled DLL, `modinfo.json`, and any required resource files produced by the project build.
 
-Start **Dead Cells** using **DCCM**.  
-On the first launch, required configuration files will be generated automatically.
+### 3. Start through DCCM
 
----
+Launch Dead Cells through DCCM. Configuration files are generated automatically on first launch.
 
-## 🕹️ How to Play (Multiplayer)
+## How to play
 
-1. Launch the game via **DCCM**
-2. Click **Play Multiplayer**
-3. Choose **Host** or **Join**
-4. Enter **IP address** and **port** (TCP) or connect via Steam
-5. When the host starts the game, the client will automatically join the session
+1. Start Dead Cells through DCCM on both computers.
+2. Open **Play Multiplayer**.
+3. The host chooses a Steam lobby or direct TCP host.
+4. The second player joins through Steam, lobby code, or the host address.
+5. Start a run after both players are connected.
 
-🌐 **For online play**, use one of the following:
-- Hamachi  
-- Radmin VPN  
-- ZeroTier  
-- Steam P2P (built-in)
+Both players should use the same mod build. For v0.8.38, the game log should contain:
 
----
+```text
+[NetMod] Source build: v0.8.38-sublevel-dive-combat-guard
+```
 
-## 🧪 Development Status / TODO
+## v0.8.38 regression test checklist
 
-- [x] Second player ghost  
-- [x] World data synchronization  
-- [x] Ghost animations  
-- [x] Level generation sync  
-- [x] Enemy synchronization  
-- [x] Boss synchronization, HP scaling, boss rune sync  
-- [x] Death handling and restart sync  
-- [x] Player ghost weapon, head, and cosmetic sync  
-- [x] Level graph reload (boss cells, transitions)  
-- [x] Multiplayer save slots and continue  
-- [x] Camera spectate mode  
-- [ ] Custom mode  
-- [x] Steam P2P connectivity  
+- Prisoners’ Quarters to the passage area
+- Passage forge and mutation area
+- Timed reward door
+- No-hit reward door
+- Reward-room exit
+- Passage to the next main biome
 
----
+## Development status
 
-## 📜 Credits
+- [x] Second-player remote character
+- [x] World and level generation synchronization
+- [x] Enemy and boss synchronization
+- [x] Boss HP scaling and boss-rune synchronization
+- [x] Death, revive, and restart synchronization
+- [x] Weapon, head, skin, and cosmetic synchronization
+- [x] Main biome transition crash protection
+- [x] Timed/no-hit reward-room transition protection
+- [x] Multiplayer saves and continue support
+- [x] Camera spectate mode
+- [x] Steam P2P connectivity
+- [ ] Broader custom-mode support
 
-- **Dead Cells Core Modding API (DCCM)**  
-  https://github.com/dead-cells-core-modding/core
+## Reporting bugs
 
----
+Include both players’ logs whenever possible:
 
-<!--
-Keywords: Dead Cells multiplayer mod, Dead Cells co-op mod, Dead Cells online, DCCM mod, Dead Cells TCP multiplayer
--->
+- `last_error.txt`
+- the latest DCCM game log
+- exact reproduction steps
+- whether the crash happened on host, client, or both
+- the source-build line printed during startup
+
+## Credits
+
+- **Original project and core multiplayer implementation:** Vaiser / `vaiserYT`
+  - https://github.com/vaiserYT/DeadCellsMultiplayerMod
+- **Dead Cells Core Modding API:**
+  - https://github.com/dead-cells-core-modding/core
+- Community contributors and testers who helped reproduce crashes, verify synchronization, and test transitions.
+
+## License
+
+This project continues under the original MIT License. See `LICENSE` and `NOTICE.md`.

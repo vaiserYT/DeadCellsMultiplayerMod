@@ -1061,7 +1061,7 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
             // Scarf
             initScarf();
 
-
+            ModEntry.EnsureGhostKingRenderSafe(this, "GhostKing.initGfx", detachForTransition: false);
         }
 
         private bool TryRetargetCurrentSprite(SpriteLib heroLib, dc.String group, Texture normalMap)
@@ -1099,6 +1099,7 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
                 {
                     this.disposeGfx();
                     this.initGfx();
+                    ModEntry.EnsureGhostKingRenderSafe(this, "GhostKing.ApplyRemoteSkin", detachForTransition: false);
                 }
                 catch
                 {
@@ -1107,6 +1108,7 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
                     {
                         this.disposeGfx();
                         this.initGfx();
+                        ModEntry.EnsureGhostKingRenderSafe(this, "GhostKing.ApplyRemoteSkin.fallback", detachForTransition: false);
                     }
                     catch
                     {

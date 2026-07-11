@@ -3,9 +3,9 @@
 English • [Русский](CONTRIBUTING_ru.md)
   
 </div>
-# Contributing to DeadCellsMultiplayerMod
+# Contributing to DeadCellsCoopPlus
 
-Thank you for your interest in improving this mod. This document describes how to build the project and what we expect from contributions.
+Thank you for your interest in improving DeadCellsCoopPlus. This document describes how to build the project and what we expect from contributions.
 
 ## Prerequisites
 

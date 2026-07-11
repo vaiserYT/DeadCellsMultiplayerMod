@@ -12,6 +12,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private const double HostMobStateMidPositionEpsilon = 1.20;
         private const double HostMobStateDormantPositionEpsilon = 6.00;
         private const double MobFallbackMinimumScoreGap = 4.0;
+        /// <summary>Client/host mobs can drift while fighting. Direct sync-id hits are allowed within this many pixels instead of requiring exact coordinates.</summary>
+        private const double MobHitTrustedSyncIdDistancePx = 24.0 * 32.0;
         private const double ClientAiAuthorityLockDurationSeconds = 99999.0;
         private const double AuthoritativeAffectPresenceSeconds = 99999.0;
         private const double PixelsPerCase = 24.0;

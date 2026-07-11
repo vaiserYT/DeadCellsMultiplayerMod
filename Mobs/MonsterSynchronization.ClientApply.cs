@@ -153,6 +153,88 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             return false;
         }
 
+        /// <summary>
+        /// Client-side: mark the mob dead and defer the vanilla death to the mob's OWN update
+        /// cycle (<see cref="TryRunPendingCulledMobDeath"/> in postUpdate). The original mod never
+        /// calls onDie() from a network apply; a death half-executed outside the mob's update is
+        /// corrupted state that the level-transition render trips on (Null access .groupName with
+        /// every mod scene object provably removed). Deferral keeps the ghost-mob cleanup while
+        /// restoring vanilla death timing. Returns true when deferred (always, for valid mobs).
+        /// </summary>
+        private static bool TryDeferCulledClientMobDeath(Mob mob)
+        {
+            if (mob == null)
+                return false;
+            if (IsHost(GameMenu.NetRef))
+                return false;
+
+            try { mob.life = 0; } catch { }
+            lock (Sync)
+            {
+                s_pendingCulledMobDeaths.Add(mob);
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Called from Hook_Mob_postUpdate (client branch). A mob reaching postUpdate is being
+        /// simulated by vanilla, so its state is initialized and the deferred death is now safe.
+        /// Returns true when this mob's deferred death was executed this frame.
+        /// </summary>
+        private static bool TryRunPendingCulledMobDeath(Mob mob)
+        {
+            if (mob == null)
+                return false;
+
+            lock (Sync)
+            {
+                if (s_pendingCulledMobDeaths.Count == 0 || !s_pendingCulledMobDeaths.Contains(mob))
+                    return false;
+            }
+
+            // Reaching postUpdate is not proof of initialization if vanilla also ticks culled
+            // mobs; require the mob to actually be awake before running the vanilla death.
+            if (IsMobCulledLocally(mob))
+                return false;
+
+            lock (Sync)
+            {
+                s_pendingCulledMobDeaths.Remove(mob);
+            }
+
+            try
+            {
+                if (mob.destroyed)
+                    return true;
+
+                RunWithSuppressedMobDieSend(() =>
+                {
+                    mob.life = 0;
+                    mob.onDie();
+                });
+
+                var animManager = GetMobAnimManager(mob);
+                if (animManager?.stack != null)
+                {
+                    while (animManager.stack.length > 0)
+                        animManager.stack.pop();
+                }
+            }
+            catch
+            {
+                try
+                {
+                    mob.isOutOfGame = true;
+                    mob.isOnScreen = false;
+                }
+                catch
+                {
+                }
+            }
+
+            return true;
+        }
+
         private static void ApplyAuthoritativeLifeState(Mob mob, int targetLife, int targetMaxLife)
         {
             if (mob == null)
@@ -168,7 +250,14 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 clampedLife = 0;
 
             if (mob.life == clampedLife)
+            {
+                // Host may report life=0 after the local client already lost the HP bar but never ran
+                // the death/despawn branch. Force that branch once for non-boss mobs so rune elites and
+                // normal mobs do not stay as invisible/unkillable ghosts.
+                if (clampedLife <= 0 && !BossSyncHelpers.IsBossMob(mob))
+                    ForceNonBossAuthoritativeDeath(mob);
                 return;
+            }
 
             var wasAlive = mob.life > 0;
             mob.life = clampedLife;
@@ -176,6 +265,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob.life <= 0 && wasAlive)
             {
                 if (BossSyncHelpers.IsBossMob(mob))
+                    return;
+
+                if (TryDeferCulledClientMobDeath(mob))
                     return;
 
                 try
@@ -195,6 +287,46 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         while (animManager.stack.length > 0)
                             animManager.stack.pop();
                     }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+
+        private static void ForceNonBossAuthoritativeDeath(Mob mob)
+        {
+            if (mob == null)
+                return;
+
+            try
+            {
+                if (mob.destroyed)
+                    return;
+            }
+            catch
+            {
+            }
+
+            if (TryDeferCulledClientMobDeath(mob))
+                return;
+
+            try
+            {
+                TryWakeMobForForcedSimulation(mob);
+                RunWithSuppressedMobDieSend(() =>
+                {
+                    mob.life = 0;
+                    mob.onDie();
+                });
+            }
+            catch
+            {
+                try
+                {
+                    mob.isOutOfGame = true;
+                    mob.isOnScreen = false;
                 }
                 catch
                 {

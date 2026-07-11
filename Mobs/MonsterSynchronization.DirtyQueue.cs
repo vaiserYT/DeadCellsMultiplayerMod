@@ -329,6 +329,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void FlushHostDirtyMobQueue(NetNode net)
         {
+            if (IsSyncQuiescedForTransition())
+                return;
+
             if (!IsHost(net))
                 return;
 
@@ -500,6 +503,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void FlushClientDirtyMobQueue(NetNode net)
         {
+            if (IsSyncQuiescedForTransition())
+                return;
+
             if (!IsClient(net))
                 return;
 

@@ -934,12 +934,17 @@ namespace DeadCellsMultiplayerMod
             return value.AsHaxeString();
         }
 
-        private static void AddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null)
+        private static void AddMenuButton(
+            TitleScreen screen,
+            string label,
+            Action onClick,
+            string? help = null,
+            int textColor = 0xFFFFFF)
         {
             var cb = new HlAction(onClick);
             var labelStr = MakeHLString(label);
             var helpStr = MakeHLString(help ?? string.Empty);
-            int colorVal = 0xFFFFFF;
+            int colorVal = textColor;
             var color = Ref<int>.From(ref colorVal);
             screen.addMenu(labelStr, cb, helpStr, null, color);
         }

@@ -72,8 +72,69 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly List<Mob> s_dieVictimsScratch = new();
         private static readonly HashSet<Mob> s_dieVictimDedupScratch = new(ReferenceEqualityComparer.Instance);
         private static readonly HashSet<Mob> s_usedTrackedMobsScratch = new(ReferenceEqualityComparer.Instance);
+
+        // Client-side deaths deferred because the mob is culled locally (far from the local hero,
+        // vanilla never proximity-initialized it). Running vanilla onDie() on such a mob leaves a
+        // half-started death sequence that vanilla update null-derefs a frame later (the
+        // "Null access .cx" fatal when the other player kills a mob far away). The real death runs
+        // in Hook_Mob_postUpdate once vanilla itself starts simulating the mob. Guarded by Sync.
+        private static readonly HashSet<Mob> s_pendingCulledMobDeaths = new(ReferenceEqualityComparer.Instance);
+
+        // Full mob-sync quiescence during level transitions: from door activation until the new
+        // level's registry commit, NOTHING is applied to mobs and nothing is sent. The v0.8.25
+        // crash log showed 3 seconds of move/state application to the old level's 75 mobs between
+        // the door activation and the mid-load render fatal - mutating mobs the transition is
+        // dismantling, behind a fading screen where none of it is visible anyway.
+        private static long s_syncQuiescedUntilTicks;
+
+        internal static void QuiesceForLevelTransition()
+        {
+            s_syncQuiescedUntilTicks = System.Diagnostics.Stopwatch.GetTimestamp()
+                + (long)(System.Diagnostics.Stopwatch.Frequency * 8.0);
+            Log.Information("[MobSync] quiesced for level transition");
+        }
+
+        private static bool IsSyncQuiescedForTransition()
+        {
+            if (s_syncQuiescedUntilTicks == 0)
+                return false;
+            if (System.Diagnostics.Stopwatch.GetTimestamp() >= s_syncQuiescedUntilTicks)
+            {
+                s_syncQuiescedUntilTicks = 0;
+                Log.Information("[MobSync] quiesce window expired (timeout)");
+                return false;
+            }
+            return true;
+        }
+
+        private static void ClearSyncQuiesceAfterRebuild()
+        {
+            if (s_syncQuiescedUntilTicks == 0)
+                return;
+            s_syncQuiescedUntilTicks = 0;
+            Log.Information("[MobSync] resumed after rebuild commit");
+        }
         private static int suppressMobDieSendDepth;
         private static int suppressMobHitSendDepth;
+
+        // Ghost-mob despawn echo (host only). Tracks repeated missing_sync_id hits per syncId —
+        // a client persistently hitting a mob the host no longer tracks means the client has an
+        // unkillable ghost. After enough misses over enough time the host echoes an authoritative
+        // life=0 state for that syncId so the client's existing forced-death path cleans it up.
+        // All access guarded by Sync.
+        private sealed class GhostHitMissRecord
+        {
+            public int Count;
+            public long FirstMissTicks;
+            public long LastEchoTicks;
+        }
+
+        private static readonly Dictionary<int, GhostHitMissRecord> s_ghostHitMissBySyncId = new();
+        private static readonly List<NetNode.MobStateSnapshot> s_ghostDespawnEchoScratch = new();
+        private static int s_ghostHitMissGeneration;
+        private const int GhostHitMissMinCount = 3;
+        private const double GhostHitMissMinSeconds = 2.0;
+        private const double GhostHitEchoMinIntervalSeconds = 2.0;
 
         private static Level? currentLevel;
         private static bool s_levelIdentityReady;
@@ -774,20 +835,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             orig(self, clid);
 
-            // Prevent Null access .groupName crashes in vanilla applyAttackResult (e.g. dive attacks
-            // hitting entities whose sprite group hasn't been assigned).  Native entity init should
-            // always set groupName, but edge cases (spawn, level transition, remote ghosts) can leave
-            // it null.  A fallback groupName avoids the HashlinkError without hunting every code path.
-            if (clid is dc.Entity ety)
-            {
-                try
-                {
-                    var spr = ety.spr;
-                    if (spr != null && spr.groupName == null)
-                        spr.groupName = string.Empty.AsHaxeString();
-                }
-                catch { }
-            }
+            // Do not write an empty groupName into every vanilla entity. The current game build
+            // can legitimately register sprites before their animation group is assigned. Only
+            // validate the multiplayer-created KingSkin, and repair it through the animation API.
+            if (clid is DeadCellsMultiplayerMod.Ghost.GhostBase.GhostKing registeredKing)
+                ModEntry.EnsureGhostKingRenderSafe(registeredKing, "Level.registerEntity", detachForTransition: false);
 
             if (clid is not Mob mob)
                 return;
@@ -932,6 +984,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 orig(self);
                 if (IsClient(net) && IsSyncMob(self))
                 {
+                    if (TryRunPendingCulledMobDeath(self))
+                        return;
+
                     ObserveClientMobForDirtyQueue(self);
                     ApplyClientAnimationStateBeforeUpdate(self);
                     TryRepairClientMobAttackTarget(self);

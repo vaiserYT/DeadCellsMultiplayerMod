@@ -58,7 +58,20 @@ public class Levelinit : ModBase, IEventReceiver, IOnAdvancedModuleInitializing
 
 
 
+    // Compatibility path for Dead Cells v35.9+ (June 2026).
+    // Do not replace the game's complete Level.init implementation: the game now
+    // owns render/UI initialization details that this legacy copied routine cannot
+    // safely reproduce. MobSync attaches later through entitiesPostCreate.
     private void Levelinit_Main(Hook_Level.orig_init orig, Level self)
+    {
+        ModEntry.Instance?.Logger.Information(
+            "[NetMod][Compat] using vanilla Level.init for level={LevelId}",
+            self.map?.id?.ToString() ?? string.Empty);
+        orig(self);
+    }
+
+    // Kept only as reference for older game builds. It is no longer hooked.
+    private void LegacyLevelinit_Main(Hook_Level.orig_init orig, Level self)
     {
         initprocess(self);
 

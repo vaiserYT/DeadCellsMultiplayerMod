@@ -379,7 +379,7 @@ namespace DeadCellsMultiplayerMod
             clientSkins[index] = cleaned;
 
             var client = clients[index];
-            if (client != null)
+            if (client != null && !IsRemoteKingTransitionActive)
             {
                 if (!string.Equals(prev, cleaned, StringComparison.Ordinal) || client.spr == null)
                     client.ApplyRemoteSkin(cleaned);
@@ -405,7 +405,8 @@ namespace DeadCellsMultiplayerMod
             if (client != null)
                 client.RemoteHeadSkinId = cleaned;
 
-            if (!string.Equals(prev, cleaned, StringComparison.Ordinal) || client?.head == null)
+            if (!IsRemoteKingTransitionActive &&
+                (!string.Equals(prev, cleaned, StringComparison.Ordinal) || client?.head == null))
                 instance.ScheduleGhostHeadRecreate(index, immediate: true);
         }
 
@@ -416,6 +417,9 @@ namespace DeadCellsMultiplayerMod
 
         private void RecreateClientHead(int slot)
         {
+            if (IsRemoteKingTransitionActive)
+                return;
+
             var hitchStart = RuntimeHitchWatch.Start();
             if (slot < 0 || slot >= clients.Length)
                 return;
@@ -749,6 +753,10 @@ namespace DeadCellsMultiplayerMod
 
         private GhostKing? EnsureClientKingSlot(int slot)
         {
+            var existingDuringTransition = slot >= 0 && slot < clients.Length ? clients[slot] : null;
+            if (IsRemoteKingTransitionActive)
+                return existingDuringTransition;
+
             var hitchStart = RuntimeHitchWatch.Start();
             if (slot < 0 || slot >= clients.Length)
                 return null;
@@ -898,6 +906,13 @@ namespace DeadCellsMultiplayerMod
             var hitchStart = RuntimeHitchWatch.Start();
             var net = _net;
             if (net == null || me == null) return;
+
+            if (IsRemoteKingTransitionActive || IsLocalDiveNetGuardActive())
+            {
+                if (net.TryConsumeRemoteAttacks(out var guardedAttacks))
+                    NetNode.ReleaseConsumedList(guardedAttacks);
+                return;
+            }
 
             if (!net.TryConsumeRemoteAttacks(out var attacks))
                 return;

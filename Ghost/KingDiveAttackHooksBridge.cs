@@ -20,6 +20,9 @@ public partial class ModEntry
     private const double LocalDiveStartRepeatBlockSeconds = 0.04;
     private const double LocalDiveLandRepeatBlockSeconds = 0.04;
     private const double DiveInfoRescanMinSeconds = 0.2;
+    private const double PostRoomDiveGuardSeconds = 1.25;
+
+    private static long s_lastNoCombatDiveSuppressLogTicks;
 
     private long _lastLocalDiveStartSendTicks;
     private long _lastLocalDiveLandSendTicks;
@@ -58,9 +61,10 @@ public partial class ModEntry
             return;
 
         var wasDiving = IsDiveReallyActive(self);
+        bool executed;
         try
         {
-            ExecuteDiveAttackLand(orig, self, high, hero!);
+            executed = ExecuteDiveAttackLand(orig, self, high, hero!);
         }
         catch (Exception ex)
         {
@@ -68,6 +72,9 @@ public partial class ModEntry
             try { self?.end(); } catch { }
             return;
         }
+
+        if (!executed)
+            return;
 
         try
         {
@@ -145,7 +152,7 @@ public partial class ModEntry
         return true;
     }
 
-    private static void ExecuteDiveAttackLand(Hook_DiveAttack.orig_onOwnerLand orig, DiveAttack self, double high, Hero hero)
+    private static bool ExecuteDiveAttackLand(Hook_DiveAttack.orig_onOwnerLand orig, DiveAttack self, double high, Hero hero)
     {
         Level? level;
         try
@@ -158,16 +165,56 @@ public partial class ModEntry
         }
 
         if (level == null)
-            return;
+            return false;
+
+        // Transition/passages (T_*) are no-combat staging levels. A sublevel return can leave
+        // stale Mob collision entries alive even though there are no legitimate combat targets.
+        // Let the dive animation end, but do not run vanilla area-hit resolution there.
+        if (IsNoCombatTransitionLevel(level, out var levelId))
+        {
+            LogSuppressedNoCombatDive(levelId);
+            try { self.end(); } catch { }
+            return false;
+        }
 
         // Vanilla applyHit/applyAttackResult reads spr.groupName; null crashes the HL runtime (HashlinkError).
         if (!IsHeroSpriteGroupReadyForCombat(hero))
         {
             try { self.end(); } catch { }
+            return false;
+        }
+
+        WithSanitizedDiveTargets(level, () => orig(self, high));
+        return true;
+    }
+
+    private static bool IsNoCombatTransitionLevel(Level level, out string levelId)
+    {
+        levelId = string.Empty;
+        try
+        {
+            levelId = level.map?.id?.ToString() ?? string.Empty;
+        }
+        catch
+        {
+        }
+
+        return levelId.StartsWith("T_", StringComparison.Ordinal);
+    }
+
+    private static void LogSuppressedNoCombatDive(string levelId)
+    {
+        var now = Stopwatch.GetTimestamp();
+        if (s_lastNoCombatDiveSuppressLogTicks != 0 &&
+            Stopwatch.GetElapsedTime(s_lastNoCombatDiveSuppressLogTicks, now).TotalSeconds < 1.0)
+        {
             return;
         }
 
-        WithSanitizedQuadElements(level, () => orig(self, high));
+        s_lastNoCombatDiveSuppressLogTicks = now;
+        Instance?.Logger.Information(
+            "[NetMod][DiveGuard] suppressed dive hit in no-combat transition level={LevelId}",
+            levelId);
     }
 
     /// <summary>
@@ -189,6 +236,68 @@ public partial class ModEntry
         catch
         {
             return false;
+        }
+    }
+
+    private readonly struct DiveTargetableSnapshot
+    {
+        public readonly dc.Entity Entity;
+        public readonly bool WasTargetable;
+
+        public DiveTargetableSnapshot(dc.Entity entity, bool wasTargetable)
+        {
+            Entity = entity;
+            WasTargetable = wasTargetable;
+        }
+    }
+
+    private static void WithSanitizedDiveTargets(Level level, Action action)
+    {
+        if (action == null)
+            return;
+
+        var disabled = new List<DiveTargetableSnapshot>();
+        try
+        {
+            ArrayObj? entities = null;
+            try { entities = level.entities; } catch { }
+            if (entities != null)
+            {
+                for (var i = 0; i < entities.length; i++)
+                {
+                    dc.Entity? entity = null;
+                    try { entity = entities.getDyn(i) as dc.Entity; } catch { }
+                    if (entity == null || IsEntityQuadHitSafe(entity))
+                        continue;
+
+                    try
+                    {
+                        var wasTargetable = entity._targetable;
+                        entity._targetable = false;
+                        disabled.Add(new DiveTargetableSnapshot(entity, wasTargetable));
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            WithSanitizedQuadElements(level, action);
+        }
+        finally
+        {
+            for (var i = disabled.Count - 1; i >= 0; i--)
+            {
+                var snapshot = disabled[i];
+                try
+                {
+                    if (!snapshot.Entity.destroyed)
+                        snapshot.Entity._targetable = snapshot.WasTargetable;
+                }
+                catch
+                {
+                }
+            }
         }
     }
 
@@ -302,7 +411,8 @@ public partial class ModEntry
 
     internal void MarkDiveNetGuardAfterSpawnOrRoomChange()
     {
-        _localDiveNetGuardUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 0.55);
+        _localDiveNetGuardUntilTicks = Stopwatch.GetTimestamp() +
+            (long)(Stopwatch.Frequency * PostRoomDiveGuardSeconds);
     }
 
     private void NotifyLocalDiveAttackStartedFromHooks(DiveAttack? self)
@@ -743,6 +853,12 @@ public partial class ModEntry
 
         if (!IsRemoteDiveAttackKind(attack.Kind))
             return false;
+
+        // Drop stale dive land packets while a room/sublevel is changing and during the
+        // short post-activation grace window. Full-level changes already drain these queues;
+        // sublevel activation needs the same protection.
+        if (IsRemoteKingTransitionActive || IsLocalDiveNetGuardActive())
+            return true;
 
         var remoteIsDiving = attack.PermanentId != 0;
         if (!remoteIsDiving)

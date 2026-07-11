@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using DeadCellsMultiplayerMod;
 using DeadCellsMultiplayerMod.Interaction;
+using DeadCellsMultiplayerMod.AdvancedCoop;
 
 public sealed partial class NetNode
 {
@@ -218,6 +219,27 @@ public sealed partial class NetNode
                     forwardLine = BuildChatLine(effectiveId.Value, message);
             }
 
+            return true;
+        }
+
+
+        if (line.StartsWith("LOBBYSTATE|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["LOBBYSTATE|".Length..];
+            lock (_sync) _hasRemote = true;
+            CoopAdvancedHardening.ReceiveLobbyState(payload);
+            if (_role == NetRole.Host && senderId.HasValue)
+                forwardLine = line.EndsWith("\n", StringComparison.Ordinal) ? line : line + "\n";
+            return true;
+        }
+
+        if (line.StartsWith("RUNEPROG|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["RUNEPROG|".Length..];
+            lock (_sync) _hasRemote = true;
+            CoopAdvancedHardening.ReceiveRuneProgress(payload);
+            if (_role == NetRole.Host && senderId.HasValue)
+                forwardLine = line.EndsWith("\n", StringComparison.Ordinal) ? line : line + "\n";
             return true;
         }
 

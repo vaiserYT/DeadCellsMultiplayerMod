@@ -1339,6 +1339,28 @@ namespace DeadCellsMultiplayerMod
             return port;
         }
 
+        internal static bool TryOpenInviteOverlay(ulong lobbyId, out string error)
+        {
+            error = string.Empty;
+            if (lobbyId == 0UL)
+            {
+                error = "No Steam lobby is active yet";
+                return false;
+            }
+
+            try
+            {
+                SteamFriends.ActivateGameOverlayInviteDialog(new CSteamID(lobbyId));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+
         internal static string ResolveBestHostIp()
         {
             try

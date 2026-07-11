@@ -8,9 +8,14 @@
     <SupportedOSPlatform>Windows</SupportedOSPlatform>
     <NoWarn>$(NoWarn);CA1416;CS0414;CS9107</NoWarn>
     <!-- don't change this version -->
-    <Version>0.3.3</Version> 
+    <Version>0.8.38</Version> 
     <ModType>mod</ModType>
     <ModMain>DeadCellsMultiplayerMod.ModEntry</ModMain>
+    
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Prefer32Bit>false</Prefer32Bit>
+    <AssemblyName>DeadCellsMultiplayerMod</AssemblyName>
     <AutoInstallMod Condition="'$(Configuration)' == 'Debug'">true</AutoInstallMod>
 
     <SteamworksNetHintPath Condition="'$(SteamworksNetHintPath)' == '' and '$(DCCM_MDK_ROOT)' != ''">$(DCCM_MDK_ROOT)\tools\Steamworks.NET.dll</SteamworksNetHintPath>

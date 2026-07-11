@@ -87,6 +87,9 @@ public class LevelExitSync :
     private bool _suppressDoorActivateHook;
     private string _transitionDoorKey = string.Empty;
     private bool _timerPausedByExit;
+    private string _exitFailsafeDoorKey = string.Empty;
+    private long _exitFailsafeStartedTicks;
+    private const double ExitFailsafeTeleportSeconds = 8.0;
 
     /// <summary>Exit/portal/boss-door entities only — avoids scanning <c>level.entities</c> every hero frame.</summary>
     private readonly List<Entity?> _exitTargetCandidates = new();
@@ -173,6 +176,10 @@ public class LevelExitSync :
 
     private void Hook_Level_onDispose(Hook_Level.orig_onDispose orig, Level self)
     {
+        var localLevel = ModEntry.me?._level;
+        if (localLevel != null && ReferenceEquals(localLevel, self))
+            ModEntry.PrepareRemoteKingsForLevelTransition("level-onDispose-current");
+
         if (ReferenceEquals(_exitCandidatesLevel, self))
         {
             _exitCandidatesLevel = null;
@@ -298,6 +305,7 @@ public class LevelExitSync :
         UpdateLocalPlayerState(net, forceSend: false);
         ApplyLocalTimerPause(_localPressed && _localInsideCircle);
         RefreshDoorVisuals(net);
+        TryExitTeleportFailsafe(hero, currentLevel, net);
 
         if (_localPressed &&
             _localInsideCircle &&
@@ -324,6 +332,75 @@ public class LevelExitSync :
         UpdateExitPointer(net);
     }
 
+
+    private void TryExitTeleportFailsafe(Hero hero, Level? level, NetNode net)
+    {
+        if (hero == null || level == null || net == null || !net.IsAlive)
+            return;
+        if (_localPressed && _localInsideCircle)
+        {
+            _exitFailsafeDoorKey = string.Empty;
+            _exitFailsafeStartedTicks = 0;
+            return;
+        }
+
+        string candidateKey = string.Empty;
+        foreach (var state in _playerStates.Values)
+        {
+            if (state == null || state.UserId <= 0)
+                continue;
+            if (!state.Pressed || !state.InsideCircle || string.IsNullOrWhiteSpace(state.DoorKey))
+                continue;
+            if (IsPlayerDownedForExit(state.UserId, net.id))
+                continue;
+            candidateKey = state.DoorKey;
+            break;
+        }
+
+        if (string.IsNullOrWhiteSpace(candidateKey))
+        {
+            _exitFailsafeDoorKey = string.Empty;
+            _exitFailsafeStartedTicks = 0;
+            return;
+        }
+
+        var target = FindExitTargetByDoorKey(level, candidateKey);
+        if (target == null)
+            return;
+
+        if (!string.Equals(_exitFailsafeDoorKey, candidateKey, StringComparison.Ordinal))
+        {
+            _exitFailsafeDoorKey = candidateKey;
+            _exitFailsafeStartedTicks = Stopwatch.GetTimestamp();
+            return;
+        }
+
+        var elapsed = Stopwatch.GetElapsedTime(_exitFailsafeStartedTicks).TotalSeconds;
+        if (elapsed < ExitFailsafeTeleportSeconds)
+            return;
+
+        try
+        {
+            var x = GetEntityX(target);
+            var y = GetEntityY(target);
+            hero.cancelVelocities();
+            hero.setPosPixel(x, y);
+            _localDoorKey = candidateKey;
+            _localDoorCx = target.cx;
+            _localDoorCy = target.cy;
+            _localInsideCircle = true;
+            _localPressed = true;
+            UpdateLocalPlayerState(net, forceSend: true);
+            MultiplayerUI.PushSystemMessage(FormatLocalized("Exit failsafe: pulled you to {0}", ResolveExitDestinationName(target)), 6.0, 1.5);
+            _exitFailsafeStartedTicks = Stopwatch.GetTimestamp();
+            MarkExitUiStateDirty();
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("[ExitSync] Exit teleport failsafe failed: {Message}", ex.Message);
+        }
+    }
+
     private void TriggerExitTransition(Entity target, Hero hero, Action? origActivate)
     {
         if (target == null || hero == null)
@@ -333,6 +410,10 @@ public class LevelExitSync :
             ModEntry.ApplyLocalDownedExitPenaltyIfNeeded();
 
         _transitionDoorKey = BuildDoorKey(target.cx, target.cy);
+        ModEntry.PrepareRemoteKingsForLevelTransition(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"exit-activate:{target.GetType().Name}:{_transitionDoorKey}"));
         _suppressDoorActivateHook = true;
         try
         {

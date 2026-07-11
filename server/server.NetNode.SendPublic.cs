@@ -722,6 +722,30 @@ public sealed partial class NetNode
         SendRaw($"INTERPORTAL|{action}|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}");
     }
 
+
+    public void SendLobbyState(string username, string levelId, int seed, string progressSignature)
+    {
+        if (!HasAnyConnection())
+            return;
+
+        var safeUser = (username ?? "guest").Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        var safeLevel = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        var safeProgress = (progressSignature ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        var idPart = ID > 0 ? ID.ToString(CultureInfo.InvariantCulture) : "0";
+        SendRaw($"LOBBYSTATE|{idPart}|{safeUser}|{safeLevel}|{seed.ToString(CultureInfo.InvariantCulture)}|{safeProgress}");
+    }
+
+    public void SendRuneProgress(string csvPermanentIds)
+    {
+        if (!HasAnyConnection())
+            return;
+        if (string.IsNullOrWhiteSpace(csvPermanentIds))
+            return;
+
+        var safe = csvPermanentIds.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        SendRaw($"RUNEPROG|{safe}");
+    }
+
     private void SendRaw(string payload)
     {
         var line = payload.EndsWith('\n') ? payload : payload + "\n";

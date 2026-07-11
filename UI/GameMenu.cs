@@ -32,6 +32,7 @@ namespace DeadCellsMultiplayerMod
         private static bool _addMenuHookRegistered;
         private static bool _mainMenuButtonAdded;
         private static bool _addingMultiplayerButton;
+        private const int MultiplayerMainMenuTextColor = 0x7FD4FF; // soft blue
         private static WeakReference<TitleScreen?>? _titleScreenRef;
         private static string _mpIp = "127.0.0.1";
         private static int _mpPort = 1234;
@@ -49,6 +50,8 @@ namespace DeadCellsMultiplayerMod
         private static bool _steamJoinLobbyResolvePending;
         private static ulong? _pendingOverlayJoinLobbyId;
         private static bool _waitingForHost;
+        private static int _roomStatusMenuKind; // 0 none, 1 host, 2 client
+        private static DateTime _lastRoomStatusAutoRefresh = DateTime.MinValue;
         internal const int ClientConnectMaxAttempts = 3;
         private static int _clientConnectAttempt;
         private static bool _clientConnecting;
@@ -298,6 +301,26 @@ namespace DeadCellsMultiplayerMod
                 if (_serverSeed.HasValue)
                 {
                     seed = _serverSeed.Value;
+                    return true;
+                }
+            }
+
+            seed = 0;
+            return false;
+        }
+
+        public static bool TryGetKnownSeed(out int seed)
+        {
+            lock (Sync)
+            {
+                if (_serverSeed.HasValue)
+                {
+                    seed = _serverSeed.Value;
+                    return true;
+                }
+                if (_remoteSeed.HasValue)
+                {
+                    seed = _remoteSeed.Value;
                     return true;
                 }
             }
@@ -625,30 +648,38 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowMultiplayerMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 0;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("Host game"), () => ShowHostTransportMenu(screen), GetText.Instance.GetString("Create a multiplayer session"));
-            AddMenuButton(screen, GetText.Instance.GetString("Join game"), () => ShowJoinTransportMenu(screen), GetText.Instance.GetString("Connect to an existing host"));
+            AddInfoLine(screen, GetText.Instance.GetString("Co-op"), 0xFFE48A);
+            AddMenuButton(screen, GetText.Instance.GetString("Host room"), () => ShowHostTransportMenu(screen), GetText.Instance.GetString("Create a Steam or IP/VPN room"));
+            AddMenuButton(screen, GetText.Instance.GetString("Join room"), () => ShowJoinTransportMenu(screen), GetText.Instance.GetString("Join with Steam invite/lobby code or IP"));
+            AddMenuButton(screen, GetMultiplayerSaveButtonLabel(), () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
             AddMenuButton(screen, GetText.Instance.GetString("Back"), () => screen.mainMenu(), GetText.Instance.GetString("Return to main menu"));
         }
 
         private static void ShowHostTransportMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 0;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("LAN"), () => ShowLanConnectionMenu(screen, NetRole.Host), GetText.Instance.GetString("Use direct IP/port hosting"));
-            AddMenuButton(screen, GetText.Instance.GetString("Steam"), () => NativeStartSteamHost(screen), GetText.Instance.GetString("Create Steam lobby and start immediately"));
+            AddInfoLine(screen, GetText.Instance.GetString("Host room"), 0xFFE48A);
+            AddMenuButton(screen, GetText.Instance.GetString("Steam friends lobby"), () => NativeStartSteamHost(screen), GetText.Instance.GetString("Create Steam lobby and invite friends"));
+            AddMenuButton(screen, GetText.Instance.GetString("IP / VPN lobby"), () => ShowLanConnectionMenu(screen, NetRole.Host), GetText.Instance.GetString("Hamachi, Radmin, ZeroTier, LAN or port forward"));
             AddMenuButton(screen, GetText.Instance.GetString("Back"), () => ShowMultiplayerMenu(screen), GetText.Instance.GetString("Back to multiplayer menu"));
         }
 
         private static void ShowJoinTransportMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 0;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("LAN"), () => ShowLanConnectionMenu(screen, NetRole.Client), GetText.Instance.GetString("Connect by IP/port"));
-            AddMenuButton(screen, GetText.Instance.GetString("Steam"), () => NativeStartSteamJoin(screen), GetText.Instance.GetString("Connect by Steam lobby id/code from clipboard"));
+            AddInfoLine(screen, GetText.Instance.GetString("Join room"), 0xFFE48A);
+            AddMenuButton(screen, GetText.Instance.GetString("Join Steam invite/code"), () => NativeStartSteamJoin(screen), GetText.Instance.GetString("Use lobby code from clipboard or accepted Steam invite"));
+            AddMenuButton(screen, GetText.Instance.GetString("Join IP / VPN"), () => ShowLanConnectionMenu(screen, NetRole.Client), GetText.Instance.GetString("Connect by Hamachi/Radmin/ZeroTier/IP"));
             AddMenuButton(screen, GetText.Instance.GetString("Back"), () => ShowMultiplayerMenu(screen), GetText.Instance.GetString("Back to multiplayer menu"));
         }
 
         private static void ShowLanConnectionMenu(TitleScreen screen, NetRole role)
         {
+            _roomStatusMenuKind = 0;
             _menuSelection = role;
             _menuTransport = ConnectionTransport.Lan;
             if (role == NetRole.Client)
@@ -715,22 +746,36 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowHostStatusMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 1;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("Play"), () => StartHostRun(screen), GetText.Instance.GetString("Launch game"));
+            AddInfoLine(screen, BuildRoomSummaryLine(), 0xFFE48A);
+            AddInfoLine(screen, BuildFriendSummaryLine(), NetRef != null && NetRef.HasRemote ? 0xA6FF8A : 0xE0E0E0);
+            AddMenuButton(screen, GetText.Instance.GetString("Start run for everyone"), () => StartHostRun(screen), GetText.Instance.GetString("Launch the synced co-op run"));
+            AddMenuButton(screen, GetText.Instance.GetString("Refresh room"), () => ShowHostStatusMenu(screen), GetText.Instance.GetString("Refresh lobby status"));
             AddMenuButton(screen, GetMultiplayerSaveButtonLabel(), () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
-            AddMenuButton(screen, GetText.Instance.GetString("Back"), () =>
+            if (_menuTransport == ConnectionTransport.Steam)
+            {
+                AddMenuButton(screen, GetText.Instance.GetString("Invite Steam friends"), () => OpenSteamInviteOverlayFromMenu(screen), GetText.Instance.GetString("Open Steam friend invite overlay"));
+                AddMenuButton(screen, GetText.Instance.GetString("Copy Steam room code"), () => { TryCopySteamLobbyCodeFromUi(); ShowHostStatusMenu(screen); }, GetText.Instance.GetString("Copy lobby code for friend"));
+            }
+            AddMenuButton(screen, GetText.Instance.GetString("Stop hosting"), () =>
             {
                 StopNetworkFromMenu();
                 SetRole(NetRole.None);
                 _menuSelection = NetRole.None;
                 ShowMultiplayerMenu(screen);
                 screen.ShouldAutoHideConnectionUI(false);
-            }, GetText.Instance.GetString("Back to host setup"));
+            }, GetText.Instance.GetString("Close room and go back"));
         }
 
         private static void ShowClientWaitingMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 2;
             screen.clearMenu();
+            AddInfoLine(screen, BuildRoomSummaryLine(), 0xFFE48A);
+            AddInfoLine(screen, BuildFriendSummaryLine(), NetRef != null && NetRef.HasRemote ? 0xA6FF8A : 0xE0E0E0);
+            AddInfoLine(screen, GetText.Instance.GetString("Waiting for host to start..."), 0xE0E0E0);
+            AddMenuButton(screen, GetText.Instance.GetString("Refresh room"), () => ShowClientWaitingMenu(screen), GetText.Instance.GetString("Refresh lobby status"));
             AddMenuButton(screen, GetText.Instance.GetString("Disconnect"), () =>
             {
                 StopNetworkFromMenu();
@@ -742,6 +787,66 @@ namespace DeadCellsMultiplayerMod
                 screen.ShouldAutoHideConnectionUI(false);
             }, GetText.Instance.GetString("Disconnect and return to main menu"));
             AddMenuButton(screen, GetMultiplayerSaveButtonLabel(), () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
+        }
+
+
+
+        public static void RefreshRoomStatusMenuIfVisible()
+        {
+            if (_roomStatusMenuKind == 0)
+                return;
+            if ((DateTime.UtcNow - _lastRoomStatusAutoRefresh).TotalSeconds < 1.0)
+                return;
+            _lastRoomStatusAutoRefresh = DateTime.UtcNow;
+
+            EnqueueMainThreadCoalesced("ui:auto-refresh-room-status", () =>
+            {
+                var screen = GetTitleScreen();
+                if (screen == null)
+                    return;
+                if (_roomStatusMenuKind == 1)
+                    ShowHostStatusMenu(screen);
+                else if (_roomStatusMenuKind == 2)
+                    ShowClientWaitingMenu(screen);
+            });
+        }
+
+
+        private static void OpenSteamInviteOverlayFromMenu(TitleScreen screen)
+        {
+            if (_steamLobbyId == 0UL)
+            {
+                AddInfoLine(screen, GetText.Instance.GetString("No Steam room yet."), 0xFF9090);
+                return;
+            }
+            if (!SteamConnect.TryOpenInviteOverlay(_steamLobbyId, out var error))
+                _log?.Warning("[NetMod][Steam] Invite overlay failed: {Error}", error);
+            ShowHostStatusMenu(screen);
+        }
+
+        private static string BuildRoomSummaryLine()
+        {
+            var transport = _menuTransport == ConnectionTransport.Steam ? "Steam" : "IP/VPN";
+            var role = _role == NetRole.Host ? "Host" : _role == NetRole.Client ? "Client" : _menuSelection == NetRole.Host ? "Host" : _menuSelection == NetRole.Client ? "Client" : "Room";
+            var code = _menuTransport == ConnectionTransport.Steam ? GetSteamLobbyCodeForUi() : $"{_mpIp}:{_mpPort}";
+            if (string.IsNullOrWhiteSpace(code))
+                code = _menuTransport == ConnectionTransport.Steam ? "creating..." : $"{_mpIp}:{_mpPort}";
+            return $"{transport} {role}  |  {code}";
+        }
+
+        private static string BuildFriendSummaryLine()
+        {
+            var net = NetRef;
+            if (net == null || !net.IsAlive)
+                return "Not connected";
+            if (!net.HasRemote)
+                return net.IsHost ? "Waiting for friend..." : "Connecting to host...";
+            var name = string.IsNullOrWhiteSpace(_remoteUsername) || string.Equals(_remoteUsername, "guest", StringComparison.OrdinalIgnoreCase)
+                ? "friend"
+                : _remoteUsername.Trim();
+            if (net.IsHost)
+                return $"Same lobby: yes  |  Friend: {name}";
+            return $"Same lobby: yes  |  Host: {name}";
         }
 
         private static void ShowConnectionErrorPopup(TitleScreen screen, string title, string details, Action onOk)

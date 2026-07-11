@@ -44,12 +44,19 @@ namespace DeadCellsMultiplayerMod
                 hero.noDamageDuringBossBattle = false;
             }
 
-            TryApplyDebugStartPerk(hero);
-            TryApplyDebugExplorerRune(hero);
+            // Stability hardening: never inject perks/items/runes during HeroInit.
+            // The original debug path constructed tool.InventItem before item commonProps were ready and
+            // caused the Hashlink crash: Null access .commonProps.
+            // Real rune/progression sync is handled by CoopAdvancedHardening after the run is alive.
+            // TryApplyDebugStartPerk(hero);
+            // TryApplyDebugExplorerRune(hero);
         }
 
         private void TryApplyDebugStartPerk(Hero hero)
         {
+            // Disabled intentionally. Do not construct InventItem from debug code.
+            return;
+#pragma warning disable CS0162
             if (hero == null)
                 return;
 
@@ -83,6 +90,7 @@ namespace DeadCellsMultiplayerMod
             _debugPerkAppliedHero = hero;
             _debugPerkAppliedId = perkId;
             _nextDebugPerkApplyTick = 0;
+#pragma warning restore CS0162
         }
 
         private void TryApplyDebugExplorerRune(Hero hero)

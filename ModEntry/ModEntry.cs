@@ -40,6 +40,7 @@ using DeadCellsMultiplayerMod.Mobs.Levelinit;
 using dc.en.inter.door;
 using DeadCellsMultiplayerMod.Interaction;
 using DeadCellsMultiplayerMod.UI;
+using DeadCellsMultiplayerMod.AdvancedCoop;
 
 
 namespace DeadCellsMultiplayerMod
@@ -378,6 +379,8 @@ namespace DeadCellsMultiplayerMod
                 "ConnectionUI",
                 () => ConnectionUI.Initialize(this));
 
+            _ = new CoopAdvancedHardening(this);
+
             GameMenu.Initialize(Logger);
             s_steamOverlayCallbackPending = true;
             s_steamOverlayCallbackRetryCount = 0;
@@ -404,9 +407,11 @@ namespace DeadCellsMultiplayerMod
 
             s_hooksInstalled = true;
             entry.Logger.Information("\x1b[32m[[ModEntry] Initializing ModEntry...]\x1b[0m ");
+            entry.Logger.Information("[NetMod] Source build: v0.8.38-sublevel-dive-combat-guard");
             Hook_Game.init += Hook_gameinit;
             Hook_Hero.wakeup += hook_hero_wakeup;
             Hook_Hero.onLevelChanged += hook_level_changed;
+            Hook_Level.onActivation += Hook_Level_onActivation_SubLevelRenderGuard;
             Hook_User.newGame += GameDataSync.user_hook_new_game;
             Hook_User.unserialize += Hook_User_unserialize;
             Hook_Game.onDispose += Hook_Game_onDispose;
@@ -501,13 +506,36 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook_ZDoor_onActivate(Hook_ZDoor.orig_onActivate orig, ZDoor self, Hero lp, bool mob)
         {
-            orig(self, lp, mob);
-
-            if (_netRole != NetRole.None &&
+            var localMultiplayerActivation =
+                _netRole != NetRole.None &&
                 _net != null &&
+                _net.IsAlive &&
                 me != null &&
                 lp != null &&
-                ReferenceEquals(lp, me))
+                ReferenceEquals(lp, me);
+
+            if (localMultiplayerActivation)
+            {
+                var doorKey = self == null
+                    ? "unknown"
+                    : string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"{self.cx}:{self.cy}");
+                PrepareRemoteKingsForSubLevelTransition($"zdoor-activate:{doorKey}");
+            }
+
+            try
+            {
+                orig(self, lp, mob);
+            }
+            catch
+            {
+                if (localMultiplayerActivation)
+                    CancelRemoteKingSubLevelTransition("zdoor-orig-threw");
+                throw;
+            }
+
+            if (localMultiplayerActivation)
             {
                 SendCurrentRoomTarget(force: true);
                 GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
@@ -721,6 +749,7 @@ namespace DeadCellsMultiplayerMod
             GameMenu.HandleTextInputClipboardShortcuts();
             _ghost?.UpdateLabels();
             ProcessCameraSpectateInput();
+            TickRemoteKingSubLevelTransitionGuard();
         }
 
 
@@ -861,6 +890,7 @@ namespace DeadCellsMultiplayerMod
             SendCurrentRoomTarget(force: true);
             _net?.ClearMobSyncQueues();
             EnsureHeroVisibilityAfterRoomChange(me);
+            FinishRemoteKingLevelTransition();
             if (_netRole == NetRole.None) return;
             var net = _net;
             var localId = net?.id ?? 0;
@@ -915,6 +945,7 @@ namespace DeadCellsMultiplayerMod
             var hitchStart = RuntimeHitchWatch.Start();
             PumpSteamCallbacksForOverlay();
             GameMenu.ProcessMainThreadQueue();
+            CheckRemoteKingRenderSafety("frame");
             GameMenu.TickMenu(dt);
             DetectAndSendBossCine();
             ApplyReceivedBossHeroTeleport();
