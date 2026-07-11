@@ -70,7 +70,6 @@ public sealed class CoopAdvancedHardening :
         {
             _nextLobbyHeartbeatTicks = now + SecondsToTicks(LobbyHeartbeatSeconds);
             SendLobbyHeartbeat(net);
-            GameMenu.RefreshRoomStatusMenuIfVisible();
         }
 
         if (_nextProgressSyncTicks == 0 || now >= _nextProgressSyncTicks)
@@ -99,7 +98,11 @@ public sealed class CoopAdvancedHardening :
         try
         {
             var level = ModEntry.me?._level?.map?.id?.ToString() ?? ModEntry.Instance?.levelId ?? string.Empty;
-            var seed = GameMenu.TryGetKnownSeed(out var knownSeed) ? knownSeed : 0;
+            var seed = GameMenu.TryGetHostRunSeed(out var hostSeed)
+                ? hostSeed
+                : GameMenu.TryGetRemoteSeed(out var remoteSeed)
+                    ? remoteSeed
+                    : 0;
             net.SendLobbyState(GameMenu.Username, level, seed, GetLocalPermanentProgressSignature());
         }
         catch (Exception ex)

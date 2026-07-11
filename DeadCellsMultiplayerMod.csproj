@@ -8,7 +8,7 @@
     <SupportedOSPlatform>Windows</SupportedOSPlatform>
     <NoWarn>$(NoWarn);CA1416;CS0414;CS9107</NoWarn>
     <!-- don't change this version -->
-    <Version>0.8.38</Version> 
+    <Version>0.4.0</Version> 
     <ModType>mod</ModType>
     <ModMain>DeadCellsMultiplayerMod.ModEntry</ModMain>
     

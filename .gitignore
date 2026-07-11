@@ -8,3 +8,4 @@ logs/
 *.suo
 last_error.txt
 log_*.log
+.cursorrules
