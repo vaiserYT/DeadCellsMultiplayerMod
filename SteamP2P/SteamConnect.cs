@@ -1002,7 +1002,7 @@ namespace DeadCellsMultiplayerMod
 
                 try
                 {
-                    SteamAPI.RunCallbacks();
+                    ModEntry.TryRunSteamCallbacksSerialized();
                 }
                 catch
                 {
@@ -1117,7 +1117,7 @@ namespace DeadCellsMultiplayerMod
                 {
                     try
                     {
-                        SteamAPI.RunCallbacks();
+                        ModEntry.TryRunSteamCallbacksSerialized();
                     }
                     catch { }
                     Thread.Sleep(50);
@@ -1174,7 +1174,7 @@ namespace DeadCellsMultiplayerMod
 
                 try
                 {
-                    SteamAPI.RunCallbacks();
+                    ModEntry.TryRunSteamCallbacksSerialized();
                 }
                 catch
                 {
@@ -1303,7 +1303,7 @@ namespace DeadCellsMultiplayerMod
             var timeoutTicks = (long)(Stopwatch.Frequency * (SteamCallTimeoutMs / 1000.0));
             while (!completed && Stopwatch.GetTimestamp() - start < timeoutTicks)
             {
-                SteamAPI.RunCallbacks();
+                ModEntry.TryRunSteamCallbacksSerialized();
                 Thread.Sleep(15);
             }
 

@@ -136,56 +136,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI
         }
         public void Debugkeys()
         {
-            // Disabled for stability. The old debug hotkeys spawned mobs and wrote Dead Cells cooldown maps
-            // during normal play, which can corrupt Hashlink runtime state.
-            return;
-#pragma warning disable CS0162
-
-            if (Key.Class.isPressed(97))//num1
-            {
-                //LevelTransition.Class.@goto("Custom".AsHaxeString());
-                Log.Debug("KeyPress");
-                ConnectionUI connectionUI = new ConnectionUI(HUD.Class.ME);
-
-            }
-            if (Key.Class.isPressed(98))//num2
-            {
-                var hero = ModCore.Modules.Game.Instance.HeroInstance!;
-                Zombie zombie = new Zombie(hero._level, hero.cx, hero.cy, 0, 100);
-                zombie.init();
-                var fastCheck = ModEntry.me?.cd?.fastCheck;
-                if (fastCheck != null)
-                {
-                    int key = Cooldown.Encode(Cooldown.Keys.JUMP_HIT);
-                    fastCheck.set(key, new CdInst(key, 3.0));
-                }
-            }
-            if (Key.Class.isPressed(99))//num3
-            {
-                var me = ModEntry.me;
-                var fastCheck = me?.cd?.fastCheck;
-                if (fastCheck != null)
-                {
-                    int key = Cooldown.Encode(Cooldown.Keys.JUMP_HIT);
-                    fastCheck.remove(key);
-                }
-
-                if (me != null)
-                {
-                    InventItem inventItem = new InventItem(new InventItemKind.Perk("P_Yolo".AsHaxeString()));
-                    me.applyItemPickEffect(me, inventItem);
-                    inventItem.clone(true, "P_Yolo".AsHaxeString());
-
-                    me.tryToApplyYoloPerk();
-                    me.removeTemporaryItems();
-                }
-            }
-            if (!CanUseJumpHit())
-            {
-                return;
-            }
-#pragma warning restore CS0162
-
+            // Developer spawn/perk/cooldown hotkeys are intentionally disabled in production.
+            // They previously wrote directly into engine-owned fastCheck maps and constructed
+            // runtime perk items during combat, both of which can poison Hashlink state.
         }
         private void Hook_Hero_kinglifupdate(Hook_Hero.orig_updateLifeBar orig, Hero self)
         {

@@ -3,6 +3,7 @@ using dc.en;
 using dc.ui;
 using DeadCellsMultiplayerMod.Ghost.GhostBase;
 using ModCore.Utilities;
+using System.Diagnostics;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -21,6 +22,8 @@ namespace DeadCellsMultiplayerMod
         private int _templateHeroHeadBlackValue;
         private bool _cineSuppressed;
         private bool _lethalFallStarted;
+        private bool _groundedPoseApplied;
+        private long _lethalFallStartedTicks;
         private bool _hasTarget;
         private double _targetX;
         private double _targetY;
@@ -35,6 +38,10 @@ namespace DeadCellsMultiplayerMod
         private const int CorpseMarkerColor = 0xED6a1F;
         private const int PointerFxSuppressionKey = 188743680;
         private const double HomunculusIdleYSnapTolerancePx = 2.0;
+        private const double CorpseInitialDropPx = 48.0;
+        private const double CorpseLandingTimeoutSeconds = 0.70;
+        private const double CorpseMaxHorizontalDriftPx = 48.0;
+        private const double CorpseMaxDownwardDriftPx = 96.0;
 
         public RemoteDownedCorpse(Hero templateHero, GhostKing ghost, double x, double y, int dir, dc.GameCinematic? previousCine)
         {
@@ -162,8 +169,7 @@ namespace DeadCellsMultiplayerMod
             }
 
             KeepCorpseActive(corpse);
-            ApplyTargetToCorpse(forceStartFall: false);
-            EnsureLethalFallStarted();
+            MaintainRemoteCorpseLanding(corpse);
             ApplyTargetToHomunculus();
             EnsureCorpsePointer();
         }
@@ -184,6 +190,8 @@ namespace DeadCellsMultiplayerMod
 
                 _corpse = corpse;
                 _lethalFallStarted = false;
+                _groundedPoseApplied = false;
+                _lethalFallStartedTicks = 0;
                 ApplyTargetToCorpse(forceStartFall: true);
                 ApplyTargetToHomunculus();
                 ApplyInteractionLabel();
@@ -273,36 +281,44 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             try { corpse.dir = _targetDir; } catch { }
-            if (!_lethalFallStarted || IsCorpseStabilized(corpse))
-            {
-                SafeSnapCorpse(corpse, _targetX, _targetY);
-            }
-            if (forceStartFall)
+
+            if (!_lethalFallStarted || forceStartFall)
                 EnsureLethalFallStarted();
+
+            if (_groundedPoseApplied)
+                PinRemoteGroundedCorpse(corpse);
         }
 
         private static void SafeSnapCorpse(HeroDeadCorpse corpse, double x, double y)
         {
+            if (corpse == null || corpse.destroyed || !double.IsFinite(x) || !double.IsFinite(y))
+                return;
+
+            FreezeCorpsePhysics(corpse);
             try { corpse.setPosPixel(x, y); } catch { }
+            FreezeCorpsePhysics(corpse);
+        }
 
-            // Prevent network snaps from placing corpse slightly below ground tiles.
-            try
-            {
-                var map = corpse._level?.map;
-                if (map == null)
-                    return;
+        private void PlaceCorpseForLanding(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed || !_hasTarget)
+                return;
 
-                var cx = corpse.cx;
-                var cy = corpse.cy;
-                var xr = corpse.xr;
-                var yr = corpse.yr;
-                var groundYr = map.getGroundYr(cx, cy, Ref<double>.From(ref xr), Ref<double>.From(ref yr));
-                if (double.IsFinite(groundYr) && corpse.yr > groundYr)
-                    corpse.setPosCase(cx, cy, xr, groundYr);
-            }
-            catch
-            {
-            }
+            try { corpse.cancelVelocities(); } catch { }
+            try { corpse.setPosPixel(_targetX, _targetY - CorpseInitialDropPx); } catch { }
+        }
+
+        private static void FreezeCorpsePhysics(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return;
+
+            try { corpse.hasGravity = false; } catch { }
+            try { corpse.cancelVelocities(); } catch { }
+            try { corpse.dx = 0; } catch { }
+            try { corpse.dy = 0; } catch { }
+            try { corpse.bdx = 0; } catch { }
+            try { corpse.bdy = 0; } catch { }
         }
 
         private static bool IsCorpseStabilized(HeroDeadCorpse corpse)
@@ -330,7 +346,156 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             _lethalFallStarted = true;
-            try { corpse.startLethalFall(); } catch { }
+            _lethalFallStartedTicks = Stopwatch.GetTimestamp();
+            PlaceCorpseForLanding(corpse);
+            try { corpse.hasGravity = true; } catch { }
+            try { corpse.startLethalFall(); } catch { ForceRemoteGroundedPose(corpse); }
+        }
+
+        private void MaintainRemoteCorpseLanding(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed || !_hasTarget)
+                return;
+
+            EnsureLethalFallStarted();
+            if (!_lethalFallStarted)
+                return;
+
+            if (_groundedPoseApplied)
+            {
+                PinRemoteGroundedCorpse(corpse);
+                return;
+            }
+
+            // Let the real corpse gravity/landing code run, while removing horizontal death impulse
+            // so the visible body remains over the network-authoritative safe revive point.
+            KeepCorpseOverTargetWhileFalling(corpse);
+
+            if (IsCorpseStabilized(corpse))
+            {
+                _groundedPoseApplied = true;
+                PinRemoteGroundedCorpse(corpse);
+                return;
+            }
+
+            var shouldForceGroundedPose = false;
+            if (TryGetCorpseLogicalPosition(corpse, out var corpseX, out var corpseY))
+            {
+                if (Math.Abs(corpseX - _targetX) > CorpseMaxHorizontalDriftPx ||
+                    corpseY > _targetY + CorpseMaxDownwardDriftPx)
+                {
+                    shouldForceGroundedPose = true;
+                }
+            }
+
+            if (!shouldForceGroundedPose && _lethalFallStartedTicks > 0)
+            {
+                var elapsed = (Stopwatch.GetTimestamp() - _lethalFallStartedTicks) /
+                              (double)Stopwatch.Frequency;
+                shouldForceGroundedPose = elapsed >= CorpseLandingTimeoutSeconds;
+            }
+
+            if (shouldForceGroundedPose)
+                ForceRemoteGroundedPose(corpse);
+        }
+
+
+        private void KeepCorpseOverTargetWhileFalling(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed || !_hasTarget || !double.IsFinite(_targetX))
+                return;
+
+            try
+            {
+                var currentX = (corpse.cx + corpse.xr) * 24.0;
+                var deltaX = _targetX - currentX;
+                var tileX = _targetX / 24.0;
+                var cx = (int)Math.Floor(tileX);
+                corpse.cx = cx;
+                corpse.xr = tileX - cx;
+                if (corpse.spr != null && double.IsFinite(deltaX))
+                    corpse.spr.x += deltaX;
+            }
+            catch
+            {
+            }
+
+            try { corpse.dx = 0; } catch { }
+            try { corpse.bdx = 0; } catch { }
+        }
+
+        private void ForceRemoteGroundedPose(HeroDeadCorpse corpse)
+        {
+            _groundedPoseApplied = TryApplyGroundedCorpsePose(corpse);
+            if (!_groundedPoseApplied)
+            {
+                TryStopCorpseAnimationOnLastFrame(corpse);
+                _groundedPoseApplied = true;
+            }
+
+            PinRemoteGroundedCorpse(corpse);
+        }
+
+        private void PinRemoteGroundedCorpse(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed || !_hasTarget)
+                return;
+
+            SafeSnapCorpse(corpse, _targetX, _targetY);
+            if (!IsCorpseStabilized(corpse))
+                TryApplyGroundedCorpsePose(corpse);
+            TryStopCorpseAnimationOnLastFrame(corpse);
+            FreezeCorpsePhysics(corpse);
+        }
+
+        private static bool TryGetCorpseLogicalPosition(HeroDeadCorpse corpse, out double x, out double y)
+        {
+            x = 0.0;
+            y = 0.0;
+            if (corpse == null || corpse.destroyed)
+                return false;
+
+            try
+            {
+                x = (corpse.cx + corpse.xr) * 24.0;
+                y = (corpse.cy + corpse.yr) * 24.0;
+                return double.IsFinite(x) && double.IsFinite(y);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+
+        private static bool TryApplyGroundedCorpsePose(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return false;
+
+            try
+            {
+                var animManager = corpse.spr?._animManager;
+                if (animManager == null)
+                    return false;
+
+                animManager
+                    .play("lethalSlam".AsHaxeString(), null, null)
+                    .stopOnLastFrame(Ref<bool>.Null);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void TryStopCorpseAnimationOnLastFrame(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return;
+
+            try { corpse.spr?._animManager?.stopOnLastFrame(Ref<bool>.Null); } catch { }
         }
 
         private void EnsureHomunculus()

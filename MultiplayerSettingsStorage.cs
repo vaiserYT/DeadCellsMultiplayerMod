@@ -53,6 +53,8 @@ public sealed class MultiplayerSettingsData
 
     public bool DebugMobsSyncTrace { get; set; } = false;
 
+    public bool DebugBossSyncTrace { get; set; } = false;
+
     public bool ShowPerfLogs { get; set; } = false;
 
     public string DebugStartPerkId { get; set; } = MultiplayerSettingsStorage.NoStartPerkValue;
@@ -249,6 +251,27 @@ public static class MultiplayerSettingsStorage
                     return;
 
                 data.DebugMobsSyncTrace = value;
+                SaveUnsafe();
+            }
+        }
+    }
+
+    public static bool DebugBossSyncTrace
+    {
+        get
+        {
+            lock (SyncRoot)
+                return EnsureDataNormalizedUnsafe().DebugBossSyncTrace;
+        }
+        set
+        {
+            lock (SyncRoot)
+            {
+                var data = EnsureDataNormalizedUnsafe();
+                if (data.DebugBossSyncTrace == value)
+                    return;
+
+                data.DebugBossSyncTrace = value;
                 SaveUnsafe();
             }
         }

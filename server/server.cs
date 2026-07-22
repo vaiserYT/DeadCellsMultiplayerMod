@@ -21,6 +21,8 @@ public sealed partial class NetNode : IDisposable
         public SemaphoreSlim SendLock { get; } = new(1, 1);
         public int AssignedId { get; }
         public EndPoint? RemoteEndPoint => Client.Client?.RemoteEndPoint;
+        private int _handshakeComplete;
+        public bool HandshakeComplete => Volatile.Read(ref _handshakeComplete) != 0;
 
         public ClientConnection(TcpClient client, int assignedId)
         {
@@ -28,6 +30,8 @@ public sealed partial class NetNode : IDisposable
             Stream = client.GetStream();
             AssignedId = assignedId;
         }
+
+        public bool TryCompleteHandshake() => Interlocked.Exchange(ref _handshakeComplete, 1) == 0;
 
         public void Dispose()
         {
@@ -42,6 +46,8 @@ public sealed partial class NetNode : IDisposable
         public CSteamID SteamId { get; }
         public SemaphoreSlim SendLock { get; } = new(1, 1);
         public int AssignedId { get; }
+        private int _handshakeComplete;
+        public bool HandshakeComplete => Volatile.Read(ref _handshakeComplete) != 0;
         private readonly object _initialStateSync = new();
         private DateTime _lastInitialStateSentUtc = DateTime.MinValue;
 
@@ -50,6 +56,8 @@ public sealed partial class NetNode : IDisposable
             SteamId = steamId;
             AssignedId = assignedId;
         }
+
+        public bool TryCompleteHandshake() => Interlocked.Exchange(ref _handshakeComplete, 1) == 0;
 
         public bool TryReserveInitialStateSend(TimeSpan minInterval, bool force = false)
         {
@@ -80,6 +88,7 @@ public sealed partial class NetNode : IDisposable
         public double X;
         public double Y;
         public int Dir = 1;
+        public bool HasPosition;
         public bool HasRemote;
         public string? LevelId;
         public string? RoomLevelId;
@@ -339,8 +348,10 @@ public sealed partial class NetNode : IDisposable
         public readonly double Y;
         /// <summary>Mob type signature from MOBEVENT row (for host hit routing when syncId was rebound to a nearby same-type mob).</summary>
         public readonly string Type;
+        /// <summary>Best-effort client damage intent. Used only when local client state rejected the hit and HP did not decrease.</summary>
+        public readonly double DamageHint;
 
-        public MobHit(int userId, int mobIndex, int hp, double x, double y, string type = "", int generation = 0)
+        public MobHit(int userId, int mobIndex, int hp, double x, double y, string type = "", int generation = 0, double damageHint = 0.0)
         {
             UserId = userId;
             MobIndex = mobIndex;
@@ -349,6 +360,7 @@ public sealed partial class NetNode : IDisposable
             X = x;
             Y = y;
             Type = type ?? string.Empty;
+            DamageHint = double.IsFinite(damageHint) && damageHint > 0.0 ? damageHint : 0.0;
         }
     }
 
@@ -359,14 +371,51 @@ public sealed partial class NetNode : IDisposable
         public readonly int Generation;
         public readonly double X;
         public readonly double Y;
+        /// <summary>Optional MOBEVENT type signature used to recover a rebuilt boss mapping.</summary>
+        public readonly string Type;
 
-        public MobDie(int userId, int mobIndex, double x, double y, int generation = 0)
+        public MobDie(int userId, int mobIndex, double x, double y, int generation = 0, string type = "")
         {
             UserId = userId;
             MobIndex = mobIndex;
             Generation = generation;
             X = x;
             Y = y;
+            Type = type ?? string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Host-authoritative confirmation that the current boss encounter is over.  This is
+    /// deliberately separate from MOBDIE: multipart and phase-replacing bosses can destroy one
+    /// mob wrapper without completing the encounter.
+    /// </summary>
+    public readonly struct BossVictoryState
+    {
+        public readonly int Generation;
+        public readonly int EncounterId;
+
+        public BossVictoryState(int generation, int encounterId)
+        {
+            Generation = generation;
+            EncounterId = encounterId;
+        }
+    }
+
+    /// <summary>
+    /// Client acknowledgement that its native boss introduction reached the real combat handoff.
+    /// The host derives <see cref="UserId"/> from the authenticated connection rather than trusting
+    /// any id supplied by the peer.
+    /// </summary>
+    public readonly struct BossIntroReadyState
+    {
+        public readonly int UserId;
+        public readonly string Payload;
+
+        public BossIntroReadyState(int userId, string payload)
+        {
+            UserId = userId;
+            Payload = payload ?? string.Empty;
         }
     }
 
@@ -387,8 +436,13 @@ public sealed partial class NetNode : IDisposable
         public readonly double ForcedDirSeconds;
         /// <summary>Mob type for rebind when syncId mapping is missing. From MOBEVENT.</summary>
         public readonly string Type;
+        /// <summary>
+        /// Phase 3: host-assigned per-boss monotonic attack sequence (0 = none / non-boss). Lets the
+        /// client drop replayed or out-of-order boss attacks deterministically via a high-water mark.
+        /// </summary>
+        public readonly int AttackSeq;
 
-        public MobAttack(int index, string skillId, bool requiresTargetInArea, int? data, double x, double y, int targetUserId, int dir = 0, double blockSeconds = 0, double forcedDirSeconds = 0, string type = "", int generation = 0)
+        public MobAttack(int index, string skillId, bool requiresTargetInArea, int? data, double x, double y, int targetUserId, int dir = 0, double blockSeconds = 0, double forcedDirSeconds = 0, string type = "", int generation = 0, int attackSeq = 0)
         {
             Index = index;
             Generation = generation;
@@ -402,6 +456,7 @@ public sealed partial class NetNode : IDisposable
             BlockSeconds = blockSeconds;
             ForcedDirSeconds = forcedDirSeconds;
             Type = type ?? string.Empty;
+            AttackSeq = attackSeq;
         }
     }
 
@@ -515,12 +570,13 @@ public sealed partial class NetNode : IDisposable
     private Task? _steamTransportTask;
     private readonly bool _useSteamTransport;
     private readonly CSteamID _steamHostId;
-    private SteamP2PWorkerBridge? _steamBridge;
+    private ISteamP2PBridge? _steamBridge;
+    private SteamConnect.HostLobbyResult? _steamHostStartupResult;
     private const int SteamP2PChannelClientToHost = 0;
     private const int SteamP2PChannelHostToClient = 1;
     private const uint SteamMaxPacketSizeBytes = 16u * 1024u * 1024u;
     private const int SteamMinReceiveBufferBytes = 64 * 1024;
-    private static int _connectedClientCount;
+    private int _connectedClientCount;
 
     private int ID;
 
@@ -528,20 +584,31 @@ public sealed partial class NetNode : IDisposable
 
     private static readonly int[] ClientIds = { 2, 3, 4 };
     public static int MaxClientSlots => ClientIds.Length;
-    public static int ConnectedClientCount => _connectedClientCount;
-
-    private static readonly HashSet<int> UsedClientIds = new();
-
-    private static bool TryTakeNextUnusedClientId(out int assignedId)
+    public static int ConnectedClientCount
     {
-        lock (UsedClientIds)
+        get
+        {
+            var active = GameMenu.NetRef;
+            return active == null || active._disposed
+                ? 0
+                : Volatile.Read(ref active._connectedClientCount);
+        }
+    }
+
+    // Client ids belong to one NetNode session. Keeping this static allowed a disposing old host
+    // to release ids owned by a newly-created host during a fast reconnect.
+    private readonly HashSet<int> _usedClientIds = new();
+
+    private bool TryTakeNextUnusedClientId(out int assignedId)
+    {
+        lock (_usedClientIds)
         {
             for (var i = 0; i < ClientIds.Length; i++)
             {
                 var id = ClientIds[i];
-                if (!UsedClientIds.Contains(id))
+                if (!_usedClientIds.Contains(id))
                 {
-                    UsedClientIds.Add(id);
+                    _usedClientIds.Add(id);
                     assignedId = id;
                     return true;
                 }
@@ -550,6 +617,17 @@ public sealed partial class NetNode : IDisposable
             assignedId = 0;
             return false;
         }
+    }
+
+    private bool IsCurrentNetworkSession()
+    {
+        return !_disposed && ReferenceEquals(GameMenu.NetRef, this);
+    }
+
+    private bool IsSupersededNetworkSession()
+    {
+        var active = GameMenu.NetRef;
+        return _disposed || (active != null && !ReferenceEquals(active, this));
     }
 
     private readonly object _clientsLock = new();
@@ -564,15 +642,19 @@ public sealed partial class NetNode : IDisposable
     private List<MobChargeSnapshot> _pendingMobCharges = new();
     private List<MobHit> _pendingMobHits = new();
     private List<MobDie> _pendingMobDies = new();
+    private List<BossVictoryState> _pendingBossVictories = new();
     private List<MobAttack> _pendingMobAttacks = new();
     private List<MobDraw> _pendingMobDraws = new();
     private List<ExitReadyState> _pendingExitReadyStates = new();
     private List<PlayerDownState> _pendingPlayerDownStates = new();
     private List<PlayerReviveRequest> _pendingPlayerReviveRequests = new();
     private List<string> _pendingBossCineLevelIds = new();
+    private List<string> _pendingBossIntroEnds = new();
+    private List<BossIntroReadyState> _pendingBossIntroReadyStates = new();
     private List<BossHeroTeleportEvent> _pendingBossHeroTeleports = new();
     private List<InterDoorEvent> _pendingInterDoorEvents = new();
     private List<InterElevatorEvent> _pendingInterElevatorEvents = new();
+    private List<InterElevatorStateEvent> _pendingInterElevatorStateEvents = new();
     private List<InterPressurePlateEvent> _pendingInterPressurePlateEvents = new();
     private List<InterTreasureChestEvent> _pendingInterTreasureChestEvents = new();
     private List<InterVineLadderEvent> _pendingInterVineLadderEvents = new();
@@ -606,6 +688,12 @@ public sealed partial class NetNode : IDisposable
     private int _localHpRecover;
     private readonly object _hostCacheSync = new();
     private int? _cachedHostSeed;
+    private int? _cachedHostRunSeedSequence;
+    private string? _cachedHostLaunchKind;
+    private string? _cachedHostRunCommitPayload;
+    private string? _cachedHostRunExecutePayload;
+    private string? _cachedHostRunReadyPayload;
+    private int? _cachedHostRunLaunchSequence;
     private int? _cachedHostBossRune;
     private int? _cachedHostSerializerSeq;
     private int? _cachedHostSerializerUid;
@@ -616,7 +704,6 @@ public sealed partial class NetNode : IDisposable
     private string? _cachedHostLevelGraphPayload;
     private double? _cachedHostMobsHpMult;
     private double? _cachedHostBossesHpMult;
-    private readonly Dictionary<string, string> _cachedHostLevelGraphsByLevelId = new(StringComparer.Ordinal);
 
     public bool HasRemote
     {
@@ -651,7 +738,8 @@ public sealed partial class NetNode : IDisposable
     public static NetNode CreateSteamHost(ILogger log, int hostPort) => new(log, NetRole.Host, new CSteamID(0), hostPort);
     public static NetNode CreateSteamClient(ILogger log, ulong hostSteamId) => new(log, NetRole.Client, new CSteamID(hostSteamId), 0);
 
-    internal SteamConnect.HostLobbyResult? HostLobbyResult => _steamBridge?.HostLobbyResult;
+    internal SteamConnect.HostLobbyResult? HostLobbyResult =>
+        _steamBridge?.HostLobbyResult ?? _steamHostStartupResult;
     private NetNode(ILogger log, NetRole role, IPEndPoint ep)
     {
         _log  = log;

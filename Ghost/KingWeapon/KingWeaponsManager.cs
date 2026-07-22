@@ -5,6 +5,7 @@ using dc.tool.weap;
 using DeadCellsMultiplayerMod.Ghost.GhostBase;
 using DeadCellsMultiplayerMod.Tools;
 using ModCore.Utilities;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace DeadCellsMultiplayerMod.Ghost
@@ -29,6 +30,9 @@ namespace DeadCellsMultiplayerMod.Ghost
         private long _shieldLastPulseTicks;
         private bool _shieldActive;
         private long _lastShieldReleaseTimestamp;
+        private string _activeKindId = string.Empty;
+        private readonly HashSet<string> _quarantinedKinds = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _visualOnlyNoticeKinds = new(StringComparer.OrdinalIgnoreCase);
 
         public bool IsShieldActive => _shieldActive;
 
@@ -44,7 +48,25 @@ namespace DeadCellsMultiplayerMod.Ghost
                 inventory = inv;
         }
 
+        /// <summary>
+        /// Runs remote weapon visuals defensively. A remote weapon is never important enough to let a
+        /// Hashlink/weapon-specific failure terminate the co-op run: known-dangerous kinds are visual-only,
+        /// and any unexpected runtime failure quarantines that kind for this ghost until it is recreated.
+        /// Real enemy HP/death remains authoritative through MobSync.
+        /// </summary>
         public void update()
+        {
+            try
+            {
+                UpdateCore();
+            }
+            catch(Exception ex)
+            {
+                QuarantineCurrentWeapon("update", ex);
+            }
+        }
+
+        private void UpdateCore()
         {
             var hitchStart = RuntimeHitchWatch.Start();
             if(hero == null) return;
@@ -55,27 +77,64 @@ namespace DeadCellsMultiplayerMod.Ghost
             var item = GetWeaponItem(pendingSlot);
             if(item == null || item.kind?.Index == InventItemKind.Indexes.Meta) return;
 
+            var kindId = GetWeaponKindId(item) ?? string.Empty;
+            if(KingWeaponSupport.RequiresVisualOnlyRemoteReplay(kindId))
+            {
+                EnterVisualOnlyMode(item, kindId, "known-unsafe");
+                return;
+            }
+
+            if(kindId.Length > 0 && _quarantinedKinds.Contains(kindId))
+            {
+                EnterVisualOnlyMode(item, kindId, "runtime-quarantine");
+                return;
+            }
+
             if(NeedsWeaponRebuild(item))
             {
                 var rebuildStart = RuntimeHitchWatch.Start();
-                if(weapon != null && !weapon.destroyed)
-                {
-                    try { weapon.dispose(); } catch { }
-                }
+                DisposeCurrentWeaponSafely();
 
                 weaponItem = item;
-                weapon = KingWeaponSupport.CreateWeapon(hero, item, king);
+                _activeKindId = kindId;
                 _shieldActive = false;
                 _shieldLastPulseTicks = 0;
                 _lastShieldReleaseTimestamp = 0;
-                pendingInterrupts = 0;
                 ClearShieldAffects();
+
+                // Do not construct an idle detached weapon merely because the remote player equipped it.
+                // A runtime is needed only when an actual remote attack arrives. Flint's sender never
+                // requests that duplicated execution, so its powered-feedback runtime is never created.
+                if(pendingAttacks <= 0)
+                {
+                    pendingInterrupts = 0;
+                    return;
+                }
+
+                // Create only the raw vanilla runtime first. Flint/powered-feedback weapons must be
+                // recognized before binding the detached ghost or patching/advancing any skill.
+                var candidate = KingWeaponSupport.CreateWeaponCandidate(hero, item);
+                weapon = candidate;
+                if(KingWeaponSupport.RequiresVisualOnlyRemoteReplay(kindId, candidate, out var unsafeReason))
+                {
+                    if(kindId.Length > 0)
+                        _quarantinedKinds.Add(kindId);
+
+                    // Do not call dispose on this raw unsafe candidate: a Flint dispose/interrupt path
+                    // can itself enter stopPoweredFeedback. It was never bound or advanced and is left
+                    // for the Hashlink runtime to reclaim.
+                    EnterVisualOnlyMode(item, kindId, unsafeReason, disposeCurrent: false);
+                    return;
+                }
+
+                KingWeaponSupport.ActivateRemoteWeapon(candidate, king);
+                pendingInterrupts = 0;
                 LogKingWeaponsStepIfSlow(
                     "KingWeaponsManager.Rebuild",
                     rebuildStart,
                     string.Create(
                         System.Globalization.CultureInfo.InvariantCulture,
-                        $"pendingSlot={pendingSlot} permanentId={item.permanentId} weapon={weapon?.GetType().Name ?? "null"}"));
+                        $"pendingSlot={pendingSlot} permanentId={item.permanentId} kind={kindId} weapon={weapon?.GetType().Name ?? "null"}"));
             }
 
             var activeWeapon = weapon;
@@ -122,7 +181,6 @@ namespace DeadCellsMultiplayerMod.Ghost
 
                 if(_shieldActive && !activeWeapon.destroyed)
                 {
-                    // Keep the shield logic running while we receive pulses; when pulses stop, release.
                     if(activeWeapon is BaseShield shield)
                     {
                         try { shield.onShieldHolding(1.0); } catch { }
@@ -135,9 +193,7 @@ namespace DeadCellsMultiplayerMod.Ghost
                         ? Stopwatch.GetElapsedTime(_shieldLastPulseTicks, now).TotalSeconds
                         : 0.0;
                     if(_shieldLastPulseTicks != 0 && sincePulseS > ShieldReleaseAfterLastPulseSeconds)
-                    {
                         ReleaseShield(now);
-                    }
                 }
 
                 LogKingWeaponsStepIfSlow(
@@ -165,9 +221,7 @@ namespace DeadCellsMultiplayerMod.Ghost
             if(pendingAttacks > 0 && activeWeapon.isReady())
             {
                 KingWeaponSupport.SyncSource(activeWeapon);
-
                 activeWeapon.prepare(getWeaponAttackSpeed(activeWeapon));
-
                 pendingAttacks--;
             }
 
@@ -230,19 +284,96 @@ namespace DeadCellsMultiplayerMod.Ghost
         /// <summary>Disposes the managed weapon and clears shield state; call when GhostKing is torn down to avoid use-after-dispose.</summary>
         internal void DisposeManagedWeapon()
         {
-            if(weapon != null && !weapon.destroyed)
-            {
-                try { weapon.dispose(); } catch { }
-            }
-
-            weapon = null!;
+            ClearShieldAffects();
+            DisposeCurrentWeaponSafely();
             weaponItem = null!;
+            _activeKindId = string.Empty;
             pendingAttacks = 0;
             pendingInterrupts = 0;
             pendingSlot = -1;
             _shieldActive = false;
             _shieldLastPulseTicks = 0;
             _lastShieldReleaseTimestamp = 0;
+            _quarantinedKinds.Clear();
+            _visualOnlyNoticeKinds.Clear();
+        }
+
+        private void EnterVisualOnlyMode(InventItem item, string kindId, string reason, bool disposeCurrent = true)
+        {
+            if(disposeCurrent)
+            {
+                DisposeCurrentWeaponSafely();
+            }
+            else
+            {
+                var unsafeCandidate = weapon;
+                weapon = null!;
+                try
+                {
+                    if(unsafeCandidate != null)
+                        KingWeaponSupport.Unbind(unsafeCandidate);
+                }
+                catch
+                {
+                }
+            }
+
+            weaponItem = item;
+            _activeKindId = kindId;
+            pendingAttacks = 0;
+            pendingInterrupts = 0;
+            _shieldActive = false;
+            _shieldLastPulseTicks = 0;
+            _lastShieldReleaseTimestamp = 0;
+            ClearShieldAffects();
+
+            var logKey = string.IsNullOrWhiteSpace(kindId) ? "<unknown>" : kindId;
+            if(_visualOnlyNoticeKinds.Add(logKey))
+            {
+                ModEntry.Instance?.Logger.Information(
+                    "[NetMod][RemoteWeaponGuard] visual-only remote replay kind={Kind} reason={Reason}; MobSync still carries authoritative damage",
+                    logKey,
+                    reason);
+            }
+        }
+
+        private void QuarantineCurrentWeapon(string step, Exception ex)
+        {
+            var kindId = !string.IsNullOrWhiteSpace(_activeKindId)
+                ? _activeKindId
+                : GetWeaponKindId(weaponItem) ?? "<unknown>";
+
+            if(!string.Equals(kindId, "<unknown>", StringComparison.Ordinal))
+                _quarantinedKinds.Add(kindId);
+
+            DisposeCurrentWeaponSafely();
+            pendingAttacks = 0;
+            pendingInterrupts = 0;
+            pendingSlot = -1;
+            _shieldActive = false;
+            _shieldLastPulseTicks = 0;
+            _lastShieldReleaseTimestamp = 0;
+            ClearShieldAffects();
+
+            var logger = ModEntry.Instance?.Logger;
+            if(logger != null)
+            {
+                logger.Warning(
+                    ex,
+                    "[NetMod][RemoteWeaponGuard] quarantined unsafe remote weapon kind={Kind} step={Step}; continuing with visual-only replay",
+                    kindId,
+                    step);
+            }
+        }
+
+        private void DisposeCurrentWeaponSafely()
+        {
+            var current = weapon;
+            weapon = null!;
+            if(current == null)
+                return;
+
+            try { KingWeaponSupport.RetireRemoteWeapon(current); } catch { }
         }
 
         private bool NeedsWeaponRebuild(InventItem item)
@@ -338,6 +469,5 @@ namespace DeadCellsMultiplayerMod.Ghost
                 return ModEntry.Instance?.inventItem;
             return null;
         }
-
     }
 }

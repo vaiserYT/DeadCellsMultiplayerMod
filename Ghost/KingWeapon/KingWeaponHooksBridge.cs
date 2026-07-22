@@ -14,6 +14,7 @@ public partial class ModEntry
     private long _lastLocalInterruptSendTicks;
     private string _lastLocalInterruptKey = string.Empty;
     private long _lastLocalShieldPulseTicks;
+    private readonly HashSet<string> _visualOnlyLocalWeaponNotices = new(StringComparer.OrdinalIgnoreCase);
 
     internal InventItem NotifyInventoryAddFromKingWeaponHooks(Hook_Inventory.orig_add orig, Inventory self, InventItem i)
     {
@@ -73,6 +74,15 @@ public partial class ModEntry
         var item = self.item;
         if(item == null || !TryGetWeaponKindId(item, out var kindId) || string.IsNullOrWhiteSpace(kindId))
             return;
+
+        // Flint's local attack remains completely vanilla. Do not request a duplicated remote
+        // weapon runtime for powered-feedback weapons; remote damage is already carried by MobSync
+        // and the normal player animation stream still provides the visible swing.
+        if(DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.RequiresVisualOnlyRemoteReplay(kindId, self, out var visualOnlyReason))
+        {
+            LogVisualOnlyLocalWeaponOnce(kindId!, self, visualOnlyReason);
+            return;
+        }
 
         var isShield = IsShieldWeaponKind(kindId!);
 
@@ -143,6 +153,12 @@ public partial class ModEntry
         if(item == null || !TryGetWeaponKindId(item, out var kindId) || string.IsNullOrWhiteSpace(kindId))
             return;
 
+        if(DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.RequiresVisualOnlyRemoteReplay(kindId, self, out var visualOnlyReason))
+        {
+            LogVisualOnlyLocalWeaponOnce(kindId!, self, visualOnlyReason);
+            return;
+        }
+
         var slot = ResolveWeaponSlotForSend(me.inventory, item, kindId!);
         if(slot < 0)
             slot = 0;
@@ -193,6 +209,31 @@ public partial class ModEntry
 
         var ammo = GetWeaponAmmoForSync(item);
         _net?.SendInventoryWeapon(kindId!, slot, item.permanentId, ammo);
+    }
+
+    private void LogVisualOnlyLocalWeaponOnce(string kindId, Weapon weapon, string reason)
+    {
+        var runtimeName = string.Empty;
+        try
+        {
+            runtimeName = weapon?.GetType().FullName ?? weapon?.GetType().Name ?? string.Empty;
+        }
+        catch
+        {
+        }
+
+        var key = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{kindId}|{runtimeName}|{reason}");
+
+        if(!_visualOnlyLocalWeaponNotices.Add(key))
+            return;
+
+        Logger.Information(
+            "[NetMod][FlintGuard] local vanilla weapon kept remote-visual-only kind={Kind} runtime={Runtime} reason={Reason}",
+            kindId,
+            runtimeName,
+            reason);
     }
 
     private static bool IsShieldWeaponKind(string kindId)

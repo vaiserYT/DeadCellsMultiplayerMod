@@ -8,7 +8,10 @@
     <SupportedOSPlatform>Windows</SupportedOSPlatform>
     <NoWarn>$(NoWarn);CA1416;CS0414;CS9107</NoWarn>
     <!-- don't change this version -->
-    <Version>0.4.0</Version> 
+    <Version>0.8.91</Version>
+    <AssemblyVersion>0.8.91</AssemblyVersion>
+    <FileVersion>0.8.91</FileVersion>
+    <InformationalVersion>0.8.91-bossrush-precommit-seed-barrier</InformationalVersion>
     <ModType>mod</ModType>
     <ModMain>DeadCellsMultiplayerMod.ModEntry</ModMain>
     
@@ -26,7 +29,9 @@
   <ItemGroup>
     <PackageReference Include="DeadCellsCoreModding.MDK" Version="1.0.1" />
     <PackageReference Include="MonoMod.RuntimeDetour" Version="25.3.3" />
-    <Reference Include="Steamworks.NET" />
+    <Reference Include="Steamworks.NET">
+      <HintPath Condition="Exists('$(SteamworksNetHintPath)')">$(SteamworksNetHintPath)</HintPath>
+    </Reference>
     <None Include="$(SteamApi64HintPath)" Condition="Exists('$(SteamApi64HintPath)')" Link="steam_api64.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Visible>false</Visible>

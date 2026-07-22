@@ -25,8 +25,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             ConsumeIncomingHostMobStates(net);
             ConsumeIncomingHostMobMoves(net);
             ConsumeIncomingHostMobAttacks(net);
+            RetryPendingClientBossAttacks();
             ConsumeIncomingMobDies(net);
             ConsumeIncomingMobHits(net);
+
+            // After all authoritative packets for this frame have been applied, complete any boss
+            // death the packets alone could not finish (unresolved MOBDIE, stranded zero-life boss).
+            ProcessClientBossDeathWatchdog();
         }
     }
 }

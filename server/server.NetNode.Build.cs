@@ -138,6 +138,13 @@ public sealed partial class NetNode
             $"PREVIVE|{request.ReviverId}|{request.TargetId}\n");
     }
 
+    private static string BuildBossVictoryLine(BossVictoryState state)
+    {
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"BOSSVICTORY|{state.Generation}|{state.EncounterId}\n");
+    }
+
     private static string BuildPosLine(int id, double cx, double cy, int dir)
     {
         return string.Create(

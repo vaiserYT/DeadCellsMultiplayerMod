@@ -62,6 +62,27 @@ namespace DeadCellsMultiplayerMod
         private static Timer? s_steamCallbackPumpTimer;
         private static int s_steamOverlayCallbackRetryCount;
         private static bool s_steamApiReady;
+        private static bool s_steamUnavailable;
+
+        /// <summary>
+        /// False only once we have POSITIVE evidence Steam cannot work here (native load failure,
+        /// callback registration throwing, or repeated init failures) — e.g. no Steam client
+        /// running, or a non-Steam install of the game. Optimistic before that so a working Steam
+        /// setup is never downgraded just because init has not completed yet. When false, the
+        /// menu uses the direct IP/LAN transport instead of the Steam lobby path.
+        /// </summary>
+        internal static bool IsSteamAvailable => !s_steamUnavailable;
+
+        internal static void MarkSteamUnavailable(string reason)
+        {
+            if (s_steamUnavailable)
+                return;
+
+            s_steamUnavailable = true;
+            Instance?.Logger.Information(
+                "[NetMod][Steam] Steam features disabled ({Reason}). Direct IP/LAN hosting stays fully available.",
+                reason);
+        }
         private static string s_lastSteamLaunchCommand = string.Empty;
         private static string s_lastSteamLaunchConnectLobbyParam = string.Empty;
         private static ulong s_lastOverlayJoinLobbyId;
@@ -109,6 +130,7 @@ namespace DeadCellsMultiplayerMod
         private string? _lastAnimSent;
         private int? _lastAnimQueueSent;
         private bool? _lastAnimGSent;
+        private bool _visualSyncFailureLogged;
         private long _suppressHeroAnimUntilTicks;
         private string? _lastSentHeroSkin;
         private string? _lastSentHeroHeadSkin;
@@ -129,6 +151,7 @@ namespace DeadCellsMultiplayerMod
         public InventItem inventItem = null!;
         private bool _inventorySyncGuard;
         private bool _localFakeDead;
+        private bool _localDeathConversionInProgress;
         private bool _localExitPenaltyApplied;
         private long _localFakeDeadStartedTicks;
         private DeadBase? _localDeadCine;
@@ -148,6 +171,8 @@ namespace DeadCellsMultiplayerMod
         private const double ReviveAttemptCooldownSeconds = 0.2;
         private const double ReviveHoldSeconds = 0.7;
         private const double ReviveHomunculusBodyMaxDistancePx = 64.0;
+        private const double ReviveRemotePositionValidationPx = 96.0;
+        private const double RemoteDownedStateStaleSeconds = 6.0;
         private const double DownedStateResendSeconds = 0.4;
         private const double DownedHeadStateResendSeconds = 1.0 / 30.0;
         private const double DownedGhostBodyYOffsetPx = 40.0;
@@ -192,13 +217,58 @@ namespace DeadCellsMultiplayerMod
         private static readonly HashSet<string> BossLevelIds = new(StringComparer.OrdinalIgnoreCase)
         {
             "BeholderPit", "Throne", "DeathArena", "DookuArena", "QueenArena", "Observatory",
-            "SwampHeart", "CastleAlchemy", "LighthouseTop", "LighthouseBottom", "Giant",
-            "DookuCastle", "RichterCastle", "BossRushZone", "Bridge", "TopClockTower"
+            "SwampHeart", "CastleAlchemy", "Lighthouse", "LighthouseTop", "LighthouseBottom", "Giant",
+            "DookuCastle", "RichterCastle", "BossRushZone", "Bridge", "TopClockTower", "GardenerStage"
         };
 
         internal static bool IsBossLevel(string? levelId)
         {
-            return !string.IsNullOrWhiteSpace(levelId) && BossLevelIds.Contains(levelId);
+            if (string.IsNullOrWhiteSpace(levelId))
+                return false;
+            if (BossLevelIds.Contains(levelId))
+                return true;
+
+            // Do not make every boss/DLC update depend on a manually-maintained biome list. When
+            // the current level contains a real boss Mob or one of the known boss-room triggers,
+            // opt it into the same cinematic/downed protections. All Hashlink reads are contained.
+            try
+            {
+                var level = me?._level;
+                var currentLevelId = level?.map?.id?.ToString();
+                if (level == null || !string.Equals(currentLevelId, levelId, StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                var entities = level.entities;
+                if (entities != null)
+                {
+                    for (var i = 0; i < entities.length; i++)
+                    {
+                        if (entities.getDyn(i) is dc.en.Mob mob &&
+                            global::DeadCellsMultiplayerMod.Mobs.Bosses.BossSyncHelpers.IsBossMob(mob))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                var triggers = level.entitiesByClass?.get(HiddenTrigger.Class.__clid) as ArrayObj;
+                if (triggers != null)
+                {
+                    for (var i = 0; i < triggers.length; i++)
+                    {
+                        if (triggers.getDyn(i) is not HiddenTrigger trigger)
+                            continue;
+                        var eventId = trigger.genericEventId?.ToString();
+                        if (!string.IsNullOrWhiteSpace(eventId) && BossRoomGenericEventIds.Contains(eventId))
+                            return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
         }
 
         /// <summary>Known boss-room genericEventIds from game's HiddenTrigger (set via marker.customId in level data).</summary>
@@ -208,17 +278,39 @@ namespace DeadCellsMultiplayerMod
             "roomGardenerBoss", "roomGiant", "roomKingsHand", "roomQueen", "roomBehemoth",
             "roomMamaTick", "roomKingsHandAsKing"
         };
+
+        private static bool IsBossRoomEventIdCandidate(string? eventId)
+        {
+            if (string.IsNullOrWhiteSpace(eventId))
+                return false;
+            if (BossRoomGenericEventIds.Contains(eventId))
+                return true;
+
+            // This broader fallback is used only while an actual recognized boss intro is active,
+            // or after receiving that exact event id from the peer. It does not turn arbitrary
+            // reward/story triggers into boss cinematics.
+            return eventId.StartsWith("room", StringComparison.OrdinalIgnoreCase);
+        }
         private static readonly HashSet<string> BossDeathCineTypeNames = new(StringComparer.Ordinal)
         {
             "BeholderDeath", "GiantDeath", "GiantDeath4", "KillKingCinem", "KillQueenCinem",
-            "QueenDefeated", "KillDookuBeastCinem", "FakeKillDooku", "RichterDeath",
+            "QueenDefeated", "KillDookuBeastCinem", "RichterDeath",
             "EndCollectorPreSmash", "SmashCinem", "EndCollectorPostSmash", "EndCollectorPostSmashKS"
         };
+        // Mid-fight transformations, NOT room intros. They get the sync quarantine and the
+        // control-unlock watchdog like intros, but must NEVER be network-replayed with a hero
+        // position snap: FakeKillDooku replay teleported the second player over the changing
+        // DookuBeastArena with no ground clamp - instant fall-off deaths and arena-state split.
+        private static readonly HashSet<string> BossPhaseTransitionCineTypeNames = new(StringComparer.Ordinal)
+        {
+            "FakeKillDooku"
+        };
+
         private static readonly HashSet<string> BossIntroCineTypeNames = new(StringComparer.Ordinal)
         {
             "EnterRoomBoss", "EnterRoomDeathBoss", "EnterRoomGardenerBoss", "EnterRoomQueenBoss",
             "EnterThroneRoom", "EnterThroneBossRush", "EnterThroneRoomAsKing", "EnterGiantRoom",
-            "EnterModifiedGiantRoom", "EnterDualBehemoth", "StartCollectorFight", "StartCollectorFightAlt",
+            "EnterModifiedGiantRoom", "EnterDualBehemoth", "EnterDookuBossRoom", "StartCollectorFight", "StartCollectorFightAlt",
             "MeetCollectorEnd"
         };
         private string? _lastBossCineSentLevelId;
@@ -226,6 +318,8 @@ namespace DeadCellsMultiplayerMod
         private const double BossCineSendCooldownSeconds = 2.0;
         private readonly Dictionary<string, long> _pendingBossCineApplyByLevel = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, long> _suppressBossCineEchoByLevel = new(StringComparer.OrdinalIgnoreCase);
+        // Legacy boss presentation completion is level-scoped. Boss Rush explicitly clears this
+        // marker when a fresh native room trigger starts the next encounter.
         private readonly HashSet<string> _completedBossCineLevels = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _appliedBossHeroTeleportLevels = new(StringComparer.OrdinalIgnoreCase);
         private const double BossCineApplyPendingTtlSeconds = 20.0;
@@ -234,6 +328,12 @@ namespace DeadCellsMultiplayerMod
         private const double BossHeroTeleportEchoSuppressSeconds = 1.5;
         private int _suppressBossCineSendDepth;
         private long _suppressBossTriggerNetSendUntilTick;
+        private bool _clientBossVictoryRecoveryPending;
+        private long _clientBossVictoryRecoveryStartedTick;
+        private string? _clientBossVictoryRecoveryLevelId;
+        private const double ClientBossVictoryNoCineGraceSeconds = 2.0;
+        private const double ClientBossVictoryUnknownCineReleaseSeconds = 8.0;
+        private const double ClientBossVictoryRecoveryMaxSeconds = 12.0;
 
 
         void IOnAfterLoadingCDB.OnAfterLoadingCDB(dc._Data_ cdb)
@@ -407,10 +507,32 @@ namespace DeadCellsMultiplayerMod
 
             s_hooksInstalled = true;
             entry.Logger.Information("\x1b[32m[[ModEntry] Initializing ModEntry...]\x1b[0m ");
-            entry.Logger.Information("[NetMod] Source build: v0.8.38-sublevel-dive-combat-guard");
+            entry.Logger.Information("[NetMod] Source build: {SourceBuild}", BuildInfo.SourceMarker);
+            entry.Logger.Information(
+                "[NetMod][Protocol] version={ProtocolVersion} build={BuildVersion}",
+                BuildInfo.NetworkProtocolVersion,
+                BuildInfo.Version);
+            entry.Logger.Information("[NetMod][FlintGuard] mode=local-vanilla-no-remote-runtime-preflight-powered-feedback-scan");
+            entry.Logger.Information("[NetMod][BossCells] mode=working-v0.8.68-selector-reload-and-render-guard");
+            entry.Logger.Information("[NetMod][BossSafety] mode=legacy-native-death-no-custom-encounter-victory");
+            entry.Logger.Information("[NetMod][BossIntro] mode=legacy-native-trigger-no-ready-barrier");
+            entry.Logger.Information("[NetMod][BossRushLoad] mode=host-door-precommit-structured-seed-barrier");
+            entry.Logger.Information("[NetMod][CurseGuard] mode=fake-death-revive-dive-safe");
+            entry.Logger.Information("[NetMod][VanillaTransitions] mode=working-v0.8.68-typed-activateSubLevel-stack");
+            entry.Logger.Information("[NetMod][Spectate] mode=automatic-while-downed-local-on-revive");
+            entry.Logger.Information("[NetMod][ReviveAnchor] mode=confirmed-history-always-recover-no-levelmap");
+            entry.Logger.Information("[NetMod][ElevatorSync] mode=v0.8.38-legacy-onstep-pulse-no-position-correction");
+            entry.Logger.Information("[NetMod][DoorTransitionRollback] mode=working-v0.8.68-giant-door-and-return-teleporter-stack");
+            entry.Logger.Information("[NetMod][RemoteWeaponReplay] mode=vanilla-native-with-transition-callback-retirement");
+            entry.Logger.Information("[NetMod][Corpse] mode=vanilla-fall-fast-grounded-failsafe");
+            entry.Logger.Information("[NetMod][MobTeleportSync] mode=safe-above-floor-landing");
+            entry.Logger.Information("[NetMod][MobGrounding] mode=upward-only-safe-landing-jump-phase");
+            entry.Logger.Information("[NetMod][MobSyncStack] mode=exact-uploaded-v0.8.68-working-stack");
+            entry.Logger.Information("[NetMod][SteamCallbacks] mode=main-thread-only-no-timer");
             Hook_Game.init += Hook_gameinit;
             Hook_Hero.wakeup += hook_hero_wakeup;
             Hook_Hero.onLevelChanged += hook_level_changed;
+            Hook_Game.activateSubLevel += Hook_Game_activateSubLevel;
             Hook_Level.onActivation += Hook_Level_onActivation_SubLevelRenderGuard;
             Hook_User.newGame += GameDataSync.user_hook_new_game;
             Hook_User.unserialize += Hook_User_unserialize;
@@ -462,46 +584,60 @@ namespace DeadCellsMultiplayerMod
         private void Hook_Hero_applySkin(Hook_Hero.orig_applySkin orig, Hero self, dc.String skinId)
         {
             orig(self, skinId);
-            if (_netRole == NetRole.None)
-                return;
+            try
+            {
+                if (_netRole == NetRole.None)
+                    return;
 
-            var net = _net;
-            if (net == null || !net.IsAlive || me == null || self == null || !ReferenceEquals(self, me))
-                return;
+                var net = _net;
+                if (net == null || !net.IsAlive || me == null || self == null || !ReferenceEquals(self, me))
+                    return;
 
-            var rawSkin = dc.Main.Class.ME?.user?.heroSkin?.ToString();
-            if (string.IsNullOrWhiteSpace(rawSkin))
-                rawSkin = self.getSkinInfo()?.consoleCmdId?.ToString();
+                var rawSkin = dc.Main.Class.ME?.user?.heroSkin?.ToString();
+                if (string.IsNullOrWhiteSpace(rawSkin))
+                    rawSkin = self.getSkinInfo()?.consoleCmdId?.ToString();
 
-            var skin = NormalizeSkin(rawSkin, "PrisonerDefault");
+                var skin = NormalizeSkin(rawSkin, "PrisonerDefault");
 
-            if (string.Equals(_lastSentHeroSkin, skin, StringComparison.Ordinal))
-                return;
+                if (string.Equals(_lastSentHeroSkin, skin, StringComparison.Ordinal))
+                    return;
 
-            net.SendHeroSkin(skin);
-            _lastSentHeroSkin = skin;
+                net.SendHeroSkin(skin);
+                _lastSentHeroSkin = skin;
+            }
+            catch (Exception ex)
+            {
+                LogVisualSyncFailureOnce("hero skin", ex);
+            }
         }
 
         private void Hook_HeroHead_initCustomHead(Hook_HeroHead.orig_initCustomHead orig, HeroHead self)
         {
             orig(self);
-            if (_netRole == NetRole.None)
-                return;
+            try
+            {
+                if (_netRole == NetRole.None)
+                    return;
 
-            var net = _net;
-            if (net == null || !net.IsAlive || me == null || self == null)
-                return;
+                var net = _net;
+                if (net == null || !net.IsAlive || me == null || self == null)
+                    return;
 
-            var localHead = me.heroHead;
-            if (localHead == null || !ReferenceEquals(self, localHead))
-                return;
+                var localHead = me.heroHead;
+                if (localHead == null || !ReferenceEquals(self, localHead))
+                    return;
 
-            var skin = NormalizeSkin(dc.Main.Class.ME?.user?.heroHeadSkin?.ToString(), "BaseFlame");
-            if (string.Equals(_lastSentHeroHeadSkin, skin, StringComparison.Ordinal))
-                return;
+                var skin = NormalizeSkin(dc.Main.Class.ME?.user?.heroHeadSkin?.ToString(), "BaseFlame");
+                if (string.Equals(_lastSentHeroHeadSkin, skin, StringComparison.Ordinal))
+                    return;
 
-            net.SendHeroHeadSkin(skin);
-            _lastSentHeroHeadSkin = skin;
+                net.SendHeroHeadSkin(skin);
+                _lastSentHeroHeadSkin = skin;
+            }
+            catch (Exception ex)
+            {
+                LogVisualSyncFailureOnce("hero head skin", ex);
+            }
         }
 
         private void Hook_ZDoor_onActivate(Hook_ZDoor.orig_onActivate orig, ZDoor self, Hero lp, bool mob)
@@ -521,19 +657,12 @@ namespace DeadCellsMultiplayerMod
                     : string.Create(
                         System.Globalization.CultureInfo.InvariantCulture,
                         $"{self.cx}:{self.cy}");
-                PrepareRemoteKingsForSubLevelTransition($"zdoor-activate:{doorKey}");
+                // Keep the proven entry behavior: the strongly typed Game.activateSubLevel hook
+                // owns the complete native transition window, including return-to-entrance paths.
+                CheckRemoteKingRenderSafety($"zdoor-entry-preflight:{doorKey}");
             }
 
-            try
-            {
-                orig(self, lp, mob);
-            }
-            catch
-            {
-                if (localMultiplayerActivation)
-                    CancelRemoteKingSubLevelTransition("zdoor-orig-threw");
-                throw;
-            }
+            orig(self, lp, mob);
 
             if (localMultiplayerActivation)
             {
@@ -624,6 +753,12 @@ namespace DeadCellsMultiplayerMod
                             ex2.Message);
                         try { localSelf.spr = null; } catch (Exception ex3) { Logger.Warning(ex3, "[NetMod] BossRushDoor spr=null failed"); }
                     }
+                    finally
+                    {
+                        // "Pending" is transient. Keeping this entry forever prevented a later
+                        // legitimate room/asset rebuild from receiving its own safe retry.
+                        s_bossRushDoorGfxDeferredPending.Remove(localSelf);
+                    }
                 });
             }
         }
@@ -638,9 +773,13 @@ namespace DeadCellsMultiplayerMod
             double? senderPostX = null;
             double? senderPostY = null;
             int? senderPostDir = null;
+            var senderWasUsed = false;
 
             if (self != null)
+            {
                 senderGenericEventId = self.genericEventId?.ToString()?.Trim();
+                try { senderWasUsed = self.used; } catch { }
+            }
 
             if (dh != null && me != null && ReferenceEquals(dh, me))
                 TryCaptureBossCineHeroPosition(me, out senderPreX, out senderPreY, out senderPreDir);
@@ -659,6 +798,18 @@ namespace DeadCellsMultiplayerMod
 
             if (!BossLevelIds.Contains(senderLevelId))
                 return;
+
+            // Boss Rush can reuse one level for multiple native room triggers. Clear only the
+            // legacy presentation marker for a genuinely fresh Boss Rush trigger; do not add a
+            // sequence barrier, AI pause, forced victory, or client-side re-entry.
+            if (!senderWasUsed && string.Equals(senderLevelId, "BossRushZone", StringComparison.OrdinalIgnoreCase))
+            {
+                ClearBossCineCompleted(senderLevelId);
+                _appliedBossHeroTeleportLevels.Remove(senderLevelId);
+                _lastBossCineSentLevelId = null;
+                _lastBossCineSentTick = 0;
+            }
+
             if (IsBossCineCompleted(senderLevelId) ||
                 IsBossCineSendSuppressed(senderLevelId) ||
                 HasAppliedBossHeroTeleport(senderLevelId))
@@ -736,8 +887,12 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook_Game_pause(Hook_Game.orig_pause orig, dc.pr.Game self)
         {
-            // don't change that
-            return; 
+            // A live co-op session cannot pause only one simulation. Outside co-op, preserve the
+            // normal single-player pause behavior instead of disabling pause just because the mod
+            // is installed.
+            var net = _net;
+            if (_netRole == NetRole.None || net == null || !net.IsAlive)
+                orig(self);
         }
 
 
@@ -828,25 +983,49 @@ namespace DeadCellsMultiplayerMod
 
         private AnimManager Hook_AnimManager_play(Hook_AnimManager.orig_play orig, AnimManager self, dc.String plays, int? queueAnim, bool? g)
         {
-            if(plays == null)
-                return orig(self, plays, queueAnim, g);
+            // Vanilla animation must always run even if optional network/ghost state is temporarily
+            // invalid. Running the mod-side sync first allowed a managed/Hashlink read failure to
+            // suppress the real animation and escape from one of the game's hottest hooks.
+            var result = orig(self, plays, queueAnim, g);
+            if (plays == null)
+                return result;
 
-            var play = plays.ToString();
-            if(string.IsNullOrWhiteSpace(play))
-                return orig(self, plays, queueAnim, g);
-
-            if (me != null && me?.spr?._animManager != null && ReferenceEquals(self, me.spr._animManager))
+            try
             {
-                if (!DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.IsInKingContext &&
-                    !IsAttackAnim(play))
-                    SendHeroAnim(play, queueAnim, g);
+                var play = plays.ToString();
+                if (string.IsNullOrWhiteSpace(play))
+                    return result;
+
+                if (me != null && me.spr?._animManager != null && ReferenceEquals(self, me.spr._animManager))
+                {
+                    if (!DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.IsInKingContext &&
+                        !IsAttackAnim(play))
+                    {
+                        SendHeroAnim(play, queueAnim, g);
+                    }
+                }
+
+                if (me != null && me.heroHead?.customHeadSpr != null &&
+                    ReferenceEquals(self, me.heroHead.customHeadSpr._animManager))
+                {
+                    SendHeadAnim(play);
+                }
             }
-            if(me != null && me.heroHead.customHeadSpr != null && ReferenceEquals(self, me.heroHead.customHeadSpr._animManager))
+            catch (Exception ex)
             {
-                SendHeadAnim(play);
+                LogVisualSyncFailureOnce("animation", ex);
             }
 
-            return orig(self, plays, queueAnim, g);
+            return result;
+        }
+
+        private void LogVisualSyncFailureOnce(string context, Exception ex)
+        {
+            if (_visualSyncFailureLogged)
+                return;
+
+            _visualSyncFailureLogged = true;
+            Logger.Warning("[NetMod] Optional {Context} sync failed safely: {Message}", context, ex.Message);
         }
 
 
@@ -888,24 +1067,37 @@ namespace DeadCellsMultiplayerMod
             if (!string.IsNullOrWhiteSpace(currentLevelId))
                 SendLevel(currentLevelId);
             SendCurrentRoomTarget(force: true);
-            _net?.ClearMobSyncQueues();
+            // Do not clear again after vanilla onLevelChanged: by this point the host may already
+            // have sent the first valid bootstrap chunks for the new level. Generation fencing
+            // rejects old-level traffic without deleting the new-level state.
             EnsureHeroVisibilityAfterRoomChange(me);
-            FinishRemoteKingLevelTransition();
+            var keepRemoteRenderGuardHeld = IsRemoteKingTransitionGuardArmed;
+            if (!keepRemoteRenderGuardHeld)
+                FinishRemoteKingLevelTransition();
             if (_netRole == NetRole.None) return;
             var net = _net;
             var localId = net?.id ?? 0;
             _ghost = new GhostHero(localId, game!, me, Logger, this);
             _ghost.SetLabel(me, GameMenu.Username);
-            for (int i = 0; i < clients.Length; i++)
+            if (!keepRemoteRenderGuardHeld)
             {
-                DisposeClientSlot(i, clearIdentity: false);
-                rLastX[i] = 0;
-                rLastY[i] = 0;
-                ResetGhostHeadRuntimeState(i);
+                for (int i = 0; i < clients.Length; i++)
+                {
+                    DisposeClientSlot(i, clearIdentity: false);
+                    rLastX[i] = 0;
+                    rLastY[i] = 0;
+                    ResetGhostHeadRuntimeState(i);
+                }
+
+                GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
+            }
+            else
+            {
+                Logger.Information(
+                    "[NetMod][RenderTransition] Hero.onLevelChanged kept remote shell quarantined until native Level.onActivation completed");
             }
 
             DrainRemoteCombatQueuesAfterLevelChange();
-            GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
             MarkDiveNetGuardAfterSpawnOrRoomChange();
 
             _debugExplorerRevealAppliedSignature = string.Empty;
@@ -951,6 +1143,8 @@ namespace DeadCellsMultiplayerMod
             ApplyReceivedBossHeroTeleport();
             ApplyReceivedBossCine();
             SuppressRemoteBossDeathCineIfNeeded();
+            EnforceBossIntroCineControlUnlock();
+            TraceActiveCineTypeChange();
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
             if (hitchMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
@@ -1054,6 +1248,21 @@ namespace DeadCellsMultiplayerMod
 
         private bool Hook_Hero_canBeHitBy(Hook_Hero.orig_canBeHitBy orig, Hero self, dc.Entity by)
         {
+            if (_netRole != NetRole.None && self != null)
+            {
+                try
+                {
+                    if (IsEntityDownedForCombat(self))
+                        return false;
+                    if (self.destroyed || self.life <= 0 || !self._targetable)
+                        return false;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
             return orig(self, by);
         }
 

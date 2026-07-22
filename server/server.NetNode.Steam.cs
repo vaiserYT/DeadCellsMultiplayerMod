@@ -39,28 +39,150 @@ public sealed partial class NetNode
     private void StartSteamHost()
     {
         _cts = new CancellationTokenSource();
-        if (!SteamP2PWorkerBridge.TryStart(NetRole.Host, new CSteamID(0), _steamHostPort, SteamConnect.ResolveBestHostIp(), out var bridge, out var error))
+        ISteamP2PBridge? bridge = null;
+        var error = string.Empty;
+        var hostIp = SteamConnect.ResolveBestHostIp();
+
+        // The game process already owns a working SteamAPI instance. Prefer that path instead of
+        // spawning a second process that frequently cannot initialize Steam and returns an empty
+        // startup event. Keep the isolated worker as a fallback for installations where in-process
+        // lobby/P2P access is unavailable.
+        if (SteamP2PInProcessBridge.TryStartHost(
+                _steamHostPort,
+                hostIp,
+                out var inProcessBridge,
+                out var inProcessError) &&
+            inProcessBridge?.HostLobbyResult?.Success == true)
         {
-            _log.Warning("[NetNode] Steam P2P worker failed to start: {Error}", error);
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", GameMenu.NotifyClientConnectFailed);
+            bridge = inProcessBridge;
+        }
+        else
+        {
+            error = string.IsNullOrWhiteSpace(inProcessError)
+                ? "In-process Steam P2P host failed"
+                : inProcessError;
+            try { inProcessBridge?.Dispose(); } catch { }
+            _log.Warning("[NetNode] In-process Steam P2P host start failed: {Error}", error);
+        }
+
+        if (bridge == null)
+        {
+            var inProcessFailure = error;
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                if (SteamP2PWorkerBridge.TryStart(
+                        NetRole.Host,
+                        new CSteamID(0),
+                        _steamHostPort,
+                        hostIp,
+                        out var workerBridge,
+                        out var workerError))
+                {
+                    if (workerBridge?.HostLobbyResult?.Success == true)
+                    {
+                        bridge = workerBridge;
+                        error = string.Empty;
+                        break;
+                    }
+
+                    workerError = workerBridge?.HostLobbyResult?.Error ?? "Steam worker became ready without a lobby";
+                    try { workerBridge?.Dispose(); } catch { }
+                }
+
+                error = string.IsNullOrWhiteSpace(workerError)
+                    ? inProcessFailure
+                    : $"in-process: {inProcessFailure}; worker: {workerError}";
+                _log.Warning(
+                    "[NetNode] Steam P2P host worker start attempt {Attempt}/2 failed: {Error}",
+                    attempt,
+                    workerError);
+                if (attempt < 2)
+                    Thread.Sleep(350);
+            }
+        }
+
+        if (bridge == null)
+        {
+            _steamHostStartupResult = new SteamConnect.HostLobbyResult
+            {
+                Success = false,
+                Error = string.IsNullOrWhiteSpace(error)
+                    ? "Steam P2P transport failed to start"
+                    : error
+            };
+            try { _cts.Cancel(); } catch { }
+            _log.Warning("[NetNode] Steam P2P host failed to start: {Error}", error);
             return;
         }
+
         _steamBridge = bridge;
-        _log.Information("[NetNode] Host started with Steam P2P transport (worker)");
+        _steamHostStartupResult = bridge.HostLobbyResult;
+        _log.Information(
+            "[NetNode] Host started with Steam P2P transport ({Transport}), lobbyId={LobbyId}",
+            bridge is SteamP2PInProcessBridge ? "in-process" : "worker fallback",
+            bridge.HostLobbyResult?.LobbyId ?? 0UL);
         _steamTransportTask = Task.Run(() => SteamBridgeLoop(_cts.Token));
     }
 
     private void StartSteamClient()
     {
         _cts = new CancellationTokenSource();
-        if (!SteamP2PWorkerBridge.TryStart(NetRole.Client, _steamHostId, 0, null, out var bridge, out var error))
+        ISteamP2PBridge? bridge = null;
+        var error = string.Empty;
+
+        if (SteamP2PInProcessBridge.TryStartClient(_steamHostId, out var inProcessBridge, out var inProcessError))
         {
-            _log.Warning("[NetNode] Steam P2P worker failed to start: {Error}", error);
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", GameMenu.NotifyClientConnectFailed);
+            bridge = inProcessBridge;
+        }
+        else
+        {
+            error = string.IsNullOrWhiteSpace(inProcessError)
+                ? "In-process Steam P2P client failed"
+                : inProcessError;
+            try { inProcessBridge?.Dispose(); } catch { }
+            _log.Warning("[NetNode] In-process Steam P2P client start failed: {Error}", error);
+        }
+
+        if (bridge == null)
+        {
+            var inProcessFailure = error;
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                if (SteamP2PWorkerBridge.TryStart(NetRole.Client, _steamHostId, 0, null, out var workerBridge, out var workerError))
+                {
+                    bridge = workerBridge;
+                    error = string.Empty;
+                    break;
+                }
+
+                error = string.IsNullOrWhiteSpace(workerError)
+                    ? inProcessFailure
+                    : $"in-process: {inProcessFailure}; worker: {workerError}";
+                _log.Warning(
+                    "[NetNode] Steam P2P client worker start attempt {Attempt}/2 failed: {Error}",
+                    attempt,
+                    workerError);
+                if (attempt < 2)
+                    Thread.Sleep(350);
+            }
+        }
+
+        if (bridge == null)
+        {
+            try { _cts.Cancel(); } catch { }
+            _log.Warning("[NetNode] Steam P2P client failed to start: {Error}", error);
+            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+            {
+                if (IsCurrentNetworkSession())
+                    GameMenu.NotifyClientConnectFailed();
+            });
             return;
         }
+
         _steamBridge = bridge;
-        _log.Information("[NetNode] Client started with Steam P2P transport (worker)");
+        _log.Information(
+            "[NetNode] Client started with Steam P2P transport ({Transport})",
+            bridge is SteamP2PInProcessBridge ? "in-process" : "worker fallback");
         _steamTransportTask = Task.Run(() => SteamBridgeLoop(_cts.Token));
         _ = Task.Run(() => ConnectWithRetrySteamBridgeAsync(_cts.Token));
     }
@@ -74,7 +196,11 @@ public sealed partial class NetNode
         if (_steamHostId.m_SteamID == 0UL || bridge == null)
         {
             _log.Warning("[NetNode] Steam client host id or bridge is missing");
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", GameMenu.NotifyClientConnectFailed);
+            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+            {
+                if (IsCurrentNetworkSession())
+                    GameMenu.NotifyClientConnectFailed();
+            });
             return;
         }
 
@@ -84,17 +210,25 @@ public sealed partial class NetNode
                 "[NetNode] Steam P2P requires two different Steam accounts. Host and client both use SteamId={SteamId}. " +
                 "Use a second Steam account (e.g. family sharing or another PC) to test multiplayer.",
                 _steamHostId.m_SteamID);
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", GameMenu.NotifyClientConnectFailed);
+            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+            {
+                if (IsCurrentNetworkSession())
+                    GameMenu.NotifyClientConnectFailed();
+            });
             return;
         }
 
         while (!ct.IsCancellationRequested && attempt < maxAttempts)
         {
             attempt++;
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-attempt", () => GameMenu.NotifyClientConnectAttempt(attempt));
+            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-attempt", () =>
+            {
+                if (IsCurrentNetworkSession())
+                    GameMenu.NotifyClientConnectAttempt(attempt);
+            });
             _log.Information("[NetNode] Steam client connecting to hostSteamId={HostSteamId}", _steamHostId.m_SteamID);
 
-            var helloBytes = Encoding.UTF8.GetBytes("HELLO\n");
+            var helloBytes = Encoding.UTF8.GetBytes(BuildHelloLine());
             if (!bridge.TrySend(_steamHostId.m_SteamID, EP2PSend.k_EP2PSendReliable, SteamP2PChannelClientToHost, helloBytes, out var sendError))
             {
                 _log.Warning("[NetNode] Steam HELLO send failed: {Error}", sendError);
@@ -116,9 +250,10 @@ public sealed partial class NetNode
 
             if (connected)
             {
-                GameMenu.EnqueueMainThreadCoalesced("net:remote-connected", () =>
+                GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-connected", () =>
                 {
-                    GameMenu.NetRef = this;
+                    if (!IsCurrentNetworkSession())
+                        return;
                     GameMenu.SetRole(_role);
                     GameMenu.NotifyRemoteConnected(_role);
                 });
@@ -136,7 +271,11 @@ public sealed partial class NetNode
                     "[NetNode] Steam client connection failed: no WELCOME/ID received within 6s after HELLO (attempt {Attempt}/{Max})",
                     attempt,
                     maxAttempts);
-                GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", GameMenu.NotifyClientConnectFailed);
+                GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+                {
+                    if (IsCurrentNetworkSession())
+                        GameMenu.NotifyClientConnectFailed();
+                });
                 break;
             }
 
@@ -168,14 +307,14 @@ public sealed partial class NetNode
                     if (_steamHostId.m_SteamID != 0UL && packet.RemoteSteamId != _steamHostId.m_SteamID)
                         continue;
                     _lastSteamPacketReceivedTicks = Stopwatch.GetTimestamp();
-                    ProcessIncomingSteamPayload(packet.Payload, 1, null);
+                    await ProcessIncomingSteamPayloadAsync(packet.Payload, 1, null, ct).ConfigureAwait(false);
                 }
                 else
                 {
                     var remoteSteamId = new CSteamID(packet.RemoteSteamId);
                     if (!TryGetOrRegisterSteamClient(remoteSteamId, out var connection) || connection == null)
                         continue;
-                    ProcessIncomingSteamPayload(packet.Payload, connection.AssignedId, connection);
+                    await ProcessIncomingSteamPayloadAsync(packet.Payload, connection.AssignedId, connection, ct).ConfigureAwait(false);
                 }
             }
 
@@ -192,7 +331,8 @@ public sealed partial class NetNode
                 {
                     GameMenu.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
                     {
-                        if (!_disposed) CleanupClient();
+                        if (IsCurrentNetworkSession())
+                            CleanupClient();
                     });
                     return;
                 }
@@ -212,7 +352,8 @@ public sealed partial class NetNode
                         var connToCleanup = connection;
                         GameMenu.EnqueueMainThreadCoalesced(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"net:cleanup-host-client:{connToCleanup.AssignedId}"), () =>
                         {
-                            if (!_disposed) CleanupHostSteamClient(connToCleanup);
+                            if (IsCurrentNetworkSession())
+                                CleanupHostSteamClient(connToCleanup);
                         });
                     }
                 }
@@ -230,7 +371,8 @@ public sealed partial class NetNode
                     _log.Warning("[NetNode] Steam client receive timeout ({Elapsed:F1}s)", elapsed);
                     GameMenu.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
                     {
-                        if (!_disposed) CleanupClient();
+                        if (IsCurrentNetworkSession())
+                            CleanupClient();
                     });
                     return;
                 }
@@ -295,6 +437,8 @@ public sealed partial class NetNode
     private bool TryGetOrRegisterSteamClient(CSteamID remoteSteamId, out SteamClientConnection? connection)
     {
         connection = null;
+        if (!IsCurrentNetworkSession())
+            return false;
         var steamKey = remoteSteamId.m_SteamID;
 
         int existingId;
@@ -327,36 +471,43 @@ public sealed partial class NetNode
         {
             _steamClients[assignedId] = newConnection;
             _steamClientIdsBySteam[steamKey] = assignedId;
-            _connectedClientCount = _steamClients.Count;
-        }
-        lock (_sync)
-        {
-            if (_primaryRemoteId == 0)
-                _primaryRemoteId = assignedId;
-            _hasRemote = true;
+            _connectedClientCount = CountCompletedHostClientsLocked();
         }
 
         connection = newConnection;
         _log.Information("[NetNode] Steam client registered: SteamId={SteamId} assignedId={AssignedId}", steamKey, assignedId);
         _ = Task.Run(() => SendInitialStateToSteamClient(newConnection));
-        GameMenu.EnqueueMainThreadCoalesced("net:remote-connected", () =>
-        {
-            GameMenu.NetRef = this;
-            GameMenu.SetRole(_role);
-            GameMenu.NotifyRemoteConnected(_role);
-        });
         return true;
+    }
+
+    private bool IsCurrentSteamClientConnection(SteamClientConnection connection)
+    {
+        if (!IsCurrentNetworkSession())
+            return false;
+        lock (_clientsLock)
+        {
+            return _steamClients.TryGetValue(connection.AssignedId, out var current) &&
+                   ReferenceEquals(current, connection);
+        }
     }
 
     private async Task SendInitialStateToSteamClient(SteamClientConnection connection, bool forceSend = false)
     {
-        if (!connection.TryReserveInitialStateSend(TimeSpan.FromMilliseconds(750), forceSend))
+        if (!IsCurrentSteamClientConnection(connection) ||
+            !connection.TryReserveInitialStateSend(TimeSpan.FromMilliseconds(750), forceSend))
             return;
 
         await SendSteamHandshakeToSteamClient(connection).ConfigureAwait(false);
+        if (!IsCurrentSteamClientConnection(connection))
+            return;
 
         int? cachedBossRune;
         int? cachedSeed;
+        int? cachedRunSeedSequence;
+        string? cachedLaunchKind;
+        string? cachedRunCommitPayload;
+        string? cachedRunExecutePayload;
+        string? cachedRunReadyPayload;
         int? cachedSerializerSeq;
         int? cachedSerializerUid;
         string? cachedLevelDescPayload;
@@ -370,6 +521,11 @@ public sealed partial class NetNode
         {
             cachedBossRune = _cachedHostBossRune;
             cachedSeed = _cachedHostSeed;
+            cachedRunSeedSequence = _cachedHostRunSeedSequence;
+            cachedLaunchKind = _cachedHostLaunchKind;
+            cachedRunCommitPayload = _cachedHostRunCommitPayload;
+            cachedRunExecutePayload = _cachedHostRunExecutePayload;
+            cachedRunReadyPayload = _cachedHostRunReadyPayload;
             cachedSerializerSeq = _cachedHostSerializerSeq;
             cachedSerializerUid = _cachedHostSerializerUid;
             cachedLevelDescPayload = _cachedHostLevelDescPayload;
@@ -385,8 +541,14 @@ public sealed partial class NetNode
             await SendLineToSteamClientSafe(connection, $"HXSYNC|{cachedSerializerSeq.Value}|{cachedSerializerUid.Value}\n").ConfigureAwait(false);
         if (cachedBossRune.HasValue)
             await SendLineToSteamClientSafe(connection, $"BOSSRUNE|{cachedBossRune.Value}\n").ConfigureAwait(false);
-        if (cachedSeed.HasValue)
-            await SendLineToSteamClientSafe(connection, $"SEED|{cachedSeed.Value}\n").ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(cachedRunCommitPayload))
+            await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.CommitTag}|{cachedRunCommitPayload}\n").ConfigureAwait(false);
+        if (cachedSeed.HasValue && cachedRunSeedSequence.HasValue)
+            await SendLineToSteamClientSafe(
+                connection,
+                $"SEED|{cachedRunSeedSequence.Value}|{cachedSeed.Value}|{cachedLaunchKind ?? string.Empty}\n").ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(cachedRunExecutePayload))
+            await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
         if (cachedLevelDescPayload != null)
             await SendLineToSteamClientSafe(connection, $"LDESC|{cachedLevelDescPayload}\n").ConfigureAwait(false);
         if (cachedLevelSeedPayload != null)
@@ -402,18 +564,29 @@ public sealed partial class NetNode
             await SendLineToSteamClientSafe(connection, localHpLine).ConfigureAwait(false);
         if (cachedMobsHpMult.HasValue && cachedBossesHpMult.HasValue)
             await SendLineToSteamClientSafe(connection, $"HPMULT|{cachedMobsHpMult.Value.ToString(CultureInfo.InvariantCulture)}|{cachedBossesHpMult.Value.ToString(CultureInfo.InvariantCulture)}\n").ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(cachedRunReadyPayload))
+            await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.ReadyTag}|{cachedRunReadyPayload}\n").ConfigureAwait(false);
     }
 
     private async Task SendSteamHandshakeToSteamClient(SteamClientConnection connection)
     {
-        await SendLineToSteamClientSafe(connection, "WELCOME\n").ConfigureAwait(false);
+        await SendLineToSteamClientSafe(connection, BuildWelcomeLine()).ConfigureAwait(false);
         await SendLineToSteamClientSafe(connection, $"ID|{connection.AssignedId}\n").ConfigureAwait(false);
     }
 
-    private void ProcessIncomingSteamPayload(string payload, int senderId, SteamClientConnection? senderConnection)
+    private async Task ProcessIncomingSteamPayloadAsync(
+        string payload,
+        int senderId,
+        SteamClientConnection? senderConnection,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrEmpty(payload))
+        if (IsSupersededNetworkSession() || string.IsNullOrEmpty(payload))
             return;
+        if (payload.Length > MaxProtocolLineChars)
+        {
+            _log.Warning("[NetNode] Ignored oversized Steam protocol payload ({Length} chars)", payload.Length);
+            return;
+        }
 
         var lines = payload.Split('\n');
         for (int i = 0; i < lines.Length; i++)
@@ -423,8 +596,14 @@ public sealed partial class NetNode
                 continue;
 
             var lineCopy = line;
-            GameMenu.EnqueueMainThread(() =>
+            if (_role == NetRole.Client && TryHandleClientFastPathLine(lineCopy))
+                continue;
+
+            await GameMenu.EnqueueNetworkMainThreadAsync(() =>
             {
+                if (!IsCurrentNetworkSession())
+                    return;
+
                 try
                 {
                     if (!HandleLine(lineCopy, senderId, out var forwardLine))
@@ -443,7 +622,7 @@ public sealed partial class NetNode
                 {
                     _log.Warning("[NetNode] Steam HandleLine(main-thread) failed: {msg}", ex.Message);
                 }
-            });
+            }, cancellationToken).ConfigureAwait(false);
         }
     }
     private void ForwardLineToOtherSteamClients(SteamClientConnection sender, string line)
@@ -467,12 +646,16 @@ public sealed partial class NetNode
 
     private void CleanupHostSteamClient(SteamClientConnection sender)
     {
+        if (!IsCurrentNetworkSession())
+            return;
+
+        var wasConnected = sender.HandshakeComplete;
         bool hasClients;
         lock (_clientsLock)
         {
             _steamClients.Remove(sender.AssignedId);
             _steamClientIdsBySteam.Remove(sender.SteamId.m_SteamID);
-            _connectedClientCount = _steamClients.Count;
+            _connectedClientCount = CountCompletedHostClientsLocked();
             hasClients = _connectedClientCount > 0;
         }
 
@@ -481,9 +664,9 @@ public sealed partial class NetNode
 
         if (sender.AssignedId >= 2)
         {
-            lock (UsedClientIds)
+            lock (_usedClientIds)
             {
-                UsedClientIds.Remove(sender.AssignedId);
+                _usedClientIds.Remove(sender.AssignedId);
             }
         }
 
@@ -500,7 +683,11 @@ public sealed partial class NetNode
             _hasRemote = hasClients;
         }
 
-        if (!hasClients)
-            GameMenu.EnqueueMainThreadCoalesced("net:remote-disconnected", () => GameMenu.NotifyRemoteDisconnected(_role));
+        if (wasConnected && !hasClients)
+            GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+            {
+                if (IsCurrentNetworkSession())
+                    GameMenu.NotifyRemoteDisconnected(_role);
+            });
     }
 }

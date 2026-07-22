@@ -41,7 +41,11 @@ public sealed partial class NetNode
         while (!ct.IsCancellationRequested && attempt < maxAttempts)
         {
             attempt++;
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-attempt", () => GameMenu.NotifyClientConnectAttempt(attempt));
+            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-attempt", () =>
+            {
+                if (IsCurrentNetworkSession())
+                    GameMenu.NotifyClientConnectAttempt(attempt);
+            });
             try
             {
                 _log.Information("[NetNode] Client connecting to {dest}", _destEp);
@@ -58,22 +62,10 @@ public sealed partial class NetNode
 
                 _log.Information("[NetNode] Client connected to {dest}", _destEp);
 
-                await SendLineSafe("HELLO\n").ConfigureAwait(false);
+                await SendLineSafe(BuildHelloLine()).ConfigureAwait(false);
 
-                lock (_sync)
-                {
-                    _hasRemote = true;
-                    _connectedClientCount = 1;
-                    if (_primaryRemoteId == 0)
-                        _primaryRemoteId = 1;
-                }
-                GameMenu.EnqueueMainThread(() =>
-                {
-                    GameMenu.NetRef = this;
-                    GameMenu.SetRole(_role);
-                    GameMenu.NotifyRemoteConnected(_role);
-                });
-
+                // Do not report a live room until WELCOME and ID pass the compatibility
+                // handshake. The old path showed "connected" for arbitrary TCP listeners.
                 _recvTask = Task.Run(() => RecvLoop(_stream!, ct, 1, null));
                 return;
             }
@@ -84,7 +76,11 @@ public sealed partial class NetNode
                 _log.Warning("[NetNode] Client connect error: {msg}", ex.Message);
                 if (attempt >= maxAttempts)
                 {
-                    GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", GameMenu.NotifyClientConnectFailed);
+                    GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+                    {
+                        if (IsCurrentNetworkSession())
+                            GameMenu.NotifyClientConnectFailed();
+                    });
                     break;
                 }
                 await Task.Delay(3000, ct).ConfigureAwait(false);
@@ -117,22 +113,21 @@ public sealed partial class NetNode
                 lock (_clientsLock)
                 {
                     _clients[assignedId] = connection;
-                    _connectedClientCount = _clients.Count;
-                }
-                lock (_sync)
-                {
-                    if (_primaryRemoteId == 0)
-                        _primaryRemoteId = assignedId;
-                    _hasRemote = true;
+                    _connectedClientCount = CountCompletedHostClientsLocked();
                 }
 
                 _log.Information("[NetNode] Host accepted {ep}", connection.RemoteEndPoint);
 
-                await SendLineToClientSafe(connection, "WELCOME\n").ConfigureAwait(false);
+                await SendLineToClientSafe(connection, BuildWelcomeLine()).ConfigureAwait(false);
                 if (_role == NetRole.Host)
                 {
                     int? cachedBossRune;
                     int? cachedSeed;
+                    int? cachedRunSeedSequence;
+                    string? cachedLaunchKind;
+                    string? cachedRunCommitPayload;
+                    string? cachedRunExecutePayload;
+                    string? cachedRunReadyPayload;
                     int? cachedSerializerSeq;
                     int? cachedSerializerUid;
                     string? cachedLevelDescPayload;
@@ -144,6 +139,11 @@ public sealed partial class NetNode
                     {
                         cachedBossRune = _cachedHostBossRune;
                         cachedSeed = _cachedHostSeed;
+                        cachedRunSeedSequence = _cachedHostRunSeedSequence;
+                        cachedLaunchKind = _cachedHostLaunchKind;
+                        cachedRunCommitPayload = _cachedHostRunCommitPayload;
+                        cachedRunExecutePayload = _cachedHostRunExecutePayload;
+                        cachedRunReadyPayload = _cachedHostRunReadyPayload;
                         cachedSerializerSeq = _cachedHostSerializerSeq;
                         cachedSerializerUid = _cachedHostSerializerUid;
                         cachedLevelDescPayload = _cachedHostLevelDescPayload;
@@ -159,8 +159,16 @@ public sealed partial class NetNode
                     if (cachedBossRune.HasValue)
                         await SendLineToClientSafe(connection, $"BOSSRUNE|{cachedBossRune.Value}\n").ConfigureAwait(false);
 
-                    if (cachedSeed.HasValue)
-                        await SendLineToClientSafe(connection, $"SEED|{cachedSeed.Value}\n").ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(cachedRunCommitPayload))
+                        await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.CommitTag}|{cachedRunCommitPayload}\n").ConfigureAwait(false);
+
+                    if (cachedSeed.HasValue && cachedRunSeedSequence.HasValue)
+                        await SendLineToClientSafe(
+                            connection,
+                            $"SEED|{cachedRunSeedSequence.Value}|{cachedSeed.Value}|{cachedLaunchKind ?? string.Empty}\n").ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(cachedRunExecutePayload))
+                        await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
 
                     if (cachedLevelDescPayload != null)
                         await SendLineToClientSafe(connection, $"LDESC|{cachedLevelDescPayload}\n").ConfigureAwait(false);
@@ -173,14 +181,11 @@ public sealed partial class NetNode
 
                     if (cachedMobsHpMult.HasValue && cachedBossesHpMult.HasValue)
                         await SendLineToClientSafe(connection, $"HPMULT|{cachedMobsHpMult.Value.ToString(CultureInfo.InvariantCulture)}|{cachedBossesHpMult.Value.ToString(CultureInfo.InvariantCulture)}\n").ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(cachedRunReadyPayload))
+                        await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.ReadyTag}|{cachedRunReadyPayload}\n").ConfigureAwait(false);
                 }
 
-                GameMenu.EnqueueMainThreadCoalesced("net:remote-connected", () =>
-                {
-                    GameMenu.NetRef = this;
-                    GameMenu.SetRole(_role);
-                    GameMenu.NotifyRemoteConnected(_role);
-                });
                 await SendLineToClientSafe(connection, $"ID|{assignedId}\n").ConfigureAwait(false);
                 await SendKnownUsersToClientSafe(connection).ConfigureAwait(false);
                 if (_role == NetRole.Host && TryBuildLocalHpLine(out var localHpLine))
@@ -201,10 +206,11 @@ public sealed partial class NetNode
     {
         using var recvCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var recvCt = recvCts.Token;
-        var incomingLines = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+        var incomingLines = Channel.CreateBounded<string>(new BoundedChannelOptions(PendingNetworkLineLimit)
         {
             SingleReader = true,
             SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait,
             AllowSynchronousContinuations = false
         });
 
@@ -212,7 +218,10 @@ public sealed partial class NetNode
         {
             var readTask = ReadIncomingLinesLoop(stream, incomingLines.Writer, recvCt);
             var processTask = ProcessIncomingLinesLoop(incomingLines.Reader, senderId, sender, recvCts, recvCt);
-            await Task.WhenAll(readTask, processTask).ConfigureAwait(false);
+            var handshakeTask = sender == null
+                ? Task.CompletedTask
+                : EnforceTcpHandshakeTimeoutAsync(sender, recvCts, recvCt);
+            await Task.WhenAll(readTask, processTask, handshakeTask).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (recvCt.IsCancellationRequested) { }
         catch (ObjectDisposedException) { }
@@ -248,6 +257,8 @@ public sealed partial class NetNode
                     break;
 
                 sb.Append(Encoding.UTF8.GetString(buf, 0, n));
+                if (sb.Length > MaxProtocolLineChars)
+                    throw new InvalidDataException($"Incoming protocol line exceeded {MaxProtocolLineChars} characters.");
 
                 while (TryReadBufferedLine(sb, out var line))
                 {
@@ -288,8 +299,11 @@ public sealed partial class NetNode
                     if (_role == NetRole.Client && TryHandleClientFastPathLine(lineCopy))
                         continue;
 
-                    GameMenu.EnqueueMainThread(() =>
+                    await GameMenu.EnqueueNetworkMainThreadAsync(() =>
                     {
+                        if (!IsCurrentNetworkSession())
+                            return;
+
                         try
                         {
                             if (!HandleLine(lineCopy, senderId, out var forwardLine))
@@ -305,7 +319,7 @@ public sealed partial class NetNode
                         {
                             _log.Warning("[NetNode] HandleLine(main-thread) failed: {msg}", ex.Message);
                         }
-                    });
+                    }, ct).ConfigureAwait(false);
                 }
             }
         }
@@ -337,11 +351,12 @@ public sealed partial class NetNode
 
     private void CleanupHostClient(ClientConnection sender)
     {
+        var wasConnected = sender.HandshakeComplete;
         bool hasClients;
         lock (_clientsLock)
         {
             _clients.Remove(sender.AssignedId);
-            _connectedClientCount = _clients.Count;
+            _connectedClientCount = CountCompletedHostClientsLocked();
             hasClients = _connectedClientCount > 0;
         }
 
@@ -349,9 +364,9 @@ public sealed partial class NetNode
 
         if (sender.AssignedId >= 2)
         {
-            lock (UsedClientIds)
+            lock (_usedClientIds)
             {
-                UsedClientIds.Remove(sender.AssignedId);
+                _usedClientIds.Remove(sender.AssignedId);
             }
         }
 
@@ -368,15 +383,19 @@ public sealed partial class NetNode
             _hasRemote = hasClients;
         }
 
-        if (!hasClients)
+        if (wasConnected && !hasClients)
         {
-            bool stillEmpty;
+            bool stillNoCompletedClients;
             lock (_clientsLock)
             {
-                stillEmpty = _clients.Count == 0;
+                stillNoCompletedClients = CountCompletedHostClientsLocked() == 0;
             }
-            if (stillEmpty)
-                GameMenu.EnqueueMainThreadCoalesced("net:remote-disconnected", () => GameMenu.NotifyRemoteDisconnected(_role));
+            if (stillNoCompletedClients)
+                GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+                {
+                    if (IsCurrentNetworkSession())
+                        GameMenu.NotifyRemoteDisconnected(_role);
+                });
         }
     }
 

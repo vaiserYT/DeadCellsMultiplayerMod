@@ -45,7 +45,7 @@ namespace DeadCellsMultiplayerMod
             {
                 var label = GetText.Instance.GetString("Play multiplayer");
                 var help = GetText.Instance.GetString("Host or join a multiplayer session");
-                AddMenuButton(self, label, () => ShowMultiplayerMenu(self), help);
+                AddMenuButton(self, label, () => ShowMultiplayerMenu(self), help, MultiplayerMainMenuTextColor);
                 _mainMenuButtonAdded = true;
             }
             ProcessPendingOverlayJoinRequest(self);
@@ -96,7 +96,7 @@ namespace DeadCellsMultiplayerMod
                     {
                         var mpLabel = GetText.Instance.GetString("Play multiplayer");
                         var mpHelp = GetText.Instance.GetString("Host or join a multiplayer session");
-                        AddMenuButton(self, mpLabel, () => ShowMultiplayerMenu(self), mpHelp);
+                        AddMenuButton(self, mpLabel, () => ShowMultiplayerMenu(self), mpHelp, MultiplayerMainMenuTextColor);
                         _mainMenuButtonAdded = true;
                     }
                     finally { _addingMultiplayerButton = false; }

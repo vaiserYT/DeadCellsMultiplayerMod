@@ -1,5 +1,6 @@
 using System.Globalization;
 using DeadCellsMultiplayerMod;
+using DeadCellsMultiplayerMod.PortableCore;
 
 public sealed partial class NetNode
 {
@@ -11,26 +12,182 @@ public sealed partial class NetNode
         _ = SendLineSafe(line);
     }
 
-    public void LevelSend(int senderId, string lvl) => SendLevelId(senderId, lvl);
 
-    public void SendSeed(int seed)
+    internal void SendRunLaunchCommit(RunLaunchDescriptor descriptor, bool flush = false)
     {
+        if (descriptor == null)
+            return;
+
+        var payload = RunLaunchWireCodec.EncodeCommitPayload(descriptor);
         if (_role == NetRole.Host)
         {
             lock (_hostCacheSync)
             {
-                _cachedHostSeed = seed;
+                var sequenceChanged = !_cachedHostRunLaunchSequence.HasValue ||
+                                      _cachedHostRunLaunchSequence.Value != descriptor.Sequence;
+                _cachedHostRunCommitPayload = payload;
+                if (sequenceChanged)
+                {
+                    _cachedHostRunExecutePayload = null;
+                    _cachedHostRunReadyPayload = null;
+                }
+                _cachedHostRunLaunchSequence = descriptor.Sequence;
             }
         }
 
         if (!HasAnyConnection())
         {
-            _log.Information("[NetNode] Skip sending seed {Seed}: no connected client", seed);
+            _log.Information(
+                "[NetNode][RunLaunch] Cached RUNCOMMIT seq={Sequence}: no connected client",
+                descriptor.Sequence);
             return;
         }
-        var line = $"SEED|{seed}\n";
+
+        var line = $"{RunLaunchWireCodec.CommitTag}|{payload}";
+        if (flush)
+            SendControlAndFlush(line, 500);
+        else
+            SendRaw(line);
+    }
+
+    internal void SendRunLaunchAck(RunLaunchAck ack, bool flush = false)
+    {
+        if (ack == null || !HasAnyConnection())
+            return;
+
+        var line = RunLaunchWireCodec.BuildAckLine(ack);
+        if (flush)
+            SendControlAndFlush(line, 500);
+        else
+            SendRaw(line);
+    }
+
+    internal void SendRunLaunchQueued(RunLaunchQueued queued, bool flush = false)
+    {
+        // Client -> host confirmation. Not host-cached: the host is the only recipient and it is
+        // already connected when the client queues its launch.
+        if (queued == null || !HasAnyConnection())
+            return;
+
+        var line = RunLaunchWireCodec.BuildQueuedLine(queued);
+        if (flush)
+            SendControlAndFlush(line, 500);
+        else
+            SendRaw(line);
+    }
+
+    internal void SendRunLaunchExecute(RunLaunchExecute execute, bool flush = false)
+    {
+        if (execute == null)
+            return;
+
+        var payload = RunLaunchWireCodec.EncodeExecutePayload(execute);
+        if (_role == NetRole.Host)
+        {
+            lock (_hostCacheSync)
+            {
+                _cachedHostRunExecutePayload = payload;
+                _cachedHostRunLaunchSequence = execute.Sequence;
+            }
+        }
+
+        if (!HasAnyConnection())
+            return;
+
+        var line = $"{RunLaunchWireCodec.ExecuteTag}|{payload}";
+        if (flush)
+            SendControlAndFlush(line, 500);
+        else
+            SendRaw(line);
+    }
+
+    internal void SendRunLevelReady(RunLevelReady ready)
+    {
+        if (ready == null)
+            return;
+
+        var payload = RunLaunchWireCodec.EncodeReadyPayload(ready);
+        if (_role == NetRole.Host)
+        {
+            lock (_hostCacheSync)
+            {
+                _cachedHostRunReadyPayload = payload;
+                _cachedHostRunLaunchSequence = ready.Sequence;
+            }
+        }
+
+        if (HasAnyConnection())
+            SendRaw($"{RunLaunchWireCodec.ReadyTag}|{payload}");
+    }
+
+    internal void SendRunLaunchCancel(RunLaunchCancel cancel, bool flush = false)
+    {
+        if (cancel == null)
+            return;
+
+        ClearCachedHostRunLaunch(cancel.Sequence);
+        if (!HasAnyConnection())
+            return;
+
+        var line = RunLaunchWireCodec.BuildCancelLine(cancel);
+        if (flush)
+            SendControlAndFlush(line, 500);
+        else
+            SendRaw(line);
+    }
+
+    internal void ClearCachedHostRunLaunch(int sequence)
+    {
+        if (_role != NetRole.Host)
+            return;
+
+        lock (_hostCacheSync)
+        {
+            if (_cachedHostRunLaunchSequence.HasValue &&
+                _cachedHostRunLaunchSequence.Value != sequence)
+            {
+                return;
+            }
+
+            _cachedHostRunCommitPayload = null;
+            _cachedHostRunExecutePayload = null;
+            _cachedHostRunReadyPayload = null;
+            _cachedHostRunLaunchSequence = null;
+            if (_cachedHostRunSeedSequence == sequence)
+            {
+                _cachedHostSeed = null;
+                _cachedHostRunSeedSequence = null;
+                _cachedHostLaunchKind = null;
+            }
+        }
+    }
+
+    public void LevelSend(int senderId, string lvl) => SendLevelId(senderId, lvl);
+
+    public void SendSeed(int sequence, int seed, string launchKind)
+    {
+        var safeLaunchKind = (launchKind ?? string.Empty)
+            .Replace("|", "/", StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
+        if (_role == NetRole.Host)
+        {
+            lock (_hostCacheSync)
+            {
+                _cachedHostSeed = seed;
+                _cachedHostRunSeedSequence = sequence;
+                _cachedHostLaunchKind = safeLaunchKind;
+            }
+        }
+
+        if (!HasAnyConnection())
+        {
+            _log.Information("[NetNode] Cached run seed seq={Sequence} seed={Seed}: no connected client", sequence, seed);
+            return;
+        }
+        var line = $"SEED|{sequence}|{seed}|{safeLaunchKind}\n";
         _ = SendLineSafe(line);
-        _log.Information("[NetNode] Sent seed {Seed}", seed);
+        _log.Information("[NetNode] Sent run seed seq={Sequence} seed={Seed} launch={LaunchKind}", sequence, seed, safeLaunchKind);
     }
 
     public void SendSerializerSync(int seq, int uid)
@@ -184,8 +341,6 @@ public sealed partial class NetNode
             lock (_hostCacheSync)
             {
                 _cachedHostLevelGraphPayload = string.IsNullOrWhiteSpace(json) ? null : json;
-                if (!string.IsNullOrWhiteSpace(levelId) && !string.IsNullOrWhiteSpace(json))
-                    _cachedHostLevelGraphsByLevelId[levelId] = json;
             }
             return;
         }
@@ -196,8 +351,6 @@ public sealed partial class NetNode
         lock (_hostCacheSync)
         {
             _cachedHostLevelGraphPayload = json;
-            if (!string.IsNullOrWhiteSpace(levelId))
-                _cachedHostLevelGraphsByLevelId[levelId] = json;
         }
 
         SendRaw("LGRAPH|" + json);
@@ -546,7 +699,7 @@ public sealed partial class NetNode
         SendRaw(payload);
     }
 
-    public void SendMobDie(int mobIndex, double x, double y, int generation = 0)
+    public void SendMobDie(int mobIndex, double x, double y, int generation = 0, string type = "")
     {
         if (_role != NetRole.Client && _role != NetRole.Host)
             return;
@@ -555,10 +708,25 @@ public sealed partial class NetNode
         if (ID <= 0)
             return;
 
-        var payload = string.Create(
-            CultureInfo.InvariantCulture,
-            $"MOBDIE|{ID}|{mobIndex}|{x}|{y}|{generation}");
-        SendRaw(payload);
+        var line = MobWireCodec.BuildMobDieLine(new MobDie(ID, mobIndex, x, y, generation, type));
+        _ = SendLineSafe(line);
+    }
+
+    /// <summary>
+    /// Broadcast a host-confirmed encounter victory. Clients never have authority to originate
+    /// this packet; receiving it is what permits boss-reward revival.
+    /// </summary>
+    public void SendBossVictory(int generation, int encounterId)
+    {
+        if (_role != NetRole.Host)
+            return;
+        if (!HasAnyConnection())
+            return;
+        if (generation <= 0 || encounterId <= 0)
+            return;
+
+        var line = BuildBossVictoryLine(new BossVictoryState(generation, encounterId));
+        _ = SendLineSafe(line);
     }
 
     public void SendMobDraw(int mobIndex, bool isOutOfGame, bool isOnScreen, int generation = 0)
@@ -617,6 +785,38 @@ public sealed partial class NetNode
         SendRaw($"BOSSCINE|{safe}");
     }
 
+    public void SendBossIntroEnd(string payload)
+    {
+        if (_role != NetRole.Host || !HasAnyConnection())
+            return;
+        if (string.IsNullOrWhiteSpace(payload))
+            return;
+
+        var safe = payload.Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal)
+            .Trim();
+        if (safe.Length == 0)
+            return;
+
+        SendRaw($"BOSSINTROEND|{safe}");
+    }
+
+    public void SendBossIntroReady(string payload)
+    {
+        if (_role != NetRole.Client || !HasAnyConnection() || ID <= 0)
+            return;
+        if (string.IsNullOrWhiteSpace(payload))
+            return;
+
+        var safe = payload.Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal)
+            .Trim();
+        if (safe.Length == 0)
+            return;
+
+        SendRaw($"BOSSINTROREADY|{safe}");
+    }
+
     public void SendBossHeroTeleport(double x, double y, int dir)
     {
         if (!HasAnyConnection())
@@ -628,7 +828,7 @@ public sealed partial class NetNode
             $"BOSSHEROTELE|{ID.ToString(CultureInfo.InvariantCulture)}|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}|{dir.ToString(CultureInfo.InvariantCulture)}");
     }
 
-    public void SendInterDoor(int userId, double x, double y, string action, bool broken)
+    public void SendInterDoor(int userId, double x, double y, string action, bool broken, string levelId)
     {
         if (!HasAnyConnection())
             return;
@@ -637,7 +837,8 @@ public sealed partial class NetNode
         if (string.IsNullOrWhiteSpace(action))
             return;
 
-        SendRaw($"INTERDOOR|{userId}|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}|{action}|{(broken ? 1 : 0)}");
+        var safeLevel = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        SendRaw($"INTERDOOR|{userId}|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}|{action}|{(broken ? 1 : 0)}|{safeLevel}");
     }
 
     public void SendInterElevator(double x, double y)
@@ -650,14 +851,48 @@ public sealed partial class NetNode
         SendRaw($"INTERELEV|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}");
     }
 
-    public void SendInterPressurePlate(double x, double y)
+    public void SendInterElevator(int userId, double x, double y, long sequence, string levelId)
     {
         if (!HasAnyConnection())
             return;
-        if (ID <= 0)
+        if (userId <= 0)
             return;
 
-        SendRaw($"INTERPLATE|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}");
+        var safeLevel = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        SendRaw(
+            $"INTERELEV|{userId.ToString(CultureInfo.InvariantCulture)}|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}|{sequence.ToString(CultureInfo.InvariantCulture)}|{safeLevel}");
+    }
+
+    public void SendInterElevatorState(
+        int userId,
+        double anchorX,
+        double anchorY,
+        long sequence,
+        double platformX,
+        double platformY,
+        bool moving,
+        string levelId)
+    {
+        if (!HasAnyConnection())
+            return;
+        if (userId <= 0)
+            return;
+
+        var safeLevel = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        SendRaw(
+            $"INTERELEVSTATE|{userId.ToString(CultureInfo.InvariantCulture)}|{anchorX.ToString(CultureInfo.InvariantCulture)}|{anchorY.ToString(CultureInfo.InvariantCulture)}|{sequence.ToString(CultureInfo.InvariantCulture)}|{platformX.ToString(CultureInfo.InvariantCulture)}|{platformY.ToString(CultureInfo.InvariantCulture)}|{(moving ? 1 : 0)}|{safeLevel}");
+    }
+
+    public void SendInterPressurePlate(int userId, double x, double y, long sequence, string levelId)
+    {
+        if (!HasAnyConnection())
+            return;
+        if (userId <= 0)
+            return;
+
+        var safeLevel = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        SendRaw(
+            $"INTERPLATE|{userId.ToString(CultureInfo.InvariantCulture)}|{x.ToString(CultureInfo.InvariantCulture)}|{y.ToString(CultureInfo.InvariantCulture)}|{sequence.ToString(CultureInfo.InvariantCulture)}|{safeLevel}");
     }
 
     public void SendInterTreasureChest(double x, double y)

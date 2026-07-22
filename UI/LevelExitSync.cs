@@ -87,9 +87,14 @@ public class LevelExitSync :
     private bool _suppressDoorActivateHook;
     private string _transitionDoorKey = string.Empty;
     private bool _timerPausedByExit;
-    private string _exitFailsafeDoorKey = string.Empty;
-    private long _exitFailsafeStartedTicks;
-    private const double ExitFailsafeTeleportSeconds = 8.0;
+    private string _downedExitFollowDoorKey = string.Empty;
+    private long _downedExitFollowStartedTicks;
+    private const double DownedExitFollowDelaySeconds = 15.0;
+
+    // Protocol 17 Boss Rush launch barrier (non-blocking, polled per frame by the door coordinator).
+    private string _bossRushGateDoorKey = string.Empty;
+    private long _bossRushGateStartTicks;
+    private const double BossRushLaunchGateTimeoutSeconds = 15.0;
 
     /// <summary>Exit/portal/boss-door entities only — avoids scanning <c>level.entities</c> every hero frame.</summary>
     private readonly List<Entity?> _exitTargetCandidates = new();
@@ -155,11 +160,53 @@ public class LevelExitSync :
 
     private void Hook_BossRushDoor_onActivate(Hook_BossRushDoor.orig_onActivate orig, BossRushDoor self, Hero by, bool cine)
     {
+        TryPrecommitBossRushEntranceSeed(self, by);
         HandleExitTargetActivate(
             self,
             by,
             () => orig(self, by, cine),
             target => !SafeRead(() => target.locked, true));
+    }
+
+    private void TryPrecommitBossRushEntranceSeed(BossRushDoor door, Hero by)
+    {
+        if (_suppressDoorActivateHook || door == null || by == null)
+            return;
+
+        var localHero = ModEntry.me;
+        var net = GameMenu.NetRef;
+        if (localHero == null || !ReferenceEquals(by, localHero) ||
+            net == null || !net.IsAlive || !net.IsHost)
+        {
+            return;
+        }
+
+        if (SafeRead(() => door.locked, true) || !IsEntityInsideExitCircle(localHero, door))
+            return;
+
+        // Only stage a new run when entering Boss Rush from the normal world. BossRushDoor is also
+        // used inside the mode for arena progression; those transitions must continue using the
+        // already-running Boss Rush state instead of generating a new run seed.
+        var alreadyInBossRush = SafeRead(() => localHero._level?.game?.isBossRush() ?? false, false);
+        if (alreadyInBossRush)
+            return;
+
+        var bossRushType = SafeRead(() => door.bossRushType?.ToString() ?? string.Empty, string.Empty);
+        if (GameMenu.PrecommitHostBossRushRunSeed(
+                bossRushType,
+                door.cx,
+                door.cy,
+                out var seed,
+                out var sequence))
+        {
+            _log.Information(
+                "[ExitSync][BossRushSeed] Host armed Boss Rush door seq={Sequence} seed={Seed} type={BossRushType} door={DoorCx}:{DoorCy}",
+                sequence,
+                seed,
+                string.IsNullOrWhiteSpace(bossRushType) ? "unknown" : bossRushType,
+                door.cx,
+                door.cy);
+        }
     }
 
     private void Hook_Level_registerEntity(Hook_Level.orig_registerEntity orig, Level self, Entity clid)
@@ -233,6 +280,18 @@ public class LevelExitSync :
             return;
         }
 
+        // Prevent boss arena doors from opening for clients during active boss fights.
+        // Block the activation outright: falling through to origActivate() here let the
+        // client transition natively and ALONE while the host kept coordinating at the door.
+        if (net != null && !net.IsHost && IsInBossFight())
+        {
+            MultiplayerUI.PushSystemMessage(
+                FormatLocalized("The exit stays sealed until the boss falls."),
+                4.0,
+                1.0);
+            return;
+        }
+
         var targetDoorKey = BuildDoorKey(target.cx, target.cy);
         _localDoorKey = targetDoorKey;
         _localDoorCx = target.cx;
@@ -245,9 +304,9 @@ public class LevelExitSync :
                            _localInsideCircle;
         _localPressed = true;
 
-        UpdateLocalPlayerState(net, forceSend: true);
+        UpdateLocalPlayerState(net!, forceSend: true);
         if (!wasReadyHere)
-            PushReachedExitMessage(net.id, target, net);
+            PushReachedExitMessage(net.id, target, net!);
 
         if (AreAllPlayersReadyForDoor(_localDoorKey, net))
         {
@@ -305,7 +364,7 @@ public class LevelExitSync :
         UpdateLocalPlayerState(net, forceSend: false);
         ApplyLocalTimerPause(_localPressed && _localInsideCircle);
         RefreshDoorVisuals(net);
-        TryExitTeleportFailsafe(hero, currentLevel, net);
+        TryDelayedDownedExitFollow(hero, currentLevel, net);
 
         if (_localPressed &&
             _localInsideCircle &&
@@ -317,30 +376,18 @@ public class LevelExitSync :
             TriggerExitTransition(nearestTarget, hero, null);
         }
 
-        if (ModEntry.IsLocalPlayerDowned())
-        {
-            var autoDoorKey = ResolveAutoFollowDoorKey(net);
-            if (!string.IsNullOrWhiteSpace(autoDoorKey) &&
-                !string.Equals(_transitionDoorKey, autoDoorKey, StringComparison.Ordinal))
-            {
-                var autoTarget = FindExitTargetByDoorKey(currentLevel, autoDoorKey);
-                if (autoTarget != null)
-                    TriggerExitTransition(autoTarget, hero, null);
-            }
-        }
-
         UpdateExitPointer(net);
     }
 
 
-    private void TryExitTeleportFailsafe(Hero hero, Level? level, NetNode net)
+    private void TryDelayedDownedExitFollow(Hero hero, Level? level, NetNode net)
     {
         if (hero == null || level == null || net == null || !net.IsAlive)
             return;
-        if (_localPressed && _localInsideCircle)
+        if (!ModEntry.IsLocalPlayerDowned() || (_localPressed && _localInsideCircle))
         {
-            _exitFailsafeDoorKey = string.Empty;
-            _exitFailsafeStartedTicks = 0;
+            _downedExitFollowDoorKey = string.Empty;
+            _downedExitFollowStartedTicks = 0;
             return;
         }
 
@@ -353,14 +400,16 @@ public class LevelExitSync :
                 continue;
             if (IsPlayerDownedForExit(state.UserId, net.id))
                 continue;
+            if (!AreAllPlayersReadyForDoor(state.DoorKey, net))
+                continue;
             candidateKey = state.DoorKey;
             break;
         }
 
         if (string.IsNullOrWhiteSpace(candidateKey))
         {
-            _exitFailsafeDoorKey = string.Empty;
-            _exitFailsafeStartedTicks = 0;
+            _downedExitFollowDoorKey = string.Empty;
+            _downedExitFollowStartedTicks = 0;
             return;
         }
 
@@ -368,42 +417,44 @@ public class LevelExitSync :
         if (target == null)
             return;
 
-        if (!string.Equals(_exitFailsafeDoorKey, candidateKey, StringComparison.Ordinal))
+        if (!string.Equals(_downedExitFollowDoorKey, candidateKey, StringComparison.Ordinal))
         {
-            _exitFailsafeDoorKey = candidateKey;
-            _exitFailsafeStartedTicks = Stopwatch.GetTimestamp();
+            _downedExitFollowDoorKey = candidateKey;
+            _downedExitFollowStartedTicks = Stopwatch.GetTimestamp();
+            MultiplayerUI.PushSystemMessage(
+                FormatLocalized("Teammate reached the exit. Following in {0} seconds...", (int)DownedExitFollowDelaySeconds),
+                6.0,
+                1.0);
             return;
         }
 
-        var elapsed = Stopwatch.GetElapsedTime(_exitFailsafeStartedTicks).TotalSeconds;
-        if (elapsed < ExitFailsafeTeleportSeconds)
+        var elapsed = Stopwatch.GetElapsedTime(_downedExitFollowStartedTicks).TotalSeconds;
+        if (elapsed < DownedExitFollowDelaySeconds)
             return;
 
         try
         {
-            var x = GetEntityX(target);
-            var y = GetEntityY(target);
-            hero.cancelVelocities();
-            hero.setPosPixel(x, y);
-            _localDoorKey = candidateKey;
-            _localDoorCx = target.cx;
-            _localDoorCy = target.cy;
-            _localInsideCircle = true;
-            _localPressed = true;
-            UpdateLocalPlayerState(net, forceSend: true);
-            MultiplayerUI.PushSystemMessage(FormatLocalized("Exit failsafe: pulled you to {0}", ResolveExitDestinationName(target)), 6.0, 1.5);
-            _exitFailsafeStartedTicks = Stopwatch.GetTimestamp();
-            MarkExitUiStateDirty();
+            // Preserve the corpse/downed anchor instead of dragging it through room collision.
+            // The transition activation applies the configured downed-player exit cost.
+            TriggerExitTransition(target, hero, null);
+            _downedExitFollowStartedTicks = 0;
         }
         catch (Exception ex)
         {
-            _log.Warning("[ExitSync] Exit teleport failsafe failed: {Message}", ex.Message);
+            _log.Warning("[ExitSync] Delayed downed-player exit follow failed: {Message}", ex.Message);
         }
     }
 
     private void TriggerExitTransition(Entity target, Hero hero, Action? origActivate)
     {
         if (target == null || hero == null)
+            return;
+
+        // Protocol 17 Boss Rush barrier: never begin a fresh Boss Rush native load until the launch
+        // is synchronized (client holds the authoritative host seed; host has the client's RUNQUEUED).
+        // Returning here without setting _transitionDoorKey lets the door coordinator re-poll on the
+        // next hero frame, so no game/main thread is ever blocked while waiting.
+        if (target is BossRushDoor && !TryPassBossRushLaunchGate(target))
             return;
 
         if (ModEntry.IsLocalPlayerDowned())
@@ -437,6 +488,82 @@ public class LevelExitSync :
     {
         if (target is dc.en.Interactive interactive)
             interactive.onActivate(hero, false);
+    }
+
+    /// <summary>
+    /// Non-blocking gate for a fresh Boss Rush entry. Returns true when the authoritative launch is
+    /// synchronized and this peer may invoke the native loader. While it returns false the door
+    /// coordinator simply retries next frame; after a bounded timeout it cancels the launch cleanly
+    /// (never falling back to a locally generated Boss Rush).
+    /// </summary>
+    private bool TryPassBossRushLaunchGate(Entity target)
+    {
+        var net = GameMenu.NetRef;
+        if (net == null || !net.IsAlive)
+            return true;
+
+        // Internal Boss Rush arena progression reuses the running run; only a fresh entry from the
+        // normal world is gated (mirrors TryPrecommitBossRushEntranceSeed).
+        var alreadyInBossRush = SafeRead(() => ModEntry.me?._level?.game?.isBossRush() ?? false, false);
+        if (alreadyInBossRush)
+        {
+            ClearBossRushGate();
+            return true;
+        }
+
+        if (GameMenu.TryBeginLocalBossRushLoad(out var reason))
+        {
+            // Validate the real, runtime-sourced Boss Rush variant (this door's bossRushType) against
+            // the authoritative host Route before the client invokes the native loader. A mismatch is
+            // a genuine divergence (different Boss Rush entry) and is surfaced in the logs.
+            if (!net.IsHost)
+            {
+                var localVariant = SafeRead(() => (target as BossRushDoor)?.bossRushType?.ToString() ?? string.Empty, string.Empty);
+                GameMenu.ValidateClientBossRushVariant(localVariant);
+            }
+            if (!string.IsNullOrEmpty(_bossRushGateDoorKey))
+                BossSyncDiag.Trace("launch gate cleared role={Role} door={Door}", BossSyncDiag.Role(net), _bossRushGateDoorKey);
+            ClearBossRushGate();
+            return true;
+        }
+
+        var key = BuildDoorKey(target.cx, target.cy);
+        if (!string.Equals(_bossRushGateDoorKey, key, StringComparison.Ordinal))
+        {
+            _bossRushGateDoorKey = key;
+            _bossRushGateStartTicks = Stopwatch.GetTimestamp();
+            BossSyncDiag.Trace(
+                "launch gate hold role={Role} door={Door} reason={Reason}",
+                BossSyncDiag.Role(net),
+                key,
+                reason);
+            return false;
+        }
+
+        if (Stopwatch.GetElapsedTime(_bossRushGateStartTicks).TotalSeconds >= BossRushLaunchGateTimeoutSeconds)
+        {
+            ClearBossRushGate();
+            _localPressed = false;
+            _transitionDoorKey = string.Empty;
+            BossSyncDiag.Warn(
+                "launch gate TIMEOUT role={Role} door={Door} reason={Reason}",
+                BossSyncDiag.Role(net),
+                key,
+                reason);
+            GameMenu.CancelBossRushLaunchGate($"boss rush launch sync timed out ({reason})");
+            MultiplayerUI.PushSystemMessage(
+                Localize("Boss Rush could not synchronize with your friend. Approach the door again to retry."),
+                7.0,
+                1.0);
+        }
+
+        return false;
+    }
+
+    private void ClearBossRushGate()
+    {
+        _bossRushGateDoorKey = string.Empty;
+        _bossRushGateStartTicks = 0;
     }
 
     private bool ConsumeIncomingExitReadyStates(NetNode net)
@@ -641,26 +768,6 @@ public class LevelExitSync :
         return System.Math.Max(1, expected);
     }
 
-    private string ResolveAutoFollowDoorKey(NetNode net)
-    {
-        EnsureReadyStateCache(net);
-        foreach (var state in _playerStates.Values)
-        {
-            if (state.UserId <= 0)
-                continue;
-            if (IsPlayerDownedForExit(state.UserId, net.id))
-                continue;
-            if (!state.Pressed || !state.InsideCircle)
-                continue;
-            if (string.IsNullOrWhiteSpace(state.DoorKey))
-                continue;
-            if (AreAllPlayersReadyForDoor(state.DoorKey, net))
-                return state.DoorKey;
-        }
-
-        return string.Empty;
-    }
-
     private static bool IsPlayerDownedForExit(int userId, int localId)
     {
         if (userId <= 0)
@@ -860,7 +967,39 @@ public class LevelExitSync :
             return false;
         if (entity is BossRushDoor bossDoor && SafeRead(() => bossDoor.locked, false))
             return false;
+        
+        // Prevent boss arena doors from being available for clients during active boss fights
+        var net = GameMenu.NetRef;
+        if (net != null && !net.IsHost && IsInBossFight())
+            return false;
+            
         return true;
+    }
+
+    private static bool IsInBossFight()
+    {
+        try
+        {
+            var hero = ModEntry.me;
+            if (hero == null || hero._level == null)
+                return false;
+            
+            var level = hero._level;
+            var boss = level.boss;
+            if (boss != null && !boss.destroyed && boss.life > 0)
+                return true;
+            
+            // The old level-id fallback kept this true for the whole boss level — including
+            // after the kill — which permanently disabled the client's exit door and made the
+            // activate hook fall through to an uncoordinated native transition (one player
+            // forwards, one stuck). Use the live tracked boss registry instead: it goes false
+            // the moment the encounter actually ends and also covers Boss Rush duo clones.
+            return DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.HasLivingTrackedBoss();
+        }
+        catch
+        {
+        }
+        return false;
     }
 
     private DoorVisual EnsureDoorVisual(Entity target)
@@ -1351,6 +1490,8 @@ public class LevelExitSync :
         _lastSentDoorCy = 0;
         _lastSentStateFlags = 0;
         _transitionDoorKey = string.Empty;
+        _downedExitFollowDoorKey = string.Empty;
+        _downedExitFollowStartedTicks = 0;
         _readyStateCacheDirty = true;
         _watchedDoorCacheDirty = true;
         _doorVisualRefreshDirty = true;

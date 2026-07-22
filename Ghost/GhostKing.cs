@@ -36,6 +36,7 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
         private virtual_cooldown_duration_flags_forbiddenItem_props_requiredItem_skill_? remoteDiveSkillInfos;
         private long _lastRemoteDiveStartTicks;
         private long _lastRemoteDiveLandTicks;
+        private bool _networkTransitionRetired;
 
         private const double RemoteDiveReplayMinSeconds = 0.08;
         private const int DiveAttackCooldownKey = 729808896;
@@ -135,6 +136,9 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
 
         private void EnsureRuntimeDependencies()
         {
+            if (_networkTransitionRetired || destroyed)
+                return;
+
             var localHero = ResolveLocalHero();
             if (inventory == null)
                 inventory = CreateDetachedInventory(localHero?.inventory);
@@ -170,22 +174,22 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
             if (destroyed || _level == null)
                 return;
 
-            var localHero = ResolveLocalHero();
-            if (localHero == null)
-                return;
-
-            if (!IsRemoteDiveReplayContextValid(localHero))
-                return;
-
-            var dive = EnsureRemoteDiveAttack(localHero, forceRecreate: true);
-            if (dive == null)
-                return;
-
             if (IsReplayTooSoon(ref _lastRemoteDiveLandTicks, RemoteDiveReplayMinSeconds))
                 return;
 
-            ExecuteRemoteDive(localHero, dive, high, startOnly: false);
+            // Remote dives are visual-only. Manufacturing a DiveAttack against the local Hero used
+            // to write synthetic entries into Dead Cells' typed cooldown maps and could later crash
+            // unrelated combat with fastCheck type/null errors. The real diver's local game already
+            // reports enemy hits through authoritative MobSync, so replaying vanilla area damage here
+            // is redundant and unsafe.
             DisposeRemoteDiveAttack();
+            try
+            {
+                spr?._animManager?.play("jumpDown".AsHaxeString(), null, null)?.stopOnLastFrame(Ref<bool>.Null);
+            }
+            catch
+            {
+            }
         }
 
         public void SetRemoteDiveSkillInfos(virtual_cooldown_duration_flags_forbiddenItem_props_requiredItem_skill_? skillInfos)
@@ -300,6 +304,12 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
             {
                 if (localHero.destroyed)
                     return false;
+                if (ModEntry.IsEntityDownedForCombat(localHero))
+                    return false;
+                if (localHero.life <= 0 || !localHero._targetable)
+                    return false;
+                if (localHero.cd == null || localHero.cd.fastCheck == null)
+                    return false;
             }
             catch
             {
@@ -318,6 +328,17 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
 
             if (localLevel == null || !ReferenceEquals(localLevel, _level))
                 return false;
+
+            try
+            {
+                var levelId = localLevel.map?.id?.ToString() ?? string.Empty;
+                if (levelId.StartsWith("T_", StringComparison.Ordinal))
+                    return false;
+            }
+            catch
+            {
+                return false;
+            }
 
             try
             {
@@ -676,8 +697,8 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
 
         private static void ForceDiveActiveWithoutStart(Hero localHero, DiveAttack dive)
         {
-            EnsureCooldownEntry(dive.cd, 721420288, 2.0);
-            EnsureCooldownEntry(localHero.cd, HeroDiveRuntimeCooldownKey, 2.0);
+            // Intentionally disabled. Never manufacture entries in Hero/DiveAttack fastCheck maps.
+            // Remote dive replay is visual-only and authoritative damage arrives through MobSync.
         }
 
         /// <summary>
@@ -736,29 +757,9 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
 
         private static void EnsureCooldownEntry(Cooldown? cooldown, int key, double frames)
         {
-            if (cooldown?.fastCheck == null)
-                return;
-
-            try
-            {
-                var fastCheck = cooldown.fastCheck;
-                if (TryGetFastCheckCdInst(cooldown, key, out var existing))
-                {
-                    if (existing!.frames < frames)
-                        existing.frames = frames;
-                    return;
-                }
-
-                if (fastCheck.exists(key))
-                    return;
-
-                var created = new CdInst(key, frames);
-                fastCheck.set(key, created);
-                try { cooldown.cdList?.push(created); } catch { }
-            }
-            catch
-            {
-            }
+            // Legacy compatibility stub. Writing synthetic CdInst values into fastCheck is unsafe
+            // because Dead Cells uses typed values in these maps. Keep this method as a no-op so old
+            // call sites cannot corrupt the Hashlink runtime.
         }
 
         private readonly struct CooldownSnapshot
@@ -826,15 +827,14 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
                     return;
                 }
 
-                if (current != null && !ReferenceEquals(current, snapshot.Entry))
-                {
-                    try { cooldown.cdList?.remove(current); } catch { }
-                }
+                // Never replace/reinsert entries in an engine-owned typed fastCheck map. Only
+                // restore values when vanilla still owns the exact same CdInst instance.
+                if (current == null || !ReferenceEquals(current, snapshot.Entry))
+                    return;
 
-                snapshot.Entry.frames = snapshot.Frames;
-                snapshot.Entry.initial = snapshot.Initial;
-                snapshot.Entry.subIndexBits = snapshot.SubIndexBits;
-                fastCheck.set(key, snapshot.Entry);
+                current.frames = snapshot.Frames;
+                current.initial = snapshot.Initial;
+                current.subIndexBits = snapshot.SubIndexBits;
             }
             catch
             {
@@ -990,10 +990,24 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
 
         public override void dispose()
         {
-            DisposeKingWeaponsManager();
+            PrepareForNetworkTransition();
             DisposeScarf();
-            DisposeRemoteDiveAttack();
             base.dispose();
+        }
+
+        /// <summary>
+        /// Stops remote combat runtimes before a room or level tears down. GhostKing.fixedUpdate can
+        /// otherwise recreate its weapon manager while the old process is waiting for native disposal,
+        /// leaving a delayed HashLink skill/cooldown callback alive in the outgoing level.
+        /// </summary>
+        internal void PrepareForNetworkTransition()
+        {
+            _networkTransitionRetired = true;
+            DisposeKingWeaponsManager();
+            DisposeRemoteDiveAttack();
+            remoteDiveSkillInfos = null;
+            _lastRemoteDiveStartTicks = 0;
+            _lastRemoteDiveLandTicks = 0;
         }
 
         private void DisposeKingWeaponsManager()

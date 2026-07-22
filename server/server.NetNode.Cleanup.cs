@@ -18,15 +18,19 @@ public sealed partial class NetNode
             _pendingMobCharges.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
+            _pendingBossVictories.Clear();
             _pendingMobAttacks.Clear();
             _pendingMobDraws.Clear();
             _pendingExitReadyStates.Clear();
             _pendingBossCineLevelIds.Clear();
+            _pendingBossIntroEnds.Clear();
+            _pendingBossIntroReadyStates.Clear();
             _pendingBossHeroTeleports.Clear();
             _pendingPlayerDownStates.Clear();
             _pendingPlayerReviveRequests.Clear();
             _pendingInterDoorEvents.Clear();
             _pendingInterElevatorEvents.Clear();
+            _pendingInterElevatorStateEvents.Clear();
             _pendingInterPressurePlateEvents.Clear();
             _pendingInterTreasureChestEvents.Clear();
             _pendingInterVineLadderEvents.Clear();
@@ -44,7 +48,11 @@ public sealed partial class NetNode
         {
             CloseClientConnection();
         }
-        GameMenu.EnqueueMainThreadCoalesced("net:remote-disconnected", () => GameMenu.NotifyRemoteDisconnected(_role));
+        GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+        {
+            if (IsCurrentNetworkSession())
+                GameMenu.NotifyRemoteDisconnected(_role);
+        });
     }
 
     private RemoteState GetOrCreateRemoteLocked(int id)

@@ -614,6 +614,25 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        private static bool IsBossPhaseTransitionCinematic(dc.GameCinematic? cine)
+        {
+            if (cine == null)
+                return false;
+
+            try
+            {
+                return BossPhaseTransitionCineTypeNames.Contains(cine.GetType().Name ?? string.Empty);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>Intro OR mid-fight transformation: cines during which the local cine script owns the boss.</summary>
+        private static bool IsBossOwnedCinematic(dc.GameCinematic? cine)
+            => IsBossIntroCinematic(cine) || IsBossPhaseTransitionCinematic(cine);
+
         private bool TryCreateBossCinematicDirectly(
             Level level,
             Hero hero,
@@ -941,6 +960,125 @@ namespace DeadCellsMultiplayerMod
             EnsureHeroVisibilityAfterRoomChange(me);
         }
 
+        /// <summary>
+        /// True while a boss-intro cinematic (letterbox room entrance) is running locally. The
+        /// mob sync layer consults this to leave the boss alone while the cine script owns it.
+        /// </summary>
+        internal static bool IsLocalBossIntroCineActive()
+        {
+            try
+            {
+                var game = dc.pr.Game.Class.ME;
+                var cine = game?.curCine;
+                return cine != null && !cine.destroyed && IsBossOwnedCinematic(cine);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private dc.GameCinematic? _watchedBossIntroCine;
+        private long _watchedBossIntroCineStartTick;
+        private const double BossIntroCineHardCapSeconds = 30.0;
+
+        /// <summary>
+        /// Control-unlock guarantee: no boss-intro cinematic may hold the letterbox and the
+        /// hero's controls past a hard cap. If one stalls (any reason — desynced boss state,
+        /// broken script condition), it is force-released with the same routine used for
+        /// suppressed remote death cines, so the player is never permanently frozen.
+        /// </summary>
+        private void EnforceBossIntroCineControlUnlock()
+        {
+            try
+            {
+                var game = dc.pr.Game.Class.ME;
+                var cine = game?.curCine;
+                var isIntro = cine != null && !cine.destroyed && IsBossOwnedCinematic(cine);
+                if (!isIntro)
+                {
+                    _watchedBossIntroCine = null;
+                    _watchedBossIntroCineStartTick = 0;
+                    return;
+                }
+
+                if (!ReferenceEquals(_watchedBossIntroCine, cine))
+                {
+                    _watchedBossIntroCine = cine;
+                    _watchedBossIntroCineStartTick = Stopwatch.GetTimestamp();
+                    return;
+                }
+
+                if (_watchedBossIntroCineStartTick == 0)
+                    return;
+
+                var elapsed = Stopwatch.GetElapsedTime(_watchedBossIntroCineStartTick).TotalSeconds;
+                if (elapsed < BossIntroCineHardCapSeconds)
+                    return;
+
+                _watchedBossIntroCine = null;
+                _watchedBossIntroCineStartTick = 0;
+                SuppressRemoteBossDeathCineState(cine);
+                RestoreViewportToLocalHero();
+                DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI.MultiplayerUI.PushSystemMessage(
+                    "Boss intro stalled — skipping cinematic.",
+                    4.0,
+                    1.0);
+            }
+            catch
+            {
+            }
+        }
+
+        private string _lastTracedCineTypeName = string.Empty;
+
+        /// <summary>
+        /// Diagnostic (boss-trace gated): logs every active-cinematic type change so cines the
+        /// mod does not yet classify (e.g. the TimeKeeper phase transition) can be identified
+        /// from a session log and then sorted into the intro/transition/death sets.
+        /// </summary>
+        private void TraceActiveCineTypeChange()
+        {
+            if (!BossSyncDiag.Enabled)
+                return;
+
+            try
+            {
+                var cine = dc.pr.Game.Class.ME?.curCine;
+                var name = cine != null && !cine.destroyed ? (cine.GetType().Name ?? string.Empty) : string.Empty;
+                if (string.Equals(name, _lastTracedCineTypeName, StringComparison.Ordinal))
+                    return;
+
+                _lastTracedCineTypeName = name;
+                if (name.Length > 0)
+                    BossSyncDiag.Trace("active cinematic type={Type}", name);
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Re-target the level viewport at the local hero. A force-released cinematic can leave
+        /// the camera parked on its cine focus for the rest of the fight otherwise.
+        /// </summary>
+        private void RestoreViewportToLocalHero()
+        {
+            try
+            {
+                var hero = me;
+                if (hero == null || hero.destroyed)
+                    return;
+
+                var viewport = hero._level?.viewport;
+                if (viewport != null && !ReferenceEquals(viewport.tracked, hero))
+                    viewport.track(hero, true);
+            }
+            catch
+            {
+            }
+        }
+
         private void Hook__BeholderDeath__constructor__(Hook__BeholderDeath.orig___constructor__ orig, BeholderDeath e, Beholder boss)
         {
             if (ShouldSuppressRemoteBossDeathCineConstruction())
@@ -1020,12 +1158,11 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook__FakeKillDooku__constructor__(Hook__FakeKillDooku.orig___constructor__ orig, FakeKillDooku e, Hero manager, DookuManager instant, Ref<bool> instantRef)
         {
-            if (ShouldSuppressRemoteBossDeathCineConstruction())
-            {
-                SuppressRemoteBossDeathCineState(e);
-                return;
-            }
-
+            // FakeKillDooku is Dracula's PHASE 1 -> 2 TRANSITION, not a death cine. Suppressing it
+            // on clients left them locked in phase 1 while the host moved on to DookuBeast — the
+            // reported phase split — and the cross-form state that followed hard-crashed the game.
+            // Every peer must run it natively; it is classified as an intro-type cine so the boss
+            // is quarantined from sync while it plays and the 30s watchdog guarantees release.
             orig(e, manager, instant, instantRef);
         }
 

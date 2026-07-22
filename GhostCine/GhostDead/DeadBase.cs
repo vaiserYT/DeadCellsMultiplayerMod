@@ -1,6 +1,7 @@
 using dc.en;
 using DeadCellsMultiplayerMod.Ghost.GhostBase;
 using HaxeProxy.Runtime;
+using ModCore.Utilities;
 using System.Diagnostics;
 using System.Reflection;
 
@@ -12,6 +13,8 @@ namespace DeadCellsMultiplayerMod
         private HeroDeadCorpse? _corpse;
         private Homunculus? _homunculus;
         private bool _lethalFallStarted;
+        private bool _anchoredGroundedPoseApplied;
+        private long _lethalFallStartedTicks;
         private bool _cineSuppressed;
         private bool _hadHeroVisibleState;
         private bool _heroWasVisible;
@@ -24,6 +27,10 @@ namespace DeadCellsMultiplayerMod
         private long _bossArenaCorpsePushStartedTicks;
         private const double BossArenaCorpsePushSettleSeconds = 0.35;
         private const double BossArenaCorpsePushVelocityThreshold = 0.08;
+        private const double AnchoredCorpseInitialDropPx = 48.0;
+        private const double AnchoredCorpseLandingTimeoutSeconds = 0.70;
+        private const double AnchoredCorpseMaxHorizontalDriftPx = 48.0;
+        private const double AnchoredCorpseMaxDownwardDriftPx = 96.0;
 
         public DeadBase(Hero hero, GhostKing? king)
         {
@@ -99,22 +106,85 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
-                var corpse = new HeroDeadCorpse(this, _hero);
-                corpse.init();
+                var corpse = CreateCorpseWithoutDrops();
+                if (corpse == null)
+                    return;
+
                 _corpse = corpse;
                 _lethalFallStarted = false;
+                _anchoredGroundedPoseApplied = false;
+                _lethalFallStartedTicks = 0;
                 _hasBossArenaCorpseAnchor = false;
                 _bossArenaCorpseAnchorX = 0;
                 _bossArenaCorpseAnchorY = 0;
                 _bossArenaCorpsePushApplied = false;
                 _bossArenaCorpsePushStartedTicks = 0;
-                TrySnapCorpseToHeroAnchor(corpse);
-                TryApplyBossArenaCorpsePush(corpse);
+                if (ModEntry.ShouldAnchorLocalDownedCorpse())
+                    PlaceCorpseAtHeroAnchorForLanding(corpse);
+                else
+                    PlaceCorpseAtHeroVisualPosition(corpse);
+                if (!ModEntry.ShouldAnchorLocalDownedCorpse())
+                    TryApplyBossArenaCorpsePush(corpse);
                 EnsureLethalFallStarted();
             }
             catch
             {
                 _corpse = null;
+            }
+        }
+
+
+        private HeroDeadCorpse? CreateCorpseWithoutDrops()
+        {
+            // Fake death is recoverable, so the player must keep their real cells and blueprints.
+            // HeroDeadCorpse normally spawns the vanilla death drops during construction/init. If
+            // those drops are allowed while the hero inventory is also preserved, collecting them
+            // duplicates part of the player's cells (the recording showed 80 becoming 110).
+            // Temporarily present an empty inventory only while the visual corpse is created, then
+            // restore the authoritative hero inventory immediately.
+            var hero = _hero;
+            if (hero == null || hero.destroyed)
+                return null;
+
+            var originalCells = 0;
+            var capturedCells = false;
+            var originalBlueprints = hero.blueprints;
+            try
+            {
+                originalCells = hero.cells;
+                capturedCells = true;
+                hero.cells = 0;
+                hero.blueprints = (dc.hl.types.ArrayObj)ArrayUtils.CreateDyn().array;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var corpse = new HeroDeadCorpse(this, hero);
+                corpse.init();
+                try { corpse.cells = 0; } catch { }
+                return corpse;
+            }
+            finally
+            {
+                try
+                {
+                    if (capturedCells)
+                        hero.cells = originalCells;
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    hero.blueprints = originalBlueprints;
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -146,6 +216,12 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             KeepCorpseActive(corpse);
+            if (ModEntry.ShouldAnchorLocalDownedCorpse())
+            {
+                MaintainAnchoredCorpseLanding(corpse);
+                return;
+            }
+
             KeepBossArenaCorpseAnchored(corpse);
             EnsureLethalFallStarted();
         }
@@ -156,65 +232,262 @@ namespace DeadCellsMultiplayerMod
             if (corpse == null || corpse.destroyed || _lethalFallStarted)
                 return;
 
+            var anchored = ModEntry.ShouldAnchorLocalDownedCorpse();
             var levelId = _hero?._level?.map?.id?.ToString();
-            if (ModEntry.IsBossLevel(levelId))
+            if (!anchored && ModEntry.IsBossLevel(levelId))
             {
                 TryClampCorpseToGround(corpse);
                 return;
             }
 
             _lethalFallStarted = true;
+
+            if (anchored)
+            {
+                // Run the real vanilla lethal-fall sequence at the already-safe logical anchor.
+                // We no longer freeze the corpse before collision, because doing so is exactly what
+                // left the body hovering and rotating forever. A timeout below is only a fallback.
+                _lethalFallStartedTicks = Stopwatch.GetTimestamp();
+                PlaceCorpseAtHeroAnchorForLanding(corpse);
+                try { corpse.hasGravity = true; } catch { }
+                try { corpse.startLethalFall(); } catch { ForceAnchoredGroundedPose(corpse); }
+                return;
+            }
+
             try { corpse.startLethalFall(); } catch { }
         }
 
-        private void TrySnapCorpseToHeroAnchor(HeroDeadCorpse corpse)
+        private void MaintainAnchoredCorpseLanding(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return;
+
+            EnsureLethalFallStarted();
+            if (!_lethalFallStarted)
+                return;
+
+            if (_anchoredGroundedPoseApplied)
+            {
+                PinAnchoredGroundedCorpse(corpse);
+                return;
+            }
+
+            if (!TryGetHeroLogicalAnchor(out var anchorX, out var anchorY))
+                return;
+
+            // Vanilla lethal-fall is allowed to handle gravity and the landing transition, but the
+            // corpse must not inherit horizontal death impulse and drift back into a pit or spikes.
+            KeepCorpseOverAnchorWhileFalling(corpse, anchorX);
+
+            if (IsCorpseStabilized(corpse))
+            {
+                _anchoredGroundedPoseApplied = true;
+                PinAnchoredGroundedCorpse(corpse);
+                return;
+            }
+
+            var shouldForceGroundedPose = false;
+            if (TryGetCorpseLogicalPosition(corpse, out var corpseX, out var corpseY))
+            {
+                if (Math.Abs(corpseX - anchorX) > AnchoredCorpseMaxHorizontalDriftPx ||
+                    corpseY > anchorY + AnchoredCorpseMaxDownwardDriftPx)
+                {
+                    shouldForceGroundedPose = true;
+                }
+            }
+
+            if (!shouldForceGroundedPose && _lethalFallStartedTicks > 0)
+            {
+                var elapsed = (Stopwatch.GetTimestamp() - _lethalFallStartedTicks) /
+                              (double)Stopwatch.Frequency;
+                shouldForceGroundedPose = elapsed >= AnchoredCorpseLandingTimeoutSeconds;
+            }
+
+            if (shouldForceGroundedPose)
+                ForceAnchoredGroundedPose(corpse);
+        }
+
+
+        private static void KeepCorpseOverAnchorWhileFalling(HeroDeadCorpse corpse, double anchorX)
+        {
+            if (corpse == null || corpse.destroyed || !double.IsFinite(anchorX))
+                return;
+
+            try
+            {
+                var currentX = (corpse.cx + corpse.xr) * 24.0;
+                var deltaX = anchorX - currentX;
+                var tileX = anchorX / 24.0;
+                var cx = (int)Math.Floor(tileX);
+                corpse.cx = cx;
+                corpse.xr = tileX - cx;
+                if (corpse.spr != null && double.IsFinite(deltaX))
+                    corpse.spr.x += deltaX;
+            }
+            catch
+            {
+            }
+
+            try { corpse.dx = 0; } catch { }
+            try { corpse.bdx = 0; } catch { }
+        }
+
+        private void ForceAnchoredGroundedPose(HeroDeadCorpse corpse)
+        {
+            _anchoredGroundedPoseApplied = TryApplyAnchoredGroundedPose(corpse);
+            if (!_anchoredGroundedPoseApplied)
+            {
+                // Even if the named pose is unavailable on an unusual skin, stop the current
+                // animation and freeze at the safe floor anchor rather than allowing endless spin.
+                TryStopCorpseAnimationOnLastFrame(corpse);
+                _anchoredGroundedPoseApplied = true;
+            }
+
+            PinAnchoredGroundedCorpse(corpse);
+        }
+
+        private void PinAnchoredGroundedCorpse(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return;
+
+            if (TryGetHeroLogicalAnchor(out var anchorX, out var anchorY))
+            {
+                FreezeCorpsePhysics(corpse);
+                try { corpse.setPosPixel(anchorX, anchorY); } catch { }
+            }
+
+            // HeroDeadCorpse's own update can occasionally restore lethalFall. Reassert the landed
+            // pose while downed so the visual cannot return to a floating spin.
+            if (!IsCorpseStabilized(corpse))
+                TryApplyAnchoredGroundedPose(corpse);
+            TryStopCorpseAnimationOnLastFrame(corpse);
+            FreezeCorpsePhysics(corpse);
+        }
+
+        private void PlaceCorpseAtHeroAnchorForLanding(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return;
+
+            if (!TryGetHeroLogicalAnchor(out var anchorX, out var anchorY))
+                return;
+
+            try { corpse.cancelVelocities(); } catch { }
+            try { corpse.setPosPixel(anchorX, anchorY - AnchoredCorpseInitialDropPx); } catch { }
+        }
+
+        private void PlaceCorpseAtHeroVisualPosition(HeroDeadCorpse corpse)
         {
             if (corpse == null || corpse.destroyed || _hero == null)
                 return;
 
             try
             {
-                var x = _hero.get_targetSprPosX();
-                var y = _hero.get_targetSprPosY();
-                corpse.setPosPixel(x, y);
+                corpse.setPosPixel(_hero.get_targetSprPosX(), _hero.get_targetSprPosY());
+                return;
             }
             catch
             {
-                try
-                {
-                    if (_hero.spr != null)
-                        corpse.setPosPixel(_hero.spr.x, _hero.spr.y);
-                }
-                catch
-                {
-                }
             }
 
-            TryClampCorpseToGround(corpse);
+            try
+            {
+                if (_hero.spr != null)
+                    corpse.setPosPixel(_hero.spr.x, _hero.spr.y);
+            }
+            catch
+            {
+            }
         }
 
-        private static void TryClampCorpseToGround(HeroDeadCorpse corpse)
+        private bool TryGetHeroLogicalAnchor(out double x, out double y)
+        {
+            x = 0.0;
+            y = 0.0;
+            if (_hero == null || _hero.destroyed)
+                return false;
+
+            try
+            {
+                x = (_hero.cx + _hero.xr) * 24.0;
+                y = (_hero.cy + _hero.yr) * 24.0;
+                return double.IsFinite(x) && double.IsFinite(y);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryGetCorpseLogicalPosition(HeroDeadCorpse corpse, out double x, out double y)
+        {
+            x = 0.0;
+            y = 0.0;
+            if (corpse == null || corpse.destroyed)
+                return false;
+
+            try
+            {
+                x = (corpse.cx + corpse.xr) * 24.0;
+                y = (corpse.cy + corpse.yr) * 24.0;
+                return double.IsFinite(x) && double.IsFinite(y);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+
+        private static bool TryApplyAnchoredGroundedPose(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return false;
+
+            try
+            {
+                var animManager = corpse.spr?._animManager;
+                if (animManager == null)
+                    return false;
+
+                animManager
+                    .play("lethalSlam".AsHaxeString(), null, null)
+                    .stopOnLastFrame(Ref<bool>.Null);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void TryStopCorpseAnimationOnLastFrame(HeroDeadCorpse corpse)
         {
             if (corpse == null || corpse.destroyed)
                 return;
 
-            try
-            {
-                var map = corpse._level?.map;
-                if (map == null)
-                    return;
+            try { corpse.spr?._animManager?.stopOnLastFrame(Ref<bool>.Null); } catch { }
+        }
 
-                var cx = corpse.cx;
-                var cy = corpse.cy;
-                var xr = corpse.xr;
-                var yr = corpse.yr;
-                var groundYr = map.getGroundYr(cx, cy, Ref<double>.From(ref xr), Ref<double>.From(ref yr));
-                if (double.IsFinite(groundYr) && corpse.yr > groundYr)
-                    corpse.setPosCase(cx, cy, xr, groundYr);
-            }
-            catch
-            {
-            }
+        private static void FreezeCorpsePhysics(HeroDeadCorpse corpse)
+        {
+            if (corpse == null || corpse.destroyed)
+                return;
+
+            try { corpse.hasGravity = false; } catch { }
+            try { corpse.cancelVelocities(); } catch { }
+            try { corpse.dx = 0; } catch { }
+            try { corpse.dy = 0; } catch { }
+            try { corpse.bdx = 0; } catch { }
+            try { corpse.bdy = 0; } catch { }
+        }
+
+        private static void TryClampCorpseToGround(HeroDeadCorpse corpse)
+        {
+            // Corpse coordinates come from the authoritative revive anchor. Do not call
+            // LevelMap.getGroundYr here; that native bridge can crash the current runtime with a
+            // CPoint-to-LevelMap cast failure. Freezing physics keeps the body at the safe anchor.
         }
 
         private void CaptureBossArenaCorpseAnchor(HeroDeadCorpse corpse)
@@ -277,7 +550,7 @@ namespace DeadCellsMultiplayerMod
         {
             if (corpse == null || corpse.destroyed || _hero == null)
                 return;
-            if (_bossArenaCorpsePushApplied)
+            if (_bossArenaCorpsePushApplied || ModEntry.ShouldAnchorLocalDownedCorpse())
                 return;
             if (!ModEntry.IsBossLevel(_hero._level?.map?.id?.ToString()))
                 return;

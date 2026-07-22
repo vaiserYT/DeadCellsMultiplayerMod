@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using dc;
 using dc.en;
@@ -54,58 +55,37 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var encodedSkill = Uri.EscapeDataString(skillId);
             var reqTarget = requiresTargetInArea ? 1 : 0;
             var dataVal = data ?? 0;
-            var attackEvent = $"attack|{encodedSkill}|0|0|{reqTarget}|{dataVal}|{targetUserId}|{dir}";
+            // Phase 3: per-boss monotonic attack sequence (0 for non-bosses) so the client can drop
+            // replayed / out-of-order boss attacks deterministically via a high-water mark.
+            var attackSeq = NextHostBossAttackSeq(mob);
+            var attackEvent = $"attack|{encodedSkill}|0|0|{reqTarget}|{dataVal}|{targetUserId}|{dir}|{attackSeq}";
             var mobType = BuildMobStateTypeSignature(mob);
             var update = new NetNode.MobEventUpdate(mobSyncId, x, y, dir, SingleEvent(attackEvent), mobType, identityToken);
             MobSyncTrace.LogSendMobEvents(MobSyncNetRoleForTrace(net), SingleUpdate(update));
             net.SendMobEvents(SingleUpdate(update));
+            
+            // For bosses, force a state sync immediately after attack to sync spawned entities
+            if (BossSyncHelpers.IsBossMob(mob))
+            {
+                lock (Sync)
+                {
+                    EnqueueHostMobDirtyLocked(mobSyncId, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
+                }
+            }
         }
 
         private void Hook_Mob_setAttackTarget(Hook_Mob.orig_setAttackTarget orig, Mob self, Entity e)
         {
-            var net = GameMenu.NetRef;
-            if (IsHost(net) && ShouldSuppressHostRetarget(self))
-            {
-                orig(self, e);
-                return;
-            }
-
-            if (TryResolveFallbackPlayerCombatTarget(self, e, out var fallbackTarget))
-            {
-                orig(self, fallbackTarget);
-                return;
-            }
-
+            // Never substitute another target from inside vanilla's target setter. Elite skills and
+            // normal AI deliberately clear/swap targets while changing state; replacing null or an
+            // invalid target here can leave the behavior tree waiting forever on the old phase.
             orig(self, e);
         }
 
         private void Hook_Mob_setNemesisTarget(Hook_Mob.orig_setNemesisTarget orig, Mob self, Entity e)
         {
-            var net = GameMenu.NetRef;
-            if (System.Threading.Volatile.Read(ref forceExactNemesisTargetDepth) > 0)
-            {
-                orig(self, e);
-                return;
-            }
-
-            if (!IsMobHostileToPlayers(self))
-            {
-                orig(self, e);
-                return;
-            }
-
-            if (IsHost(net) && ShouldSuppressHostRetarget(self))
-            {
-                orig(self, e);
-                return;
-            }
-
-            if (TryResolveFallbackPlayerCombatTarget(self, e, out var fallbackTarget))
-            {
-                orig(self, fallbackTarget);
-                return;
-            }
-
+            // Keep vanilla target-container transitions intact. Co-op may repair only the immediate
+            // attack target later, after the mob's own update has completed.
             orig(self, e);
         }
 
@@ -319,6 +299,20 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 generationAfterRebuild,
                 s_levelIdentityToken);
 
+            lock (Sync)
+            {
+                // The client may finish level loading a few frames after the host. Queue initial
+                // dirty states immediately, but also force short bootstrap full-resync bursts so
+                // the next-level mob table cannot be missed by a single early packet/chunk.
+                s_hostAuthoritativeBootstrapResyncsRemaining = trackedAfterRebuild > 0
+                    ? HostAuthoritativeBootstrapResyncCount
+                    : 0;
+                s_lastHostBossReliableKeyframeFrame = -99999.0;
+                s_lastHostBossReliableKeyframeToken = s_levelIdentityToken;
+                s_lastHostAuthoritativeFullResyncFrame = -99999.0;
+                s_lastHostAuthoritativeFullResyncToken = s_levelIdentityToken;
+            }
+
             ClearSyncQuiesceAfterRebuild();
 
             for (int i = 0; i < s_batchMobsScratch.Count; i++)
@@ -374,16 +368,35 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var sameLastCommittedIdentity = s_lastCommittedIdentityToken > 0 &&
                                             s_lastCommittedIdentityToken == candidateIdentityToken &&
                                             string.Equals(s_lastCommittedLevelId, candidateLevelId, StringComparison.Ordinal);
+            var replacingExplicitlyDisposedSameIdentityLevel =
+                sameLastCommittedIdentity &&
+                trackedMobs.Count == 0 &&
+                !s_levelIdentityReady &&
+                currentLevel == null &&
+                candidateTrackedCount > 0 &&
+                (string.Equals(s_lastResetReason, "level_dispose_before_orig", StringComparison.Ordinal) ||
+                 string.Equals(s_lastResetReason, "level_dispose_after_orig", StringComparison.Ordinal));
 
             if (sameIdentity && trackedMobs.Count > 0)
             {
                 baselineTrackedCount = trackedMobs.Count;
                 baselineSource = "live";
             }
-            else if (sameLastCommittedIdentity && s_lastCommittedTrackedCount > 0)
+            else if (sameLastCommittedIdentity &&
+                     s_lastCommittedTrackedCount > 0 &&
+                     !replacingExplicitlyDisposedSameIdentityLevel)
             {
                 baselineTrackedCount = s_lastCommittedTrackedCount;
                 baselineSource = "last_commit";
+            }
+            else if (replacingExplicitlyDisposedSameIdentityLevel)
+            {
+                // Boss-cell/main-level replacement can intentionally dispose the old Level
+                // and rebuild the same run/level identity with a different native Level object.
+                // The old last-commit count is not a valid completeness baseline here; rejecting
+                // this first non-empty registry leaves the client at zero tracked mobs forever.
+                baselineTrackedCount = 0;
+                baselineSource = "disposed_same_identity_replacement";
             }
 
             if (TryGetAuthoritativeGameplayLevel(out var authoritativeLevel, out _))
@@ -402,7 +415,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     authoritativeBaselineTrackedCount = trackedMobs.Count;
                     authoritativeBaselineSource = "live_authoritative";
                 }
-                else if (lastCommittedMatchesAuthoritative && s_lastCommittedTrackedCount > 0)
+                else if (lastCommittedMatchesAuthoritative &&
+                         s_lastCommittedTrackedCount > 0 &&
+                         !replacingExplicitlyDisposedSameIdentityLevel)
                 {
                     authoritativeBaselineTrackedCount = s_lastCommittedTrackedCount;
                     authoritativeBaselineSource = "last_commit_authoritative";
@@ -422,6 +437,18 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     reason = "non_active_level_rebuild";
                     return false;
                 }
+            }
+
+            if (replacingExplicitlyDisposedSameIdentityLevel)
+            {
+                if (candidateEntityCount <= 0)
+                {
+                    reason = "disposed_same_identity_entities_empty";
+                    return false;
+                }
+
+                reason = "accepted_disposed_same_identity_replacement";
+                return true;
             }
 
             if (baselineTrackedCount > 0)
@@ -461,31 +488,44 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var syncId = -1;
             if (TryGetMobSyncId(mob, out syncId) && TryGetTrackedMobBySyncIdLocked(syncId, out var existingMob) && existingMob != null)
             {
-                existingIndex = FindTrackedMobIndexLocked(existingMob);
+                existingIndex = FindExactTrackedMobIndexLocked(existingMob);
                 if (existingIndex < 0)
                 {
                     IdToMob.Remove(syncId);
                 }
                 else
                 {
-                if (!ReferenceEquals(existingMob, mob) && existingMob != null)
-                    trackedMobIndices.Remove(existingMob);
-
-                if (!ReferenceEquals(existingMob, mob))
-                    trackedMobs[existingIndex] = mob;
-
-                trackedMobIndices[mob] = existingIndex;
-                    IdToMob[syncId] = mob;
-                ValidateTrackedIntegrityLocked("track_existing");
-                return existingIndex;
+                    // A second HaxeProxy wrapper may refer to the same native mob. Never replace the
+                    // canonical tracked wrapper with that transient alias: unregistering the alias
+                    // would then remove the real mob and every later hit becomes missing_sync_id.
+                    if (!ReferenceEquals(existingMob, mob))
+                    {
+                        s_mobSyncAliases.Remove(mob);
+                        s_mobSyncAliases.Add(mob, new MobSyncAlias
+                        {
+                            SyncId = syncId,
+                            Generation = s_levelIdentityGeneration
+                        });
+                    }
+                    ValidateTrackedIntegrityLocked("track_existing");
+                    return existingIndex;
                 }
             }
+
+            // Clients must not append an unbound transient proxy wrapper. Their sync ids come
+            // from the level registry/host; adding a wrapper with no id bloats trackedMobs and can
+            // later displace the canonical entry. Hosts may allocate ids for runtime spawns.
+            if (syncId < 0 && GameMenu.NetRef?.IsHost != true)
+                return -1;
 
             trackedMobs.Add(mob);
             var addedIndex = trackedMobs.Count - 1;
             trackedMobIndices[mob] = addedIndex;
             if (syncId >= 0)
+            {
                 IdToMob[syncId] = mob;
+                MobToId[mob] = syncId;
+            }
             ValidateTrackedIntegrityLocked("track_add");
             return addedIndex;
         }
@@ -514,14 +554,45 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             ResetMobTrackingStateLocked();
         }
 
+        internal static void ResetForFullGameDispose(string reason)
+        {
+            lock (Sync)
+            {
+                ResetMobTrackingLocked(string.IsNullOrWhiteSpace(reason)
+                    ? "full_game_dispose"
+                    : reason);
+
+                // A synchronized restart may reuse the same run/level identity token.
+                // Previous-level duplicate protection must not reject the first, still
+                // partially constructed entity pass of the new Game instance.
+                s_lastCommittedLevelRef = null;
+                s_lastCommittedLevelId = string.Empty;
+                s_lastCommittedIdentityToken = 0;
+                s_lastCommittedTrackedCount = 0;
+                s_lastResetLevelRef = null;
+                s_lastResetLevelId = string.Empty;
+                s_lastResetIdentityToken = 0;
+                s_lastResetTrackedCount = 0;
+                s_lastIgnoredDuplicateLevelId = string.Empty;
+                s_lastIgnoredDuplicateIdentityToken = 0;
+                s_levelIdentityGeneration = 0;
+            }
+
+            try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
+        }
+
         private static void ResetMobTrackingStateLocked()
         {
             trackedMobs.Clear();
             trackedMobIndices.Clear();
             IdToMob.Clear();
             MobToId.Clear();
+            s_mobSyncAliases = new ConditionalWeakTable<Mob, MobSyncAlias>();
+            ClearHostMobStallRecoveryLocked();
+            ResetPlayerCombatStateRepairLocked();
             nextRuntimeSyncId = 0;
             s_pendingCulledMobDeaths.Clear();
+            s_pendingCulledMobDeathFirstFrame.Clear();
             clientMobTargets.Clear();
             clientCachedAttackTargetByMob.Clear();
             clientQueuedOldSkillMarkers.Clear();
@@ -530,18 +601,75 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             clientLastSentAffectPayloadBySyncId.Clear();
             clientLastSentDrawStateBySyncId.Clear();
             clientLastAppliedHostAffectPayloadBySyncId.Clear();
+            clientLastAppliedHostAffectMobBySyncId.Clear();
             hostLastAppliedClientAffectPayloadBySyncId.Clear();
+            hostClientOwnedAffectIdsByMob.Clear();
             clientLastAppliedAnimPayloadByMob.Clear();
             clientLastAnimationApplyFrameByMob.Clear();
+            clientLastForcedBossAnimByMob.Clear();
+            s_hostBossPartWatch.Clear();
             clientActiveNetworkAttackMobs.Clear();
+            clientBossSkillCallbackLeaseMobs.Clear();
             clientNetworkAttackStartFrame.Clear();
             clientAiLockedMobs.Clear();
+            clientPendingSuppressedBossDies.Clear();
+            clientCompletedAuthoritativeBossDeaths.Clear();
+            ResetBossDeathWatchdogStateLocked();
+            ResetBossIdentityStateLocked();
+            clientPendingSuppressedMobDies.Clear();
             clientAuthoritativeStateSeenSyncIds.Clear();
             parsedAnimPayloadCache.Clear();
             hostMobTypeBySyncId.Clear();
             ClearHostClientInterestLocked();
             hostLastSentMobStatesBySyncId.Clear();
+            clientLastAcceptedHostPositionFrameBySyncId.Clear();
+            s_lastHostActiveReliableKeyframeFrame = -99999.0;
+            s_lastHostActiveReliableKeyframeToken = 0;
+            s_lastHostBossReliableKeyframeFrame = -99999.0;
+            s_lastHostBossReliableKeyframeToken = 0;
+            s_ghostHitMissBySyncId.Clear();
+            s_ghostHitMissGeneration = 0;
+            s_hostDeathTombstonesBySyncId.Clear();
+            s_lastHostAuthoritativeFullResyncFrame = -99999.0;
+            s_lastHostAuthoritativeFullResyncToken = 0;
+            s_hostAuthoritativeBootstrapResyncsRemaining = 0;
             hostDetectedTargets.Clear();
+
+            // Scratch collections can retain destroyed Haxe proxy references across levels when an
+            // exception interrupts a consume/send pass. They are not game state; always drop them.
+            s_clientDetectedTargetsScratch.Clear();
+            s_batchMobsScratch.Clear();
+            s_batchSnapshotsScratch.Clear();
+            s_clientAffectAppliesScratch.Clear();
+            s_hostStateAppliesScratch.Clear();
+            s_pendingMobHitAppliesScratch.Clear();
+            s_mobHitMergeScratch.Clear();
+            clientPendingBossAttacks.Clear();
+            s_resolvedClientBossAttacksScratch.Clear();
+            s_drawsScratch.Clear();
+            s_moveSnapshotsScratch.Clear();
+            s_dieVictimsScratch.Clear();
+            s_dieVictimDedupScratch.Clear();
+            s_usedTrackedMobsScratch.Clear();
+            s_latestPacketSyncIdsScratch.Clear();
+            s_ghostDespawnEchoScratch.Clear();
+            s_hostDeathTombstoneScratch.Clear();
+            s_hostDeathTombstoneStateScratch.Clear();
+            s_hostDeathTombstoneRemoveScratch.Clear();
+            s_validationSeenMobsScratch.Clear();
+            s_validationSeenSyncIdsScratch.Clear();
+
+            clientNetworkQueuedAttackDepth = 0;
+            clientNetworkQueuedAttackMob = null;
+            clientNetworkAttackReplayDepth = 0;
+            clientNetworkAttackReplayMob = null;
+            authoritativeClientBossDieDepth = 0;
+            authoritativeClientMobDieDepth = 0;
+            suppressClientAffectDirtyDepth = 0;
+            suppressMobDieSendDepth = 0;
+            suppressMobHitSendDepth = 0;
+            forceExactNemesisTargetDepth = 0;
+
             s_trackedMobValidationPending = true;
             s_syncMobTypeCache.Clear();
             ClearQueuedDirtyStateLocked();
@@ -588,25 +716,117 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void RemoveTrackedMobLocked(Mob mob)
         {
-            s_trackedMobValidationPending = true;
-            var index = FindTrackedMobIndexLocked(mob);
-            if (index < 0 &&
-                MobToId.TryGetValue(mob, out var syncId) &&
-                TryGetTrackedMobBySyncIdLocked(syncId, out var syncMob) &&
-                syncMob != null)
-            {
-                index = FindTrackedMobIndexLocked(syncMob);
-            }
+            if (mob == null)
+                return;
 
-            if (index < 0)
+            s_trackedMobValidationPending = true;
+            var index = FindExactTrackedMobIndexLocked(mob);
+            if (index >= 0)
             {
-                CleanupTrackedMobCachesLocked(mob);
-                if (mob != null && MobToId.Remove(mob, out var _sid))
-                    IdToMob.Remove(_sid);
+                RemoveTrackedMobAtIndexLocked(index);
                 return;
             }
 
-            RemoveTrackedMobAtIndexLocked(index);
+            // This can be a temporary managed wrapper for a still-live canonical native mob. Remove
+            // only alias-local caches; never remove IdToMob/MobToId owned by the canonical wrapper.
+            s_mobSyncAliases.Remove(mob);
+            clientMobTargets.Remove(mob);
+            clientCachedAttackTargetByMob.Remove(mob);
+            clientQueuedOldSkillMarkers.Remove(mob);
+            hostLastSentContactTargetUserIdByMob.Remove(mob);
+            clientLastReportedMobLife.Remove(mob);
+            clientLastAppliedAnimPayloadByMob.Remove(mob);
+            clientLastAnimationApplyFrameByMob.Remove(mob);
+            clientLastForcedBossAnimByMob.Remove(mob);
+            clientActiveNetworkAttackMobs.Remove(mob);
+            clientBossSkillCallbackLeaseMobs.Remove(mob);
+            clientNetworkAttackStartFrame.Remove(mob);
+            clientAiLockedMobs.Remove(mob);
+        }
+
+        private static bool ShouldRetainMobSyncIdOnTemporaryUnregisterLocked(Level? level, Mob mob)
+        {
+            if (mob == null || level == null)
+                return false;
+            if (!MobToId.ContainsKey(mob))
+                return false;
+
+            try
+            {
+                if (mob.destroyed || mob.life <= 0)
+                    return false;
+                if (!DoesLevelMatchCurrentIdentityLocked(level) || !DoesLevelMatchCurrentIdentityLocked(mob._level))
+                    return false;
+            }
+            catch
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static void DetachTrackedMobForTemporaryUnregisterLocked(Mob mob)
+        {
+            if (mob == null || !MobToId.TryGetValue(mob, out var syncId) || syncId < 0)
+                return;
+
+            // A live mob can be unregistered briefly while sleeping, teleporting, transforming,
+            // or entering/leaving an elite phase. Removing IdToMob here made the peer's next hit
+            // fail with missing_sync_id even though MobToId still claimed that the mob owned the id.
+            //
+            // Keep the complete canonical mapping and tracked-list entry until the mob is actually
+            // destroyed, dies, changes level, or the level registry is rebuilt. Only transient
+            // attack/visual caches are cleared so an interrupted skill is not replayed forever.
+            IdToMob[syncId] = mob;
+            var index = FindExactTrackedMobIndexLocked(mob);
+            if (index < 0)
+            {
+                trackedMobs.Add(mob);
+                index = trackedMobs.Count - 1;
+            }
+            trackedMobIndices[mob] = index;
+
+            s_mobSyncAliases.Remove(mob);
+            clientCachedAttackTargetByMob.Remove(mob);
+            clientQueuedOldSkillMarkers.Remove(mob);
+            hostLastSentContactTargetUserIdByMob.Remove(mob);
+            clientActiveNetworkAttackMobs.Remove(mob);
+            clientBossSkillCallbackLeaseMobs.Remove(mob);
+            clientNetworkAttackStartFrame.Remove(mob);
+            clientAiLockedMobs.Remove(mob);
+            s_trackedMobValidationPending = true;
+
+            MobSyncTrace.LogBindSyncId(
+                "temporary_unregister_retained",
+                syncId,
+                BuildMobStateTypeSignature(mob),
+                GetWorldX(mob),
+                GetWorldY(mob));
+        }
+
+        private static int FindExactTrackedMobIndexLocked(Mob mob)
+        {
+            if (mob == null)
+                return -1;
+
+            if (trackedMobIndices.TryGetValue(mob, out var directIndex))
+            {
+                if (directIndex >= 0 && directIndex < trackedMobs.Count && ReferenceEquals(trackedMobs[directIndex], mob))
+                    return directIndex;
+                trackedMobIndices.Remove(mob);
+            }
+
+            for (var i = 0; i < trackedMobs.Count; i++)
+            {
+                if (ReferenceEquals(trackedMobs[i], mob))
+                {
+                    trackedMobIndices[mob] = i;
+                    return i;
+                }
+            }
+
+            return -1;
         }
 
         private static void RemoveTrackedMobAtIndexLocked(int index)
@@ -621,6 +841,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             {
                 if (MobToId.Remove(mob, out var _sid))
                     IdToMob.Remove(_sid);
+                s_mobSyncAliases.Remove(mob);
                 trackedMobIndices.Remove(mob);
             }
 
@@ -643,6 +864,15 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             clientPendingSuppressedBossDies.Remove(mob);
+            clientPendingSuppressedMobDies.Remove(mob);
+            try
+            {
+                if (mob.destroyed)
+                    hostClientOwnedAffectIdsByMob.Remove(mob);
+            }
+            catch
+            {
+            }
             trackedMobIndices.Remove(mob);
             clientMobTargets.Remove(mob);
             clientCachedAttackTargetByMob.Remove(mob);
@@ -651,10 +881,14 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             clientLastReportedMobLife.Remove(mob);
             clientLastAppliedAnimPayloadByMob.Remove(mob);
             clientLastAnimationApplyFrameByMob.Remove(mob);
+            clientLastForcedBossAnimByMob.Remove(mob);
             clientActiveNetworkAttackMobs.Remove(mob);
+            clientBossSkillCallbackLeaseMobs.Remove(mob);
             clientNetworkAttackStartFrame.Remove(mob);
             clientAiLockedMobs.Remove(mob);
 
+            // Cache cleanup must only clear a mob that owns this exact managed registration. A
+            // transient HaxeProxy wrapper must never delete the canonical entity's sync mapping.
             if (!MobToId.TryGetValue(mob, out var syncId))
                 return;
 
@@ -667,9 +901,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             IdToMob.Remove(syncId);
+            RemoveHostMobStallRecoveryLocked(syncId);
             clientLastSentAffectPayloadBySyncId.Remove(syncId);
             clientLastSentDrawStateBySyncId.Remove(syncId);
             clientLastAppliedHostAffectPayloadBySyncId.Remove(syncId);
+            clientLastAppliedHostAffectMobBySyncId.Remove(syncId);
             hostLastAppliedClientAffectPayloadBySyncId.Remove(syncId);
             hostMobTypeBySyncId.Remove(syncId);
             hostClientInterestUsersBySyncId.Remove(syncId);
@@ -697,17 +933,114 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 s_trackedMobValidationPending = true;
             }
 
+            // HaxeProxy can expose another managed wrapper for the same native mob. Match it by
+            // current level, runtime class and near-identical position. Unlike Mob.__uid, this does
+            // not alias every enemy of the same class. Reject ambiguous overlapping matches.
+            var matchedIndex = -1;
+            for (int i = 0; i < trackedMobs.Count; i++)
+            {
+                var candidate = trackedMobs[i];
+                if (!AreLikelySameNativeMobProxy(candidate, mob))
+                    continue;
+
+                if (matchedIndex >= 0)
+                    return -1;
+                matchedIndex = i;
+            }
+
+            if (matchedIndex >= 0)
+            {
+                var canonical = trackedMobs[matchedIndex];
+                if (canonical != null)
+                    trackedMobIndices[canonical] = matchedIndex;
+                return matchedIndex;
+            }
+
             return -1;
+        }
+
+        private static bool AreLikelySameNativeMobProxy(Mob? left, Mob? right)
+        {
+            if (left == null || right == null)
+                return false;
+            if (ReferenceEquals(left, right))
+                return true;
+
+            try
+            {
+                if (!DoesLevelMatchCurrentIdentityLocked(left._level) ||
+                    !DoesLevelMatchCurrentIdentityLocked(right._level))
+                {
+                    return false;
+                }
+                if (!string.Equals(
+                        GetMobRuntimeClassKeySafe(left),
+                        GetMobRuntimeClassKeySafe(right),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                var dx = GetWorldX(left) - GetWorldX(right);
+                var dy = GetWorldY(left) - GetWorldY(right);
+                return double.IsFinite(dx) && double.IsFinite(dy) && dx * dx + dy * dy <= 0.25;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool TryGetTrackedMobBySyncIdLocked(int syncId, out Mob? mob)
         {
             mob = null;
-            if (syncId < 0 || trackedMobs.Count == 0)
+            if (syncId < 0)
                 return false;
 
-            if (!IdToMob.TryGetValue(syncId, out var mappedMob))
-                return false;
+            if (!IdToMob.TryGetValue(syncId, out var mappedMob) || mappedMob == null)
+            {
+                // Repair a one-sided registry entry. Earlier temporary-unregister handling could
+                // leave MobToId intact while removing IdToMob, which made every later client hit
+                // look like a missing sync id. Recover only a unique live same-level owner.
+                Mob? reverseCandidate = null;
+                var reverseCandidates = 0;
+                foreach (var pair in MobToId)
+                {
+                    if (pair.Value != syncId || pair.Key == null)
+                        continue;
+                    if (!IsStateRebindCandidateLocked(pair.Key))
+                        continue;
+
+                    reverseCandidate = pair.Key;
+                    reverseCandidates++;
+                    if (reverseCandidates > 1)
+                        break;
+                }
+
+                if (reverseCandidates == 1 && reverseCandidate != null)
+                {
+                    mappedMob = reverseCandidate;
+                    IdToMob[syncId] = mappedMob;
+                    var repairedIndex = FindExactTrackedMobIndexLocked(mappedMob);
+                    if (repairedIndex < 0)
+                    {
+                        trackedMobs.Add(mappedMob);
+                        repairedIndex = trackedMobs.Count - 1;
+                    }
+                    trackedMobIndices[mappedMob] = repairedIndex;
+                    s_trackedMobValidationPending = true;
+                    MobSyncTrace.LogBindSyncId(
+                        "reverse_registry_repair",
+                        syncId,
+                        BuildMobStateTypeSignature(mappedMob),
+                        GetWorldX(mappedMob),
+                        GetWorldY(mappedMob));
+                }
+                else
+                {
+                    return false;
+                }
+            }
 
             if (mappedMob == null)
             {
@@ -720,10 +1053,46 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var localIndex = FindTrackedMobIndexLocked(mappedMob);
             if (localIndex < 0)
             {
-                MobSyncTrace.LogStaleTrackedMapping(syncId, localIndex, "untracked_mob");
+                // An alive mob can be temporarily unregistered/re-wrapped when sleeping, teleporting
+                // or changing elite phase. Keep its authoritative id and reattach the live object
+                // instead of pruning the mapping and allocating a replacement id.
+                if (IsStateRebindCandidateLocked(mappedMob))
+                {
+                    trackedMobs.Add(mappedMob);
+                    localIndex = trackedMobs.Count - 1;
+                    trackedMobIndices[mappedMob] = localIndex;
+                    MobToId[mappedMob] = syncId;
+                    s_trackedMobValidationPending = true;
+                    MobSyncTrace.LogBindSyncId(
+                        "reattach_live_mapping",
+                        syncId,
+                        BuildMobStateTypeSignature(mappedMob),
+                        GetWorldX(mappedMob),
+                        GetWorldY(mappedMob));
+                }
+                else
+                {
+                    MobSyncTrace.LogStaleTrackedMapping(syncId, localIndex, "untracked_mob");
+                    IdToMob.Remove(syncId);
+                    s_trackedMobValidationPending = true;
+                    return false;
+                }
+            }
+
+            var canonicalMob = trackedMobs[localIndex];
+            if (canonicalMob == null)
+            {
                 IdToMob.Remove(syncId);
                 s_trackedMobValidationPending = true;
                 return false;
+            }
+
+            if (!ReferenceEquals(mappedMob, canonicalMob))
+            {
+                // Repair a wrapper swap without changing the native mob identity or sync id.
+                IdToMob[syncId] = canonicalMob;
+                MobToId[canonicalMob] = syncId;
+                mappedMob = canonicalMob;
             }
 
             if (!MobToId.TryGetValue(mappedMob, out var mappedSyncId) || mappedSyncId != syncId)
@@ -747,7 +1116,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             if (IdToMob.TryGetValue(syncId, out var mappedMob) && mappedMob != null)
+            {
                 MobSyncTrace.LogStaleTrackedMapping(syncId, FindTrackedMobIndexLocked(mappedMob), reason);
+                if (MobToId.TryGetValue(mappedMob, out var reverseSyncId) && reverseSyncId == syncId)
+                    MobToId.Remove(mappedMob);
+            }
 
             IdToMob.Remove(syncId);
             s_trackedMobValidationPending = true;
@@ -943,18 +1316,55 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             lock (Sync)
             {
-                if (!IsLevelIdentityReadyLocked(mob._level))
-                    return MobToId.TryGetValue(mob, out syncId);
-
-                if (GameMenu.NetRef?.IsHost != true)
-                    return MobToId.TryGetValue(mob, out syncId);
-
                 if (MobToId.TryGetValue(mob, out syncId))
                     return true;
+
+                if (s_mobSyncAliases.TryGetValue(mob, out var alias) &&
+                    alias.Generation == s_levelIdentityGeneration &&
+                    IdToMob.TryGetValue(alias.SyncId, out var aliasedCanonical) &&
+                    aliasedCanonical != null &&
+                    FindExactTrackedMobIndexLocked(aliasedCanonical) >= 0)
+                {
+                    syncId = alias.SyncId;
+                    return true;
+                }
+
+                s_mobSyncAliases.Remove(mob);
+                var canonicalIndex = FindTrackedMobIndexLocked(mob);
+                if (canonicalIndex >= 0 && canonicalIndex < trackedMobs.Count)
+                {
+                    var canonicalMob = trackedMobs[canonicalIndex];
+                    if (canonicalMob != null && MobToId.TryGetValue(canonicalMob, out syncId))
+                    {
+                        if (!ReferenceEquals(canonicalMob, mob))
+                        {
+                            s_mobSyncAliases.Add(mob, new MobSyncAlias
+                            {
+                                SyncId = syncId,
+                                Generation = s_levelIdentityGeneration
+                            });
+                        }
+                        return true;
+                    }
+                }
+
+                if (!IsLevelIdentityReadyLocked(mob._level))
+                    return false;
+
+                if (GameMenu.NetRef?.IsHost != true)
+                    return false;
 
                 syncId = nextRuntimeSyncId++;
                 MobToId[mob] = syncId;
                 IdToMob[syncId] = mob;
+                // Dynamic/runtime-spawned mobs must be in the canonical tracked list immediately;
+                // otherwise the first dirty packet creates an IdToMob entry that is rejected as
+                // untracked_mob on the next dequeue.
+                if (FindTrackedMobIndexLocked(mob) < 0)
+                {
+                    trackedMobs.Add(mob);
+                    trackedMobIndices[mob] = trackedMobs.Count - 1;
+                }
                 return true;
             }
         }
@@ -985,12 +1395,21 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static Mob? ResolveTrackedMobForIncomingStateLocked(NetNode.MobStateSnapshot state, HashSet<Mob>? reservedMobs)
         {
+            // Phase 2: stable boss identity carried in the boss state payload ("bid:"). 0 => none.
+            var bossEntityId = BossStateSync.TryGetEntityId(state.StatePayload);
+
             var mappedMob = ResolveTrackedMobBySyncIdLocked(state.Index);
             if (mappedMob != null)
             {
                 var reserved = reservedMobs != null && reservedMobs.Contains(mappedMob);
                 if (!reserved && DoesMobMatchStateType(mappedMob, state.Type))
+                {
+                    // Learn the identity on the deterministic (load-time) sync-id hit so later
+                    // rebuilds can rebind by identity even in a multi-boss arena.
+                    if (bossEntityId > 0)
+                        RememberClientBossEntityIdLocked(mappedMob, bossEntityId);
                     return mappedMob;
+                }
 
                 if (!reserved)
                 {
@@ -1004,26 +1423,337 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 }
             }
 
+            // Phase 2 identity-primary rebind: once a boss id has been learned, follow it across
+            // native phase/proxy rebuilds and sync-id changes. This never uses proximity and
+            // disambiguates any number of same-type bosses (Boss Rush duos, Servants, etc.).
+            if (bossEntityId > 0 &&
+                TryResolveClientBossByEntityIdLocked(bossEntityId, state.Index, reservedMobs, out var identityBoss) &&
+                identityBoss != null)
+            {
+                RememberClientBossEntityIdLocked(identityBoss, bossEntityId);
+                MobSyncTrace.LogBindSyncId(
+                    "boss_identity_rebind",
+                    state.Index,
+                    state.Type ?? string.Empty,
+                    state.X,
+                    state.Y);
+                BossSyncDiag.Trace(
+                    "client boss identity rebind entityId={EntityId} syncId={SyncId} type={Type}",
+                    bossEntityId,
+                    state.Index,
+                    state.Type ?? string.Empty);
+                return identityBoss;
+            }
+
+            // Bosses are commonly rebuilt behind a new HashLink proxy during phase changes.  The
+            // ordinary recovery path intentionally requires close coordinates and matching HP,
+            // which is too strict here: the whole purpose of this packet is to repair divergent
+            // boss HP/position.  Rebind only a unique, explicitly-marked compatible boss (skipping
+            // any boss already claimed by a different living identity, so the newly rebuilt boss is
+            // the sole candidate for a not-yet-learned id).
+            if (TryResolveUniqueAuthoritativeBossLocked(
+                    state.Type,
+                    state.StatePayload,
+                    reservedMobs,
+                    bossEntityId,
+                    out var authoritativeBoss,
+                    out var bossCandidateCount) &&
+                authoritativeBoss != null)
+            {
+                TryRebindTrackedMobSyncIdLocked(authoritativeBoss, state.Index);
+                if (bossEntityId > 0)
+                    RememberClientBossEntityIdLocked(authoritativeBoss, bossEntityId);
+                MobSyncTrace.LogBindSyncId(
+                    "boss_authoritative_state_repair",
+                    state.Index,
+                    state.Type ?? string.Empty,
+                    state.X,
+                    state.Y);
+                return authoritativeBoss;
+            }
+
             if (TryResolveSingleUnboundTrackedMobForFirstStateLocked(state, reservedMobs, out var unresolvedMob, out var candidateCount) &&
                 unresolvedMob != null)
             {
                 TryRebindTrackedMobSyncIdLocked(unresolvedMob, state.Index);
+                if (bossEntityId > 0)
+                    RememberClientBossEntityIdLocked(unresolvedMob, bossEntityId);
                 MobSyncTrace.LogBindSyncId("state_first_snapshot", state.Index, state.Type ?? string.Empty, state.X, state.Y);
                 return unresolvedMob;
             }
 
-            if (candidateCount > 1)
+            if (TryResolveNearestAuthoritativeStateMobLocked(state, reservedMobs, out var nearestMob, out var nearestCandidates) &&
+                nearestMob != null)
             {
-                MobSyncTrace.LogAmbiguousMatchRejected(
-                    "state",
+                TryRebindTrackedMobSyncIdLocked(nearestMob, state.Index);
+                if (bossEntityId > 0)
+                    RememberClientBossEntityIdLocked(nearestMob, bossEntityId);
+                MobSyncTrace.LogFallbackMatchResolved(
+                    "state_authoritative_repair",
                     state.Index,
                     state.Type ?? string.Empty,
                     state.X,
                     state.Y,
-                    candidateCount);
+                    nearestCandidates,
+                    rebound: true);
+                return nearestMob;
+            }
+
+            // Last-resort anchor for encounter bosses: whatever churned the id table (dynamic
+            // add spawns reshuffling bindings, distance caps after drift), the arena's
+            // Level.boss of the matching type IS this state's subject. Proximity-free and
+            // type-checked so it can never steal an add's binding; identity-gated so duo
+            // arenas stay correct. Without this, an evicted boss binding could stay unbound
+            // for the whole fight (KingsHand syncId=0 -> Worm/Archer churn).
+            if (TryResolveLevelBossAnchorForStateLocked(state, reservedMobs, bossEntityId, out var anchoredBoss) &&
+                anchoredBoss != null)
+            {
+                TryRebindTrackedMobSyncIdLocked(anchoredBoss, state.Index);
+                if (bossEntityId > 0)
+                    RememberClientBossEntityIdLocked(anchoredBoss, bossEntityId);
+                MobSyncTrace.LogBindSyncId(
+                    "level_boss_anchor",
+                    state.Index,
+                    state.Type ?? string.Empty,
+                    state.X,
+                    state.Y);
+                return anchoredBoss;
+            }
+
+            if (candidateCount > 1 || nearestCandidates > 1 || bossCandidateCount > 1)
+            {
+                lock (Sync)
+                {
+                    var currentFrame = (int)GetCurrentFrame(null);
+                    if (currentFrame - s_lastAmbiguousFallbackLogFrame >= AmbiguousFallbackLogCooldownFrames)
+                    {
+                        MobSyncTrace.LogAmbiguousMatchRejected(
+                            "state",
+                            state.Index,
+                            state.Type ?? string.Empty,
+                            state.X,
+                            state.Y,
+                            System.Math.Max(System.Math.Max(candidateCount, nearestCandidates), bossCandidateCount));
+                        s_lastAmbiguousFallbackLogFrame = currentFrame;
+                    }
+                }
             }
 
             return null;
+        }
+
+        private static bool TryResolveLevelBossAnchorForStateLocked(
+            NetNode.MobStateSnapshot state,
+            HashSet<Mob>? reservedMobs,
+            int bossEntityId,
+            out Mob? levelBoss)
+        {
+            levelBoss = null;
+
+            try
+            {
+                var boss = currentLevel?.boss as Mob;
+                if (boss == null || boss.destroyed)
+                    return false;
+                if (reservedMobs != null && reservedMobs.Contains(boss))
+                    return false;
+                if (!DoesMobMatchStateType(boss, state.Type))
+                    return false;
+
+                // Identity gate: if both sides carry identities and they disagree, this state
+                // belongs to a different boss of the same type (duo arenas) — do not anchor.
+                if (bossEntityId > 0 &&
+                    s_clientEntityIdByBoss.TryGetValue(boss, out var knownId) &&
+                    knownId > 0 &&
+                    knownId != bossEntityId)
+                {
+                    return false;
+                }
+
+                // The anchor must have a registry home for the rebind to land in.
+                if (AddTrackedMobLocked(boss) < 0)
+                    return false;
+
+                levelBoss = boss;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryResolveUniqueAuthoritativeBossLocked(
+            string? expectedType,
+            string? statePayload,
+            HashSet<Mob>? reservedMobs,
+            int currentEntityId,
+            out Mob? uniqueBoss,
+            out int candidateCount)
+        {
+            uniqueBoss = null;
+            candidateCount = 0;
+            if (!BossStateSync.IsBossStatePayload(statePayload))
+                return false;
+
+            for (var i = 0; i < trackedMobs.Count; i++)
+            {
+                var candidate = trackedMobs[i];
+                if (candidate == null || (reservedMobs != null && reservedMobs.Contains(candidate)))
+                    continue;
+                if (!IsStateRebindCandidateLocked(candidate) || !BossSyncHelpers.IsBossMob(candidate))
+                    continue;
+                if (!DoesBossMatchAuthoritativeType(candidate, expectedType))
+                    continue;
+                // Phase 2: a boss already bound to a different, still-living identity is not a
+                // candidate for this (different) id. This keeps the fallback unambiguous when one
+                // boss of a duo rebuilds: only the unbound, newly rebuilt boss remains.
+                if (IsBossClaimedByOtherLivingEntityLocked(candidate, currentEntityId))
+                    continue;
+
+                candidateCount++;
+                uniqueBoss = candidate;
+                if (candidateCount > 1)
+                {
+                    uniqueBoss = null;
+                    return false;
+                }
+            }
+
+            return candidateCount == 1 && uniqueBoss != null;
+        }
+
+        private static bool DoesBossMatchAuthoritativeType(Mob boss, string? expectedType)
+        {
+            if (boss == null || !BossSyncHelpers.IsBossMob(boss))
+                return false;
+            if (string.IsNullOrWhiteSpace(expectedType) || DoesMobMatchStateType(boss, expectedType))
+                return true;
+
+            // A proxy class can legitimately change across a native boss phase.  The stable mob
+            // type id is sufficient when it is present on both peers; otherwise require the class.
+            if (TrySplitStateTypeSignature(expectedType, out var expectedTypeId, out var expectedClass))
+            {
+                var actualTypeId = GetMobTypeIdSafe(boss);
+                if (!string.IsNullOrWhiteSpace(expectedTypeId) &&
+                    !string.IsNullOrWhiteSpace(actualTypeId) &&
+                    string.Equals(expectedTypeId, actualTypeId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                var actualClass = GetMobRuntimeClassKeySafe(boss);
+                return !string.IsNullOrWhiteSpace(expectedClass) &&
+                       !string.IsNullOrWhiteSpace(actualClass) &&
+                       string.Equals(expectedClass, actualClass, StringComparison.OrdinalIgnoreCase);
+            }
+
+            var legacyExpected = NormalizeMobTypeKey(expectedType);
+            return string.Equals(legacyExpected, GetMobTypeIdSafe(boss), StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(legacyExpected, GetMobRuntimeClassKeySafe(boss), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsBossRelatedEntity(string? type)
+        {
+            if (string.IsNullOrWhiteSpace(type))
+                return false;
+            
+            var lowerType = type.ToLowerInvariant();
+            return lowerType.Contains("tentacle") ||
+                   lowerType.Contains("claw") ||
+                   lowerType.Contains("hand") ||
+                   lowerType.Contains("eye") ||
+                   lowerType.Contains("scythe") ||
+                   lowerType.Contains("appendage") ||
+                   lowerType.Contains("proxy") ||
+                   lowerType.Contains("ttcl");
+        }
+
+        private static bool TryResolveNearestAuthoritativeStateMobLocked(
+            NetNode.MobStateSnapshot state,
+            HashSet<Mob>? reservedMobs,
+            out Mob? uniqueMob,
+            out int candidateCount)
+        {
+            uniqueMob = null;
+            candidateCount = 0;
+            if (trackedMobs.Count == 0 || string.IsNullOrWhiteSpace(state.Type))
+                return false;
+            if (!double.IsFinite(state.X) || !double.IsFinite(state.Y))
+                return false;
+
+            var maxDistanceSq = ClientStateRebindMaxDistancePx * ClientStateRebindMaxDistancePx;
+            var bestDistanceSq = double.MaxValue;
+            var secondBestDistanceSq = double.MaxValue;
+            Mob? best = null;
+
+            for (var i = 0; i < trackedMobs.Count; i++)
+            {
+                var mob = trackedMobs[i];
+                if (mob == null || (reservedMobs != null && reservedMobs.Contains(mob)))
+                    continue;
+                if (!IsStateRebindCandidateLocked(mob) || !DoesMobMatchStateType(mob, state.Type))
+                    continue;
+
+                // Do not steal a healthy authoritative mapping from another sync id. A mapping whose
+                // reverse entry disappeared is already stale and may be repaired.
+                if (MobToId.TryGetValue(mob, out var existingId) && existingId != state.Index &&
+                    IdToMob.TryGetValue(existingId, out var existingMapped) &&
+                    existingMapped != null && ReferenceEquals(existingMapped, mob))
+                {
+                    continue;
+                }
+
+                double dx;
+                double dy;
+                try
+                {
+                    dx = GetWorldX(mob) - state.X;
+                    dy = GetWorldY(mob) - state.Y;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (!double.IsFinite(dx) || !double.IsFinite(dy))
+                    continue;
+                var distanceSq = dx * dx + dy * dy;
+                if (distanceSq > maxDistanceSq)
+                    continue;
+
+                candidateCount++;
+                if (distanceSq < bestDistanceSq)
+                {
+                    secondBestDistanceSq = bestDistanceSq;
+                    bestDistanceSq = distanceSq;
+                    best = mob;
+                }
+                else if (distanceSq < secondBestDistanceSq)
+                {
+                    secondBestDistanceSq = distanceSq;
+                }
+            }
+
+            if (best == null)
+                return false;
+
+            if (candidateCount > 1 && secondBestDistanceSq < double.MaxValue)
+            {
+                var gap = System.Math.Sqrt(secondBestDistanceSq) - System.Math.Sqrt(bestDistanceSq);
+
+                // Boss parts (Conjunctivius tentacles, hands, claws) spawn in same-type clusters.
+                // Rejecting ambiguous candidates meant that whenever two parts stood close
+                // together NONE of them ever bound, leaving the whole cluster unsynchronized.
+                // Parts of one type are interchangeable actors, and the caller reserves each
+                // bound mob before resolving the next state, so greedy nearest binding is
+                // deterministic across the batch and strictly better than binding nothing.
+                if (!IsBossRelatedEntity(state.Type) && gap < ClientStateRebindMinimumGapPx)
+                    return false;
+            }
+
+            uniqueMob = best;
+            return true;
         }
 
         private static bool TryResolveSingleUnboundTrackedMobForFirstStateLocked(
@@ -1166,7 +1896,112 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             if (!string.IsNullOrWhiteSpace(attack.Type))
                 hostMobTypeBySyncId[attack.Index] = attack.Type;
+
+            if (TryResolveBossForIncomingAttackLocked(
+                    attack,
+                    expectedType,
+                    out var authoritativeBoss,
+                    out var bossCandidateCount) &&
+                authoritativeBoss != null)
+            {
+                TryRebindTrackedMobSyncIdLocked(authoritativeBoss, attack.Index);
+                MobSyncTrace.LogBindSyncId(
+                    "boss_attack_authoritative_repair",
+                    attack.Index,
+                    expectedType,
+                    attack.X,
+                    attack.Y);
+                return authoritativeBoss;
+            }
+
+            if (bossCandidateCount > 1)
+            {
+                MobSyncTrace.LogAmbiguousMatchRejected(
+                    "boss_attack",
+                    attack.Index,
+                    expectedType,
+                    attack.X,
+                    attack.Y,
+                    bossCandidateCount);
+            }
+
             return null;
+        }
+
+        private static bool TryResolveBossForIncomingAttackLocked(
+            NetNode.MobAttack attack,
+            string expectedType,
+            out Mob? resolvedBoss,
+            out int candidateCount)
+        {
+            resolvedBoss = null;
+            candidateCount = 0;
+            if (string.IsNullOrWhiteSpace(expectedType))
+                return false;
+
+            Mob? best = null;
+            var bestDistanceSq = double.MaxValue;
+            var secondDistanceSq = double.MaxValue;
+
+            for (var i = 0; i < trackedMobs.Count; i++)
+            {
+                var candidate = trackedMobs[i];
+                if (candidate == null || !IsStateRebindCandidateLocked(candidate) ||
+                    !BossSyncHelpers.IsBossMob(candidate) ||
+                    !DoesBossMatchAuthoritativeType(candidate, expectedType))
+                {
+                    continue;
+                }
+
+                candidateCount++;
+                var dx = GetWorldX(candidate) - attack.X;
+                var dy = GetWorldY(candidate) - attack.Y;
+                var distanceSq = double.IsFinite(dx) && double.IsFinite(dy)
+                    ? dx * dx + dy * dy
+                    : double.MaxValue;
+
+                if (distanceSq < bestDistanceSq)
+                {
+                    secondDistanceSq = bestDistanceSq;
+                    bestDistanceSq = distanceSq;
+                    best = candidate;
+                }
+                else if (distanceSq < secondDistanceSq)
+                {
+                    secondDistanceSq = distanceSq;
+                }
+            }
+
+            if (best == null)
+                return false;
+
+            if (candidateCount == 1)
+            {
+                resolvedBoss = best;
+                return true;
+            }
+
+            var maxDistanceSq = ClientStateRebindMaxDistancePx * ClientStateRebindMaxDistancePx;
+            if (bestDistanceSq > maxDistanceSq || secondDistanceSq == double.MaxValue)
+                return false;
+
+            // Boss parts (Giant hands/eye, Conjunctivius tentacles) cluster by identical type.
+            // Bind the nearest in-range candidate rather than rejecting the whole cluster on a
+            // small gap; the caller reserves each bound part before resolving the next, so the
+            // batch stays deterministic. Non-part bosses keep the strict gap.
+            if (IsBossRelatedEntity(expectedType))
+            {
+                resolvedBoss = best;
+                return true;
+            }
+
+            var bestDistance = System.Math.Sqrt(System.Math.Max(0.0, bestDistanceSq));
+            var secondDistance = System.Math.Sqrt(System.Math.Max(0.0, secondDistanceSq));
+            if (secondDistance - bestDistance < ClientStateRebindMinimumGapPx)
+                return false;
+
+            resolvedBoss = best;
+            return true;
         }
 
         private static void TryRebindTrackedMobSyncIdLocked(Mob mob, int syncId)
@@ -1181,6 +2016,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (hadOldSyncId && oldSyncId >= 0 && oldSyncId != syncId)
                 ClearPerSyncIdCachesLocked(oldSyncId);
 
+            if (IdToMob.TryGetValue(syncId, out var displacedMob) && displacedMob != null &&
+                !ReferenceEquals(displacedMob, mob))
+            {
+                MobToId.Remove(displacedMob);
+                s_mobSyncAliases.Remove(displacedMob);
+            }
             ClearPerSyncIdCachesLocked(syncId);
 
             if (mob != null)
@@ -1190,6 +2031,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 IdToMob.Remove(syncId);
                 MobToId[mob] = syncId;
                 IdToMob[syncId] = mob;
+                s_mobSyncAliases.Remove(mob);
+                if (FindExactTrackedMobIndexLocked(mob) < 0)
+                {
+                    trackedMobs.Add(mob);
+                    trackedMobIndices[mob] = trackedMobs.Count - 1;
+                }
                 if (syncId >= nextRuntimeSyncId)
                     nextRuntimeSyncId = syncId + 1;
                 clientAuthoritativeStateSeenSyncIds.Add(syncId);
@@ -1428,6 +2275,30 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             TryUnlockClientMobAiAuthority(mob);
         }
 
+        private static void MarkClientBossSkillCallbackLease(Mob mob)
+        {
+            if (mob == null || !BossSyncHelpers.IsBossMob(mob))
+                return;
+
+            lock (Sync)
+            {
+                clientBossSkillCallbackLeaseMobs.Add(mob);
+            }
+
+            MarkClientNetworkAttackActive(mob);
+        }
+
+        private static bool IsClientBossSkillCallbackLeaseActive(Mob? mob)
+        {
+            if (mob == null)
+                return false;
+
+            lock (Sync)
+            {
+                return clientBossSkillCallbackLeaseMobs.Contains(mob);
+            }
+        }
+
         private static double GetCurrentFrame(Mob? mob)
         {
             try
@@ -1448,25 +2319,58 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || !IsClientNetworkAttackActive(mob))
                 return;
 
-            if (HasLocalQueuedOrChargingSkill(mob) || ShouldPreserveClientAttackMotion(mob))
+            var queuedOrCharging = HasLocalQueuedOrChargingSkill(mob);
+            var preserveMotion = ShouldPreserveClientAttackMotion(mob);
+            var isBoss = BossSyncHelpers.IsBossMob(mob);
+            var elapsed = 0.0;
+            lock (Sync)
+            {
+                if (clientNetworkAttackStartFrame.TryGetValue(mob, out var startFrame))
+                    elapsed = GetCurrentFrame(mob) - startFrame;
+            }
+
+            if (queuedOrCharging && (!isBoss || elapsed < ClientBossVisualAttackMaxActiveFrames))
+                return;
+            if (preserveMotion && (!isBoss || elapsed < ClientBossVisualAttackMaxActiveFrames))
                 return;
 
             lock (Sync)
             {
                 if (clientNetworkAttackStartFrame.TryGetValue(mob, out var startFrame))
                 {
-                    var elapsed = GetCurrentFrame(mob) - startFrame;
-                    if (elapsed < ClientNetworkAttackMinActiveFrames)
+                    var lockedElapsed = GetCurrentFrame(mob) - startFrame;
+                    if (lockedElapsed < ClientNetworkAttackMinActiveFrames)
                         return;
                 }
 
                 clientActiveNetworkAttackMobs.Remove(mob);
+                clientBossSkillCallbackLeaseMobs.Remove(mob);
                 clientNetworkAttackStartFrame.Remove(mob);
+            }
+
+            if (isBoss)
+            {
+                // Expiring the lease re-locks the brain but does NOT stop an already-running
+                // looping action — Conjunctivius kept firing poison orbs long after the host had
+                // moved on. Best-effort interrupt of the stale skill/action.
+                // ONLY while the boss is alive: the final attack's lease expires seconds after
+                // the killing blow, and interrupting then breaks the native death sequence the
+                // victory cinematic is waiting on (Concierge froze in letterbox + paused timer).
+                bool aliveForInterrupt;
+                try { aliveForInterrupt = !mob.destroyed && mob.life > 0; }
+                catch { aliveForInterrupt = false; }
+                if (aliveForInterrupt)
+                    Bosses.BossReflection.TryInterruptMobSkills(mob);
             }
         }
 
         private static void UpdateClientMobAiAuthority(Mob mob)
         {
+            // Let the cine script drive the boss during a locally active boss-intro cinematic;
+            // locking resumes automatically on the first update after the cine ends.
+            if (ModEntry.IsLocalBossIntroCineActive() && BossSyncHelpers.IsBossMob(mob))
+                return;
+
             if (mob == null)
                 return;
 
@@ -1479,6 +2383,19 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             TryLockClientMobAiAuthority(mob);
+        }
+
+        /// <summary>
+        /// Host HP thresholds can start transformations or scripted dialogue without a separate
+        /// attack packet. Give the client boss a short bounded presentation lease so those native
+        /// callbacks can run; host transform, HP, targeting and death remain authoritative.
+        /// </summary>
+        private static void MarkClientBossPresentationLease(Mob mob)
+        {
+            if (mob == null || !BossSyncHelpers.IsBossMob(mob))
+                return;
+
+            MarkClientNetworkAttackActive(mob);
         }
 
         private static void TryRepairClientMobAttackTarget(Mob mob)
@@ -1514,7 +2431,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             try
             {
                 var at = mob.aTarget;
-                if (IsHardInvalidPlayerTargetEntity(at))
+                if (at != null && IsKnownPlayerEntity(at) && !IsPreservablePlayerCombatTargetForMob(mob, at))
                 {
                     mob.setAttackTarget(null);
                     cleared = true;
@@ -1525,7 +2442,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             try
             {
                 var nt = mob.nemesisTarget;
-                if (IsHardInvalidPlayerTargetEntity(nt))
+                if (nt != null && IsKnownPlayerEntity(nt) && !IsPreservablePlayerCombatTargetForMob(mob, nt))
                 {
                     mob.setNemesisTarget(null);
                     cleared = true;
@@ -1578,31 +2495,29 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void TryAssignHostAttackTarget(Mob mob)
         {
-            if (mob == null)
-                return;
-            if (!IsMobHostileToPlayers(mob))
+            if (mob == null || !IsMobHostileToPlayers(mob))
                 return;
 
             RefreshHostContactAttackState(mob);
-            var clearedInvalidTargets = TryClearHostMobInvalidPlayerTargets(mob);
-
             if (TryGetCurrentHostAttackTarget(mob, out _))
                 return;
 
-            if (ShouldSuppressHostRetarget(mob) && !clearedInvalidTargets)
+            // Let vanilla finish elite teleports, charges, stuns and scripted locks. Co-op only fills
+            // an actually missing immediate attack target; it never unlocks AI or rewrites nemesis.
+            if (HasLocalQueuedOrChargingSkill(mob))
                 return;
-
-            if (TryRepairHostAttackTargetFromCurrentState(mob))
+            try
+            {
+                if (mob.aiLocked())
+                    return;
+            }
+            catch
             {
                 return;
             }
 
-            if (!TryResolveDetectedHostCombatTarget(mob, out var selected))
-            {
-                if (clearedInvalidTargets && !HasValidLivingPlayerCombatTarget(mob))
-                    TryClearHostMobInvalidPlayerTargets(mob);
+            if (!TryResolveDetectedHostCombatTarget(mob, out var selected) || selected == null)
                 return;
-            }
 
             try
             {
@@ -1611,12 +2526,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
             catch
             {
-            }
-
-            if (!TryGetCurrentHostNemesisTarget(mob, out var currentNemesis) ||
-                !ReferenceEquals(currentNemesis, selected))
-            {
-                TrySetNemesisTargetExact(mob, selected);
             }
         }
 
@@ -1748,7 +2657,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             try
             {
                 var at = mob.aTarget;
-                if (IsInvalidPlayerTargetEntity(at))
+                if (at != null && IsKnownPlayerEntity(at) && !IsPreservablePlayerCombatTargetForMob(mob, at))
                 {
                     mob.setAttackTarget(null);
                     cleared = true;
@@ -1761,7 +2670,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             try
             {
                 var nt = mob.nemesisTarget;
-                if (IsInvalidPlayerTargetEntity(nt))
+                if (nt != null && IsKnownPlayerEntity(nt) && !IsPreservablePlayerCombatTargetForMob(mob, nt))
                 {
                     mob.setNemesisTarget(null);
                     cleared = true;
@@ -1907,15 +2816,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             var attacker = ResolveHostPlayerCombatEntity(attackerUserId);
-            if (attacker == null)
-            {
-                if (replaySpecialHit)
-                    TryAssignHostAttackTarget(mob);
+            if (attacker == null || !IsPreservablePlayerCombatTargetForMob(mob, attacker))
                 return;
-            }
+
+            // A detached remote KingSkin is safe as an attack target but is not a safe key for all
+            // vanilla threat/elite state containers. More importantly, no hit callback may rewrite
+            // targets while either player is downed: that exact transition made mobs stop after the
+            // survivor's first hit. The normal host update repairs a missing aTarget afterward.
+            if (attacker is KingSkin || ModEntry.HasAnyPlayerDownedForCombat())
+                return;
 
             var threatDelta = System.Math.Max(0, previousLife - currentLife);
-
             try
             {
                 if (threatDelta > 0)
@@ -1927,10 +2838,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
             catch
             {
+                // Threat refresh is optional. Never fall back to force-setting attack/nemesis state
+                // from inside damage application; vanilla will reacquire on its next update.
             }
-
-            if (!TryGetCurrentHostAttackTarget(mob, out _))
-                TryAssignHostAttackTarget(mob);
         }
 
         private static bool TryResolveDetectedHostCombatTarget(Mob mob, out Entity selected)
@@ -2095,16 +3005,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return false;
             }
 
-            try
-            {
-                if (!entity.canBeHitBy(mob))
-                    return false;
-            }
-            catch
-            {
-                return false;
-            }
-
+            // Preserve a living opponent even when it is temporarily unhittable (roll i-frames,
+            // shield/parry windows, revive protection, etc.). canBeHitBy is an acquisition/attack
+            // check, not a reason to erase the mob's long-lived target; clearing it here is what made
+            // mobs lose the surviving player immediately after that player attacked while a teammate
+            // was downed.
             return true;
         }
 

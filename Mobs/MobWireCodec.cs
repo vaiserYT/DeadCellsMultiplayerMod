@@ -190,9 +190,12 @@ internal static class MobWireCodec
 
     public static string BuildMobDieLine(NetNode.MobDie die)
     {
+        var encodedType = string.IsNullOrWhiteSpace(die.Type)
+            ? string.Empty
+            : Convert.ToBase64String(Encoding.UTF8.GetBytes(die.Type));
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"MOBDIE|{die.UserId}|{die.MobIndex}|{die.X}|{die.Y}|{die.Generation}\n");
+            $"MOBDIE|{die.UserId}|{die.MobIndex}|{die.X}|{die.Y}|{die.Generation}|{encodedType}\n");
     }
 
     private static void AppendJoinedStates(StringBuilder sb, IReadOnlyList<NetNode.MobStateSnapshot>? states)
@@ -322,10 +325,12 @@ internal static class MobWireBinary
         bw.Write(buf);
     }
 
+    private const int MaxMobStateBase64Chars = 512 * 1024;
+
     public static bool TryParseMobStatesBase64(string base64Payload, List<NetNode.MobStateSnapshot> destination)
     {
         destination.Clear();
-        if (string.IsNullOrWhiteSpace(base64Payload))
+        if (string.IsNullOrWhiteSpace(base64Payload) || base64Payload.Length > MaxMobStateBase64Chars)
             return false;
 
         byte[] raw;

@@ -100,12 +100,33 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null || mob.destroyed)
                 return;
-            if (BossSyncHelpers.IsBossMob(mob))
-                return;
 
             var net = GameMenu.NetRef;
             if (!IsClient(net) || !IsSyncMob(mob))
                 return;
+
+            if (BossSyncHelpers.IsBossMob(mob))
+            {
+                // Client hits are damage intents. Let native onDamage produce local hit feedback,
+                // then restore the last host-owned life immediately so client-only threshold and
+                // phase transitions cannot start a second boss timeline before the host responds.
+                var authoritativeLife = System.Math.Max(1, fallbackLife);
+                lock (Sync)
+                {
+                    if (clientMobTargets.TryGetValue(mob, out var target) && target.Life > 0)
+                        authoritativeLife = target.Life;
+                }
+
+                try
+                {
+                    if (!mob.destroyed)
+                        mob.life = System.Math.Max(1, authoritativeLife);
+                }
+                catch
+                {
+                }
+                return;
+            }
 
             try
             {
@@ -225,6 +246,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                                   !IsApproximatelyEqual(previous.X, x, positionEpsilon) ||
                                   !IsApproximatelyEqual(previous.Y, y, positionEpsilon) ||
                                   previous.Dir != dir;
+            var teleportDiscontinuity = hadPrevious &&
+                                        ShouldTreatMobMoveAsTeleport(
+                                            previous.X,
+                                            previous.Y,
+                                            x,
+                                            y,
+                                            animPayload);
 
             if (!forceFullState && hadPrevious && !lifeChanged && !payloadChanged && !animChanged && !positionChanged)
             {
@@ -236,7 +264,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 hostLastSentMobStatesBySyncId[mobSyncId] = current;
             }
 
-            if (!forceFullState && hadPrevious && !lifeChanged && !payloadChanged && (positionChanged || animChanged))
+            // Ordinary movement can use the droppable MOBMOVE stream. Teleports/warps must use a
+            // reliable MOBSTATE keyframe so one lost realtime packet cannot leave the peer at the
+            // pre-teleport position for the rest of the fight.
+            if (!forceFullState && hadPrevious && !lifeChanged && !payloadChanged &&
+                !teleportDiscontinuity && (positionChanged || animChanged))
             {
                 sendStateSnapshot = false;
                 moveSnapshot = new NetNode.MobMoveSnapshot(
@@ -252,16 +284,20 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return true;
             }
 
-            var snapshotAnimPayload = forceFullState
+            // A teleport keyframe includes full identity/animation/state metadata. If the client
+            // lost the sync-id binding at the same moment, the reliable packet can repair it instead
+            // of arriving as an untyped position that cannot be matched safely.
+            var sendFullMetadata = forceFullState || teleportDiscontinuity;
+            var snapshotAnimPayload = sendFullMetadata
                 ? animPayload
                 : hadPrevious && !animChanged ? string.Empty : animPayload;
-            var snapshotMobType = forceFullState
+            var snapshotMobType = sendFullMetadata
                 ? mobType
                 : hadPrevious &&
                                   string.Equals(previous.Type, mobType, StringComparison.Ordinal)
                 ? string.Empty
                 : mobType;
-            var snapshotStatePayload = forceFullState
+            var snapshotStatePayload = sendFullMetadata
                 ? EncodeStatePayloadForWire(statePayload)
                 : hadPrevious &&
                                        string.Equals(previous.StatePayload, statePayload, StringComparison.Ordinal)
@@ -340,7 +376,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return string.Empty;
 
             var presencePayload = BuildMobAffectPresencePayload(mob);
-            return BossStateSync.AppendBossState(presencePayload, mob);
+            // Phase 2: stamp the stable boss identity (host-only; 0 for non-bosses) so the client can
+            // rebind this boss across native phase/proxy rebuilds by identity instead of proximity.
+            var bossEntityId = GetOrAssignHostBossEntityId(mob);
+            return BossStateSync.AppendBossState(presencePayload, mob, bossEntityId);
         }
 
         private static bool IsApproximatelyEqual(double a, double b, double epsilon)
@@ -451,10 +490,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_OldMobSkill_execute(Hook_OldMobSkill.orig_execute orig, OldMobSkill self, double? a)
         {
-            orig(self, a);
-
             var net = GameMenu.NetRef;
             var ownerMob = self?.owner as Mob;
+            if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
+                return;
+
+            orig(self, a);
+
             var skillId = self?.id?.ToString() ?? string.Empty;
 
             if (ownerMob == null || string.IsNullOrWhiteSpace(skillId))
@@ -474,6 +516,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private bool Hook_OldSkill_prepare(Hook_OldSkill.orig_prepare orig, OldSkill self, int? data)
         {
+            var net = GameMenu.NetRef;
+            var ownerMob = self?.owner as Mob;
+            if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
+                return false;
+
             var prepared = false;
             try
             {
@@ -487,11 +534,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (!prepared || self is OldMobSkill)
                 return prepared;
 
-            var net = GameMenu.NetRef;
             if (!IsHost(net))
                 return true;
 
-            var ownerMob = self?.owner as Mob;
             var skillId = self?.id?.ToString() ?? string.Empty;
             if (ownerMob == null || string.IsNullOrWhiteSpace(skillId))
                 return true;
@@ -504,13 +549,16 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_OldSkill_execute(Hook_OldSkill.orig_execute orig, OldSkill self, double? ratio)
         {
+            var net = GameMenu.NetRef;
+            var ownerMob = self?.owner as Mob;
+            if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
+                return;
+
             orig(self, ratio);
 
             if (self is OldMobSkill)
                 return;
 
-            var net = GameMenu.NetRef;
-            var ownerMob = self?.owner as Mob;
             var skillId = self?.id?.ToString() ?? string.Empty;
 
             if (ownerMob == null || string.IsNullOrWhiteSpace(skillId))
@@ -530,6 +578,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private bool Hook_OldMobSkill_prepareOnOwnerTarget(Hook_OldMobSkill.orig_prepareOnOwnerTarget orig, OldMobSkill self, bool? data, int? e)
         {
+            var net = GameMenu.NetRef;
+            var ownerMob = self?.owner as Mob;
+            if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
+                return false;
+
             var prepared = false;
             try
             {
@@ -543,11 +596,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (!prepared)
                 return false;
 
-            var net = GameMenu.NetRef;
             if (!IsHost(net))
                 return true;
 
-            var ownerMob = self?.owner as Mob;
             var skillId = self?.id?.ToString() ?? string.Empty;
             if (ownerMob == null || string.IsNullOrWhiteSpace(skillId))
                 return true;
@@ -609,15 +660,63 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
         }
 
+        private static bool IsClientNetworkAttackReplayAllowed(Mob? mob)
+        {
+            if (mob == null)
+                return false;
+
+            return clientNetworkAttackReplayDepth > 0 &&
+                   clientNetworkAttackReplayMob != null &&
+                   ReferenceEquals(clientNetworkAttackReplayMob, mob);
+        }
+
+        private static void WithClientNetworkAttackReplayContext(Mob mob, Action action)
+        {
+            if (mob == null || action == null)
+                return;
+
+            var previousMob = clientNetworkAttackReplayMob;
+            clientNetworkAttackReplayMob = mob;
+            clientNetworkAttackReplayDepth++;
+            try
+            {
+                action();
+            }
+            finally
+            {
+                clientNetworkAttackReplayDepth--;
+                clientNetworkAttackReplayMob = previousMob;
+            }
+        }
+
+        private static bool ShouldBlockAutonomousClientBossSkill(NetNode? net, Mob? ownerMob)
+        {
+            if (!IsClient(net) || ownerMob == null || !IsSyncMob(ownerMob) ||
+                !BossSyncHelpers.IsBossMob(ownerMob))
+            {
+                return false;
+            }
+
+            // Network replay opens the attack directly.  A host-cued presentation lease then lets
+            // delayed vanilla callbacks, projectiles, phase scripts and landing cleanup finish on
+            // the client.  Outside either context the replica stays locked and cannot choose a new
+            // boss attack independently.
+            return !IsClientNetworkAttackReplayAllowed(ownerMob) &&
+                   !IsClientBossSkillCallbackLeaseActive(ownerMob);
+        }
+
         private void Hook_MobSkill_execute(Hook_MobSkill.orig_execute orig, MobSkill self, double? ratio)
         {
+            var net = GameMenu.NetRef;
+            var ownerMob = self?.owner as Mob;
+            if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
+                return;
+
             orig(self, ratio);
 
-            var net = GameMenu.NetRef;
             if (!IsHost(net))
                 return;
 
-            var ownerMob = self?.owner as Mob;
             var skillId = self?.id?.ToString() ?? string.Empty;
             
             if (ownerMob != null && !string.IsNullOrWhiteSpace(skillId))

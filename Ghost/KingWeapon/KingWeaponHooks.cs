@@ -424,6 +424,8 @@ internal static class KingWeaponHooks
     {
         if(KingWeaponSupport.TryGetSource(self, out var source) && source != null)
             return source.get_shootX();
+        if(KingWeaponSupport.IsRetiredRemoteWeapon(self))
+            return 0.0;
         return orig(self);
     }
 
@@ -431,6 +433,8 @@ internal static class KingWeaponHooks
     {
         if(KingWeaponSupport.TryGetSource(self, out var source) && source != null)
             return source.get_shootY();
+        if(KingWeaponSupport.IsRetiredRemoteWeapon(self))
+            return 0.0;
         return orig(self);
     }
 
@@ -571,6 +575,8 @@ internal static class KingWeaponHooks
     {
         if(KingWeaponSupport.TryGetSource(self, out var source) && source != null)
             return source.get_shootY();
+        if(KingWeaponSupport.IsRetiredRemoteWeapon(self))
+            return 0.0;
         return orig(self);
     }
 
@@ -939,28 +945,15 @@ internal static class KingWeaponHooks
 
     private static bool ShouldSuppressDamageFromKingWeapon(Entity? target, AttackData? attack)
     {
-        if(target is not Mob)
-            return false;
-
         if(attack == null)
             return false;
 
-        // During ghost-weapon replication (IsInKingContext), let the mob get
-        // staggered/interrupted so it doesn't counter-attack the local player with an
-        // invisible hit (desync).  Host sends authoritative mob HP via mob-state sync
-        // which overwrites any local HP change, so the net effect is correct HP +
-        // correct stagger visual.  The same pattern already exists for dive attacks
-        // (IsLocalHeroDamageAllowedInKingContext = true) which bypass the suppression
-        // at the check below; this just extends it to all ghost weapon hits.
+        // Remote KingWeapon objects are presentation-only. Both players already report their
+        // real local hits through MobSync and the host sends authoritative HP/death back. Letting
+        // the detached ghost weapon call Entity.onDamage duplicates hit side effects, can damage
+        // a teammate/world object or a different local mob, and is the main path complex weapons
+        // use to reach unsafe engine state. Suppress all gameplay damage even while downed.
         if(KingWeaponSupport.IsInKingContext)
-            return false;
-
-        // When local player is downed, KingSkin must be able to damage mobs with KingWeapon.
-        if(ModEntry.IsLocalPlayerDowned())
-            return false;
-
-        if(KingWeaponSupport.IsInKingContext &&
-           !KingWeaponSupport.IsLocalHeroDamageAllowedInKingContext)
             return true;
 
         Weapon sourceWeapon;
@@ -1007,7 +1000,9 @@ internal static class KingWeaponHooks
             sourceItem = null!;
         }
 
-        if(sourceItem != null && KingWeaponSupport.TryGetSourceByItem(sourceItem, out var source) && source != null)
+        if(sourceItem != null &&
+           (KingWeaponSupport.IsRetiredRemoteItem(sourceItem) ||
+            (KingWeaponSupport.TryGetSourceByItem(sourceItem, out var source) && source != null)))
             return true;
 
         return false;
@@ -1063,7 +1058,9 @@ internal static class KingWeaponHooks
             sourceItem = null!;
         }
 
-        if(sourceItem != null && KingWeaponSupport.TryGetSourceByItem(sourceItem, out var sourceByItem) && sourceByItem != null)
+        if(sourceItem != null &&
+           (KingWeaponSupport.IsRetiredRemoteItem(sourceItem) ||
+            (KingWeaponSupport.TryGetSourceByItem(sourceItem, out var sourceByItem) && sourceByItem != null)))
             return true;
 
         return false;

@@ -1,11 +1,14 @@
 using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Channels;
 using dc.pr;
 using dc.ui;
 using Newtonsoft.Json;
 using Serilog;
 using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 using DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI;
+using DeadCellsMultiplayerMod.PortableCore;
 using ModCore.Modules;
 using HaxeProxy.Runtime;
 
@@ -20,18 +23,50 @@ namespace DeadCellsMultiplayerMod
         private static bool _inActualRun;
         private static int? _serverSeed;
         private static int? _remoteSeed;
+        private static int _serverSeedSequence;
+        private static int _remoteSeedSequence;
+        private static int _consumedRemoteSeedSequence;
+        private static string _remoteLaunchKind = string.Empty;
+        // Protocol 17: the launch is gated so the authoritative seed is present before newGame runs.
+        // This wait is now only a short scheduling tolerance, not a 10s main-thread barrier.
+        private const int RemoteRunSeedWaitMs = 2000;
+        private const int RunSeedTransitionGraceMs = 2000;
         private const int MaxSeed = 999_999;
         public static NetNode? NetRef { get; set; }
         private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
+        // Network protocol work must never be silently dropped: losing a death, level, revive, or
+        // interaction message creates permanent host/client divergence. A bounded channel applies
+        // back-pressure to the receive loop while the game thread is loading or paused.
+        private static readonly Channel<Action> _networkMainThreadQueue = Channel.CreateBounded<Action>(
+            new BoundedChannelOptions(2048)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false
+            });
         private static readonly object MainThreadCoalesceSync = new();
         private static readonly Dictionary<string, Action> _coalescedActions = new(StringComparer.Ordinal);
         private static readonly ConcurrentQueue<string> _coalescedKeys = new();
-        private const int MainThreadQueueMaxActionsPerPump = 64;
+        // Death/revive/restart/session transitions must not wait behind a continuous stream of
+        // visual/network work. Critical actions are coalesced by fixed keys and get first chance
+        // during each pump, while still remaining bounded.
+        private static readonly object CriticalMainThreadCoalesceSync = new();
+        private static readonly Dictionary<string, Action> _criticalCoalescedActions = new(StringComparer.Ordinal);
+        private static readonly ConcurrentQueue<string> _criticalCoalescedKeys = new();
+        private const int MainThreadQueueMaxActionsPerPump = 128;
+        private const int MainThreadQueueMaxPendingDirect = 512;
+        private const int MainThreadQueueMaxPendingCoalesced = 512;
+        private const int MainThreadQueueMaxPendingCritical = 64;
+        private static int _mainThreadDirectQueueCount;
+        private static long _lastMainThreadQueueDropLogTicks;
+        private static long _lastMainThreadCoalescedDropLogTicks;
 
         private static bool _menuHooksAttached;
         private static bool _addMenuHookRegistered;
         private static bool _mainMenuButtonAdded;
         private static bool _addingMultiplayerButton;
+        private const int MultiplayerMainMenuTextColor = 0x7FD4FF; // soft blue
         private static WeakReference<TitleScreen?>? _titleScreenRef;
         private static string _mpIp = "127.0.0.1";
         private static int _mpPort = 1234;
@@ -47,8 +82,11 @@ namespace DeadCellsMultiplayerMod
         private static string _steamLobbyCode = string.Empty;
         private static ulong _steamHostSteamId;
         private static bool _steamJoinLobbyResolvePending;
+        private static int _steamJoinResolveGeneration;
         private static ulong? _pendingOverlayJoinLobbyId;
         private static bool _waitingForHost;
+        private static int _roomStatusMenuKind; // 0 none, 1 host, 2 client
+        private static DateTime _lastRoomStatusAutoRefresh = DateTime.MinValue;
         internal const int ClientConnectMaxAttempts = 3;
         private static int _clientConnectAttempt;
         private static bool _clientConnecting;
@@ -70,6 +108,14 @@ namespace DeadCellsMultiplayerMod
         private static int _lastHostDisconnectCountdown = -1;
         private const int HostDisconnectCountdownSeconds = 5;
         private static bool _seedArrived;
+        // The title-screen Start button can enter the opening cinematic before User.newGame is
+        // invoked. Precommit and broadcast the initial seed here so connected clients can leave
+        // the lobby immediately instead of waiting for the host cinematic to finish.
+        private static int? _precommittedHostSeed;
+        private static int _precommittedHostSeedSequence;
+        private static string _precommittedHostLaunchKind = string.Empty;
+        private static long _precommittedHostSeedExpiresAtTicks;
+        private const int PrecommittedHostSeedTtlMs = 300000;
         private static string _username = "guest";
         private static string _remoteUsername = "guest";
         private static string _playerId = Guid.NewGuid().ToString("N");
@@ -136,6 +182,8 @@ namespace DeadCellsMultiplayerMod
         public static void Initialize(ILogger logger)
         {
             logger.Information("\x1b[32m[[ModEntry.GameMenu] Initializing GameMenu...]\x1b[0m ");
+            InitializeRunLaunchHandshake(logger);
+            RunMultiplayerSaveStartupRecovery(logger);
             lock (Sync)
             {
                 _log = logger;
@@ -143,10 +191,19 @@ namespace DeadCellsMultiplayerMod
                 _inActualRun = false;
                 _serverSeed = null;
                 _remoteSeed = null;
+                _serverSeedSequence = 0;
+                _remoteSeedSequence = 0;
+                _consumedRemoteSeedSequence = 0;
+                _remoteLaunchKind = string.Empty;
                 _levelDescArrived = false;
                 _pendingAutoStart = false;
                 _autoStartTriggered = false;
                 _seedArrived = false;
+                ClearStructuredLaunchFlagsLocked();
+                _precommittedHostSeed = null;
+                _precommittedHostSeedSequence = 0;
+                _precommittedHostLaunchKind = string.Empty;
+                _precommittedHostSeedExpiresAtTicks = 0;
                 _clientConnectAttempt = 0;
                 _clientConnecting = false;
                 _deathRestartCooldownUntil = DateTime.MinValue;
@@ -159,8 +216,17 @@ namespace DeadCellsMultiplayerMod
                 _steamLobbyId = 0;
                 _steamLobbyCode = string.Empty;
                 _steamHostSteamId = 0UL;
+                _steamJoinLobbyResolvePending = false;
+                Interlocked.Increment(ref _steamJoinResolveGeneration);
+                while (_mainThreadQueue.TryDequeue(out _)) { }
+                while (_networkMainThreadQueue.Reader.TryRead(out _)) { }
+                Interlocked.Exchange(ref _mainThreadDirectQueueCount, 0);
+                while (_coalescedKeys.TryDequeue(out _)) { }
                 lock (MainThreadCoalesceSync)
                     _coalescedActions.Clear();
+                while (_criticalCoalescedKeys.TryDequeue(out _)) { }
+                lock (CriticalMainThreadCoalesceSync)
+                    _criticalCoalescedActions.Clear();
             }
 
             InitializeMenuUiHooks();
@@ -169,7 +235,46 @@ namespace DeadCellsMultiplayerMod
         internal static void EnqueueMainThread(Action action)
         {
             if (action == null) return;
+
+            var pending = Interlocked.Increment(ref _mainThreadDirectQueueCount);
+            if (pending > MainThreadQueueMaxPendingDirect)
+            {
+                Interlocked.Decrement(ref _mainThreadDirectQueueCount);
+                LogMainThreadQueueDropRateLimited(pending);
+                return;
+            }
+
             _mainThreadQueue.Enqueue(action);
+        }
+
+
+        internal static ValueTask EnqueueNetworkMainThreadAsync(Action action, CancellationToken cancellationToken)
+        {
+            if (action == null)
+                return ValueTask.CompletedTask;
+
+            return _networkMainThreadQueue.Writer.WriteAsync(action, cancellationToken);
+        }
+
+        internal static void ClearPendingNetworkMainThreadActions()
+        {
+            while (_networkMainThreadQueue.Reader.TryRead(out _)) { }
+        }
+
+        private static void LogMainThreadQueueDropRateLimited(int pending)
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            var minTicks = System.Diagnostics.Stopwatch.Frequency * 5L;
+            var previous = Interlocked.Read(ref _lastMainThreadQueueDropLogTicks);
+            if (previous != 0 && now - previous < minTicks)
+                return;
+            if (Interlocked.CompareExchange(ref _lastMainThreadQueueDropLogTicks, now, previous) != previous)
+                return;
+
+            _log?.Warning(
+                "[NetMod] Dropped main-thread work because the direct queue exceeded {MaxPending} actions (observed={Pending})",
+                MainThreadQueueMaxPendingDirect,
+                pending);
         }
 
         internal static void EnqueueMainThreadCoalesced(string coalesceKey, Action action)
@@ -187,11 +292,53 @@ namespace DeadCellsMultiplayerMod
             lock (MainThreadCoalesceSync)
             {
                 isNewKey = !_coalescedActions.ContainsKey(coalesceKey);
+                if (isNewKey && _coalescedActions.Count >= MainThreadQueueMaxPendingCoalesced)
+                {
+                    LogMainThreadCoalescedDropRateLimited(coalesceKey, critical: false);
+                    return;
+                }
                 _coalescedActions[coalesceKey] = action;
             }
 
             if (isNewKey)
                 _coalescedKeys.Enqueue(coalesceKey);
+        }
+
+        internal static void EnqueueCriticalMainThreadCoalesced(string coalesceKey, Action action)
+        {
+            if (action == null || string.IsNullOrWhiteSpace(coalesceKey))
+                return;
+
+            bool isNewKey;
+            lock (CriticalMainThreadCoalesceSync)
+            {
+                isNewKey = !_criticalCoalescedActions.ContainsKey(coalesceKey);
+                if (isNewKey && _criticalCoalescedActions.Count >= MainThreadQueueMaxPendingCritical)
+                {
+                    LogMainThreadCoalescedDropRateLimited(coalesceKey, critical: true);
+                    return;
+                }
+                _criticalCoalescedActions[coalesceKey] = action;
+            }
+
+            if (isNewKey)
+                _criticalCoalescedKeys.Enqueue(coalesceKey);
+        }
+
+        private static void LogMainThreadCoalescedDropRateLimited(string key, bool critical)
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            var minTicks = System.Diagnostics.Stopwatch.Frequency * 5L;
+            var previous = Interlocked.Read(ref _lastMainThreadCoalescedDropLogTicks);
+            if (previous != 0 && now - previous < minTicks)
+                return;
+            if (Interlocked.CompareExchange(ref _lastMainThreadCoalescedDropLogTicks, now, previous) != previous)
+                return;
+
+            _log?.Warning(
+                "[NetMod] Rejected {Kind} coalesced main-thread work because its queue is full (key={Key})",
+                critical ? "critical" : "normal",
+                key);
         }
 
         internal static void ProcessMainThreadQueue()
@@ -200,20 +347,60 @@ namespace DeadCellsMultiplayerMod
             while (processed < MainThreadQueueMaxActionsPerPump)
             {
                 Action? action = null;
-                if (_mainThreadQueue.TryDequeue(out var direct))
+
+                if (_criticalCoalescedKeys.TryDequeue(out var criticalKey))
                 {
-                    action = direct;
-                }
-                else if (_coalescedKeys.TryDequeue(out var key))
-                {
-                    lock (MainThreadCoalesceSync)
+                    lock (CriticalMainThreadCoalesceSync)
                     {
-                        _coalescedActions.TryGetValue(key, out action);
-                        _coalescedActions.Remove(key);
+                        _criticalCoalescedActions.TryGetValue(criticalKey, out action);
+                        _criticalCoalescedActions.Remove(criticalKey);
                     }
                 }
                 else
-                    break;
+                {
+                    // Three fifths of the regular budget goes to protocol traffic. Direct and
+                    // coalesced work each receive a reserved turn so neither can starve forever.
+                    var phase = processed % 5;
+                    Action? networkAction;
+                    if (phase <= 2 && _networkMainThreadQueue.Reader.TryRead(out networkAction))
+                    {
+                        action = networkAction;
+                    }
+                    else if (phase == 3 && _mainThreadQueue.TryDequeue(out var directPreferred))
+                    {
+                        Interlocked.Decrement(ref _mainThreadDirectQueueCount);
+                        action = directPreferred;
+                    }
+                    else if (phase == 4 && _coalescedKeys.TryDequeue(out var preferredKey))
+                    {
+                        lock (MainThreadCoalesceSync)
+                        {
+                            _coalescedActions.TryGetValue(preferredKey, out action);
+                            _coalescedActions.Remove(preferredKey);
+                        }
+                    }
+                    else if (_networkMainThreadQueue.Reader.TryRead(out networkAction))
+                    {
+                        action = networkAction;
+                    }
+                    else if (_mainThreadQueue.TryDequeue(out var direct))
+                    {
+                        Interlocked.Decrement(ref _mainThreadDirectQueueCount);
+                        action = direct;
+                    }
+                    else if (_coalescedKeys.TryDequeue(out var key))
+                    {
+                        lock (MainThreadCoalesceSync)
+                        {
+                            _coalescedActions.TryGetValue(key, out action);
+                            _coalescedActions.Remove(key);
+                        }
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
 
                 if (action == null)
                     continue;
@@ -238,6 +425,7 @@ namespace DeadCellsMultiplayerMod
             }
             // The (re)started run's hero is up — the restart completed, so stop suppressing level reloads.
             ClearClientRestartPending();
+            SendRunReadyFromHero();
         }
 
         internal static void MarkClientRestartPending()
@@ -262,10 +450,13 @@ namespace DeadCellsMultiplayerMod
             lock (Sync)
             {
                 _role = role;
+                if (role == NetRole.None)
+                    ClearStructuredLaunchFlagsLocked();
             }
+            RunLaunchCoordinator.OnRoleChanged(previous, role);
             if (previous == NetRole.Client && role != NetRole.Client)
             {
-                EnqueueMainThread(() =>
+                EnqueueCriticalMainThreadCoalesced("game:restore-original-user", () =>
                 {
                     try
                     {
@@ -291,6 +482,260 @@ namespace DeadCellsMultiplayerMod
             return seed;
         }
 
+        /// <summary>
+        /// Commits one host launch to the wire. The monotonic sequence prevents a client entering
+        /// Boss Rush (or another nested launch mode) from accidentally reusing the previous run's
+        /// cached seed while the new SEED packet is still in flight.
+        /// </summary>
+        public static int RegisterHostRunSeed(int seed, string launchKind, string reason)
+        {
+            int sequence;
+            lock (Sync)
+            {
+                _serverSeed = seed;
+                sequence = _serverSeedSequence == int.MaxValue ? 1 : _serverSeedSequence + 1;
+                _serverSeedSequence = sequence;
+            }
+
+            _log?.Information(
+                "[NetMod] Registered host run seed seq={Sequence} seed={Seed} launch={LaunchKind} ({Reason})",
+                sequence,
+                seed,
+                launchKind ?? string.Empty,
+                reason);
+            return sequence;
+        }
+
+        internal static bool PrecommitInitialHostRunSeed(out int seed, out int sequence, out RunLaunchDescriptor? descriptor)
+        {
+            seed = 0;
+            sequence = 0;
+            descriptor = null;
+
+            var net = NetRef;
+            if (net == null || !net.IsAlive || !net.IsHost)
+                return false;
+
+            const string launchKind = "dc.LaunchMode+NewGame";
+
+            seed = ForceGenerateServerSeed("title.startNewGame_precommit");
+            sequence = RegisterHostRunSeed(seed, launchKind, "title.startNewGame_precommit");
+
+            lock (Sync)
+            {
+                _precommittedHostSeed = seed;
+                _precommittedHostSeedSequence = sequence;
+                _precommittedHostLaunchKind = launchKind;
+                _precommittedHostSeedExpiresAtTicks = Environment.TickCount64 + PrecommittedHostSeedTtlMs;
+            }
+
+            descriptor = BuildHostRunLaunchDescriptor(seed, sequence, launchKind);
+            net.SendRunLaunchCommit(descriptor, flush: true);
+
+            // The legacy seed packet remains during protocol migration, but clients no longer
+            // execute from it until the matching structured RUNEXEC has arrived.
+            // Send it before the host enters any
+            // first-run cinematic; User.newGame will reuse and resend this same sequence later.
+            net.SendSeed(sequence, seed, launchKind);
+            // The normal send is cached for late joiners. The bounded flush makes sure the
+            // connected client receives the launch packet before the title screen changes state.
+            net.SendControlAndFlush($"SEED|{sequence}|{seed}|{launchKind}", 500);
+            _log?.Information(
+                "[NetMod] Precommitted initial host run seq={Sequence} seed={Seed} launch={LaunchKind}",
+                sequence,
+                seed,
+                launchKind);
+            return true;
+        }
+
+        /// <summary>
+        /// Stages the Boss Rush seed before either game enters the native Boss Rush loader. The
+        /// BossRushDoor transition is already coordinated by LevelExitSync, so sending the
+        /// structured commit/execute before the door-ready state guarantees the client has the
+        /// authoritative seed waiting when its own User.newGame hook runs.
+        /// </summary>
+        internal static bool PrecommitHostBossRushRunSeed(
+            string bossRushType,
+            int doorCx,
+            int doorCy,
+            out int seed,
+            out int sequence)
+        {
+            const string launchKind = "dc.LaunchMode+BossRush";
+            seed = 0;
+            sequence = 0;
+
+            var net = NetRef;
+            if (net == null || !net.IsAlive || !net.IsHost)
+                return false;
+
+            lock (Sync)
+            {
+                var expired = _precommittedHostSeedExpiresAtTicks != 0 &&
+                              Environment.TickCount64 >= _precommittedHostSeedExpiresAtTicks;
+                if (expired)
+                    ClearPrecommittedHostRunSeedLocked();
+
+                if (_precommittedHostSeed.HasValue &&
+                    _precommittedHostSeedSequence > 0 &&
+                    GameDataSync.IsBossRushLaunchKind(_precommittedHostLaunchKind))
+                {
+                    seed = _precommittedHostSeed.Value;
+                    sequence = _precommittedHostSeedSequence;
+                }
+            }
+
+            if (sequence <= 0)
+            {
+                seed = ForceGenerateServerSeed("bossrush_door_precommit");
+                sequence = RegisterHostRunSeed(seed, launchKind, "bossrush_door_precommit");
+
+                lock (Sync)
+                {
+                    _precommittedHostSeed = seed;
+                    _precommittedHostSeedSequence = sequence;
+                    _precommittedHostLaunchKind = launchKind;
+                    _precommittedHostSeedExpiresAtTicks = Environment.TickCount64 + PrecommittedHostSeedTtlMs;
+                }
+            }
+
+            try
+            {
+                // Commit and execute before the synchronized door-ready packet. Steam/TCP preserve
+                // ordering, so the client receives this launch before it is told to activate the
+                // matching local BossRushDoor. The native Boss Rush variant read from the door
+                // (bossRushType) is carried so the client can validate it against its own door.
+                CommitHostRunLaunchFromHook(seed, sequence, launchKind, bossRushType);
+                net.SendSeed(sequence, seed, launchKind);
+                net.SendControlAndFlush($"SEED|{sequence}|{seed}|{launchKind}", 500);
+                _log?.Information(
+                    "[NetMod][BossRushSeed] Precommitted seq={Sequence} seed={Seed} type={BossRushType} door={DoorCx}:{DoorCy}",
+                    sequence,
+                    seed,
+                    string.IsNullOrWhiteSpace(bossRushType) ? "unknown" : bossRushType,
+                    doorCx,
+                    doorCy);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning(
+                    "[NetMod][BossRushSeed] Failed to precommit Boss Rush seed at door={DoorCx}:{DoorCy}: {Message}",
+                    doorCx,
+                    doorCy,
+                    ex.Message);
+                return false;
+            }
+        }
+
+        internal static bool HasPrecommittedHostBossRushLaunch()
+        {
+            lock (Sync)
+            {
+                var expired = _precommittedHostSeedExpiresAtTicks != 0 &&
+                              Environment.TickCount64 >= _precommittedHostSeedExpiresAtTicks;
+                if (expired)
+                    ClearPrecommittedHostRunSeedLocked();
+
+                return _precommittedHostSeed.HasValue &&
+                       _precommittedHostSeedSequence > 0 &&
+                       GameDataSync.IsBossRushLaunchKind(_precommittedHostLaunchKind);
+            }
+        }
+
+        internal static bool HasPendingRemoteBossRushLaunch()
+        {
+            var descriptor = RunLaunchCoordinator.GetCurrentRemoteDescriptor();
+            if (descriptor == null || !descriptor.BossRush)
+                return false;
+
+            lock (Sync)
+            {
+                return descriptor.Sequence > _consumedRemoteSeedSequence &&
+                       _remoteSeedSequence == descriptor.Sequence &&
+                       RunLaunchCoordinator.HasExecutableRemoteLaunch(descriptor.Sequence);
+            }
+        }
+
+        internal static bool TryGetPendingRemoteBossRushSeed(out int seed)
+        {
+            lock (Sync)
+            {
+                if (_remoteSeed.HasValue &&
+                    _remoteSeedSequence > _consumedRemoteSeedSequence &&
+                    GameDataSync.IsBossRushLaunchKind(_remoteLaunchKind))
+                {
+                    seed = _remoteSeed.Value;
+                    return true;
+                }
+            }
+
+            seed = 0;
+            return false;
+        }
+
+        internal static bool TryConsumePrecommittedHostRunSeed(
+            string launchKind,
+            out int seed,
+            out int sequence)
+        {
+            lock (Sync)
+            {
+                var expired = _precommittedHostSeedExpiresAtTicks != 0 &&
+                              Environment.TickCount64 >= _precommittedHostSeedExpiresAtTicks;
+                if (expired)
+                    ClearPrecommittedHostRunSeedLocked();
+
+                if (!_precommittedHostSeed.HasValue || _precommittedHostSeedSequence <= 0)
+                {
+                    seed = 0;
+                    sequence = 0;
+                    return false;
+                }
+
+                var requestedNewGame = !string.IsNullOrWhiteSpace(launchKind) &&
+                                       launchKind.Contains("NewGame", StringComparison.OrdinalIgnoreCase);
+                var stagedNewGame = !string.IsNullOrWhiteSpace(_precommittedHostLaunchKind) &&
+                                    _precommittedHostLaunchKind.Contains("NewGame", StringComparison.OrdinalIgnoreCase);
+                var requestedBossRush = GameDataSync.IsBossRushLaunchKind(launchKind);
+                var stagedBossRush = GameDataSync.IsBossRushLaunchKind(_precommittedHostLaunchKind);
+                if (!string.Equals(launchKind, _precommittedHostLaunchKind, StringComparison.Ordinal) &&
+                    !(requestedNewGame && stagedNewGame) &&
+                    !(requestedBossRush && stagedBossRush))
+                {
+                    seed = 0;
+                    sequence = 0;
+                    return false;
+                }
+
+                seed = _precommittedHostSeed.Value;
+                sequence = _precommittedHostSeedSequence;
+                ClearPrecommittedHostRunSeedLocked();
+                return true;
+            }
+        }
+
+        internal static void CancelPrecommittedHostRunSeed(string reason = "precommitted_launch_cancelled")
+        {
+            int sequence;
+            lock (Sync)
+            {
+                sequence = _precommittedHostSeedSequence;
+                ClearPrecommittedHostRunSeedLocked();
+            }
+
+            if (sequence > 0)
+                CancelHostStructuredLaunch(sequence, reason);
+        }
+
+        private static void ClearPrecommittedHostRunSeedLocked()
+        {
+            _precommittedHostSeed = null;
+            _precommittedHostSeedSequence = 0;
+            _precommittedHostLaunchKind = string.Empty;
+            _precommittedHostSeedExpiresAtTicks = 0;
+        }
+
         public static bool TryGetHostRunSeed(out int seed)
         {
             lock (Sync)
@@ -306,38 +751,140 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        public static void ReceiveHostRunSeed(int seed)
+        public static bool TryGetKnownSeed(out int seed)
         {
-            int? previousSeed = null;
-            bool restartClientWorldNow = false;
             lock (Sync)
             {
-                previousSeed = _remoteSeed;
+                if (_serverSeed.HasValue)
+                {
+                    seed = _serverSeed.Value;
+                    return true;
+                }
+                if (_remoteSeed.HasValue)
+                {
+                    seed = _remoteSeed.Value;
+                    return true;
+                }
+            }
+
+            seed = 0;
+            return false;
+        }
+
+        public static void ReceiveHostRunSeed(int sequence, int seed, string launchKind)
+        {
+            var scheduleInRunReconcile = false;
+            lock (Sync)
+            {
+                if (sequence <= 0)
+                    return;
+
+                if (sequence < _remoteSeedSequence)
+                    return;
+
+                if (sequence == _remoteSeedSequence)
+                {
+                    if (_remoteSeed == seed)
+                        Monitor.PulseAll(Sync);
+                    return;
+                }
+
                 _remoteSeed = seed;
+                _remoteSeedSequence = sequence;
+                _remoteLaunchKind = launchKind ?? string.Empty;
                 if (_role == NetRole.Client)
                 {
-                    var firstSeedForClient = !previousSeed.HasValue;
-                    var seedChanged = previousSeed.HasValue && previousSeed.Value != seed;
+                    // A Boss Rush seed must only be consumed by the client's own Boss Rush launch
+                    // hook. Force-restarting the run on it (the reconcile path) was the historical
+                    // double-load race, and auto-starting a fresh full run from it would launch
+                    // the wrong mode entirely.
+                    var isBossRushSeed = GameDataSync.IsBossRushLaunchKind(launchKind);
                     if (_inActualRun)
                     {
-                        if (firstSeedForClient || seedChanged)
-                        {
-                            _inActualRun = false;
-                            _pendingAutoStart = false;
-                            _autoStartTriggered = false;
-                            restartClientWorldNow = true;
-                        }
+                        // A nested launch hook (Boss Rush, challenge, daily, etc.) consumes this
+                        // sequence directly. If no hook consumes it within a short grace window,
+                        // treat it as a host restart/late-join recovery and rebuild from the seed.
+                        scheduleInRunReconcile = sequence > _consumedRemoteSeedSequence && !isBossRushSeed;
                     }
                     else
                     {
                         _seedArrived = true;
-                        _pendingAutoStart = true;
+                        if (!isBossRushSeed && CanAutoStartStructuredClientLaunchLocked())
+                            _pendingAutoStart = true;
                     }
                 }
+                Monitor.PulseAll(Sync);
             }
-            _log?.Information("[NetMod] Client received host seed {Seed}", seed);
-            if (restartClientWorldNow)
-                QueueClientRestartFromHostSeed(seed, "host_restart");
+            _log?.Information(
+                "[NetMod] Client received host run seed seq={Sequence} seed={Seed} launch={LaunchKind}",
+                sequence,
+                seed,
+                launchKind ?? string.Empty);
+
+            if (scheduleInRunReconcile)
+                ScheduleClientRunSeedReconcile(sequence, seed);
+        }
+
+        private static void ScheduleClientRunSeedReconcile(int sequence, int seed)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(RunSeedTransitionGraceMs).ConfigureAwait(false);
+                EnqueueCriticalMainThreadCoalesced("game:run-seed-reconcile", () =>
+                {
+                    var shouldRestart = false;
+                    lock (Sync)
+                    {
+                        if (_role == NetRole.Client &&
+                            _inActualRun &&
+                            _remoteSeedSequence == sequence &&
+                            _consumedRemoteSeedSequence < sequence)
+                        {
+                            _inActualRun = false;
+                            _pendingAutoStart = false;
+                            _autoStartTriggered = false;
+                            shouldRestart = true;
+                        }
+                    }
+
+                    if (shouldRestart)
+                        QueueClientRestartFromHostSeed(seed, $"unconsumed_host_launch_seq_{sequence}");
+                });
+            });
+        }
+
+        /// <summary>
+        /// Waits for and consumes exactly one not-yet-used host launch seed. Network receive runs on
+        /// a background thread, so the game launch hook can safely form a short deterministic barrier.
+        /// </summary>
+        public static bool TryConsumeNextRemoteRunSeed(out int seed, out int sequence, out string launchKind)
+        {
+            if (RunLaunchCoordinator.TryConsumeRemoteLaunch(
+                    RemoteRunSeedWaitMs,
+                    out var descriptor,
+                    out var error) &&
+                descriptor != null)
+            {
+                seed = descriptor.RunSeed;
+                sequence = descriptor.Sequence;
+                launchKind = descriptor.LaunchKind;
+                lock (Sync)
+                {
+                    _remoteSeed = seed;
+                    _remoteSeedSequence = sequence;
+                    _remoteLaunchKind = launchKind;
+                    _consumedRemoteSeedSequence = sequence;
+                    _seedArrived = true;
+                    Monitor.PulseAll(Sync);
+                }
+                return true;
+            }
+
+            _log?.Error("[NetMod][RunLaunch] {Error}", error);
+            seed = 0;
+            sequence = 0;
+            launchKind = string.Empty;
+            return false;
         }
 
         internal static void QueueHostRestartFromDeath(string reason)
@@ -352,7 +899,7 @@ namespace DeadCellsMultiplayerMod
                 _deathRestartCooldownUntil = now.AddMilliseconds(DeathRestartCooldownMs);
             }
 
-            EnqueueMainThread(() =>
+            EnqueueCriticalMainThreadCoalesced("game:host-restart", () =>
             {
                 ModEntry.ResetDownedPlayersForRestart();
 
@@ -389,7 +936,7 @@ namespace DeadCellsMultiplayerMod
             // Set synchronously (before the queued action runs) so any level graph that arrives in the
             // meantime is prevented from firing an in-place reload that would pre-empt this full restart.
             MarkClientRestartPending();
-            EnqueueMainThread(() =>
+            EnqueueCriticalMainThreadCoalesced("game:client-restart", () =>
             {
                 ModEntry.ResetDownedPlayersForRestart();
 
@@ -468,9 +1015,10 @@ namespace DeadCellsMultiplayerMod
                 previous = _remoteUsername;
                 _remoteUsername = cleaned;
             }
-            _log?.Information("[NetMod] Received remote username {Username}", cleaned);
-            if (_role == NetRole.Host &&
-                !string.Equals(previous, cleaned, StringComparison.Ordinal))
+            var changed = !string.Equals(previous, cleaned, StringComparison.Ordinal);
+            if (changed)
+                _log?.Information("[NetMod] Received remote username {Username}", cleaned);
+            if (_role == NetRole.Host && changed)
             {
                 var userForMsg = cleaned;
                 EnqueueMainThread(() =>
@@ -524,6 +1072,7 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             bool shouldStart = false;
+            int autoStartQueuedSequence = 0;
 
             lock (Sync)
             {
@@ -531,10 +1080,12 @@ namespace DeadCellsMultiplayerMod
                     !_inActualRun &&
                     _pendingAutoStart &&
                     _seedArrived &&
+                    CanAutoStartStructuredClientLaunchLocked() &&
                     !_autoStartTriggered)
                 {
                     _autoStartTriggered = true;
                     shouldStart = true;
+                    autoStartQueuedSequence = _structuredLaunchExecuteSequence;
                 }
             }
 
@@ -580,6 +1131,9 @@ namespace DeadCellsMultiplayerMod
                         mutex?.Dispose();
                     }
                     _log?.Information("[NetMod] Auto-started new game after seed");
+                    // Protocol 17 correction: only now that the client has actually invoked the native
+                    // new game do we confirm RUNQUEUED to the host (which is held until this arrives).
+                    NotifyClientLaunchQueued(autoStartQueuedSequence);
                 }
                 catch (IOException ioEx)
                 {
@@ -625,30 +1179,38 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowMultiplayerMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 0;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("Host game"), () => ShowHostTransportMenu(screen), GetText.Instance.GetString("Create a multiplayer session"));
-            AddMenuButton(screen, GetText.Instance.GetString("Join game"), () => ShowJoinTransportMenu(screen), GetText.Instance.GetString("Connect to an existing host"));
+            AddInfoLine(screen, GetText.Instance.GetString("Co-op"), 0xFFE48A);
+            AddMenuButton(screen, GetText.Instance.GetString("Host room"), () => ShowHostTransportMenu(screen), GetText.Instance.GetString("Create a Steam or IP/VPN room"));
+            AddMenuButton(screen, GetText.Instance.GetString("Join room"), () => ShowJoinTransportMenu(screen), GetText.Instance.GetString("Join with Steam invite/lobby code or IP"));
+            AddMenuButton(screen, GetMultiplayerSaveButtonLabel(), () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
             AddMenuButton(screen, GetText.Instance.GetString("Back"), () => screen.mainMenu(), GetText.Instance.GetString("Return to main menu"));
         }
 
         private static void ShowHostTransportMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 0;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("LAN"), () => ShowLanConnectionMenu(screen, NetRole.Host), GetText.Instance.GetString("Use direct IP/port hosting"));
-            AddMenuButton(screen, GetText.Instance.GetString("Steam"), () => NativeStartSteamHost(screen), GetText.Instance.GetString("Create Steam lobby and start immediately"));
+            AddInfoLine(screen, GetText.Instance.GetString("Host room"), 0xFFE48A);
+            AddMenuButton(screen, GetText.Instance.GetString("Steam friends lobby"), () => NativeStartSteamHost(screen), GetText.Instance.GetString("Create Steam lobby and invite friends"));
+            AddMenuButton(screen, GetText.Instance.GetString("IP / VPN lobby"), () => ShowLanConnectionMenu(screen, NetRole.Host), GetText.Instance.GetString("Hamachi, Radmin, ZeroTier, LAN or port forward"));
             AddMenuButton(screen, GetText.Instance.GetString("Back"), () => ShowMultiplayerMenu(screen), GetText.Instance.GetString("Back to multiplayer menu"));
         }
 
         private static void ShowJoinTransportMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 0;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("LAN"), () => ShowLanConnectionMenu(screen, NetRole.Client), GetText.Instance.GetString("Connect by IP/port"));
-            AddMenuButton(screen, GetText.Instance.GetString("Steam"), () => NativeStartSteamJoin(screen), GetText.Instance.GetString("Connect by Steam lobby id/code from clipboard"));
+            AddInfoLine(screen, GetText.Instance.GetString("Join room"), 0xFFE48A);
+            AddMenuButton(screen, GetText.Instance.GetString("Join Steam invite/code"), () => NativeStartSteamJoin(screen), GetText.Instance.GetString("Use lobby code from clipboard or accepted Steam invite"));
+            AddMenuButton(screen, GetText.Instance.GetString("Join IP / VPN"), () => ShowLanConnectionMenu(screen, NetRole.Client), GetText.Instance.GetString("Connect by Hamachi/Radmin/ZeroTier/IP"));
             AddMenuButton(screen, GetText.Instance.GetString("Back"), () => ShowMultiplayerMenu(screen), GetText.Instance.GetString("Back to multiplayer menu"));
         }
 
         private static void ShowLanConnectionMenu(TitleScreen screen, NetRole role)
         {
+            _roomStatusMenuKind = 0;
             _menuSelection = role;
             _menuTransport = ConnectionTransport.Lan;
             if (role == NetRole.Client)
@@ -715,22 +1277,36 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowHostStatusMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 1;
             screen.clearMenu();
-            AddMenuButton(screen, GetText.Instance.GetString("Play"), () => StartHostRun(screen), GetText.Instance.GetString("Launch game"));
+            AddInfoLine(screen, BuildRoomSummaryLine(), 0xFFE48A);
+            AddInfoLine(screen, BuildFriendSummaryLine(), NetRef != null && NetRef.HasRemote ? 0xA6FF8A : 0xE0E0E0);
+            AddMenuButton(screen, GetText.Instance.GetString("Start run for everyone"), () => StartHostRun(screen), GetText.Instance.GetString("Launch the synced co-op run"));
+            AddMenuButton(screen, GetText.Instance.GetString("Refresh room"), () => ShowHostStatusMenu(screen), GetText.Instance.GetString("Refresh lobby status"));
             AddMenuButton(screen, GetMultiplayerSaveButtonLabel(), () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
-            AddMenuButton(screen, GetText.Instance.GetString("Back"), () =>
+            if (_menuTransport == ConnectionTransport.Steam)
+            {
+                AddMenuButton(screen, GetText.Instance.GetString("Invite Steam friends"), () => OpenSteamInviteOverlayFromMenu(screen), GetText.Instance.GetString("Open Steam friend invite overlay"));
+                AddMenuButton(screen, GetText.Instance.GetString("Copy Steam room code"), () => { TryCopySteamLobbyCodeFromUi(); ShowHostStatusMenu(screen); }, GetText.Instance.GetString("Copy lobby code for friend"));
+            }
+            AddMenuButton(screen, GetText.Instance.GetString("Stop hosting"), () =>
             {
                 StopNetworkFromMenu();
                 SetRole(NetRole.None);
                 _menuSelection = NetRole.None;
                 ShowMultiplayerMenu(screen);
                 screen.ShouldAutoHideConnectionUI(false);
-            }, GetText.Instance.GetString("Back to host setup"));
+            }, GetText.Instance.GetString("Close room and go back"));
         }
 
         private static void ShowClientWaitingMenu(TitleScreen screen)
         {
+            _roomStatusMenuKind = 2;
             screen.clearMenu();
+            AddInfoLine(screen, BuildRoomSummaryLine(), 0xFFE48A);
+            AddInfoLine(screen, BuildFriendSummaryLine(), NetRef != null && NetRef.HasRemote ? 0xA6FF8A : 0xE0E0E0);
+            AddInfoLine(screen, GetText.Instance.GetString("Waiting for host to start..."), 0xE0E0E0);
+            AddMenuButton(screen, GetText.Instance.GetString("Refresh room"), () => ShowClientWaitingMenu(screen), GetText.Instance.GetString("Refresh lobby status"));
             AddMenuButton(screen, GetText.Instance.GetString("Disconnect"), () =>
             {
                 StopNetworkFromMenu();
@@ -742,6 +1318,66 @@ namespace DeadCellsMultiplayerMod
                 screen.ShouldAutoHideConnectionUI(false);
             }, GetText.Instance.GetString("Disconnect and return to main menu"));
             AddMenuButton(screen, GetMultiplayerSaveButtonLabel(), () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
+        }
+
+
+
+        public static void RefreshRoomStatusMenuIfVisible()
+        {
+            if (_roomStatusMenuKind == 0)
+                return;
+            if ((DateTime.UtcNow - _lastRoomStatusAutoRefresh).TotalSeconds < 1.0)
+                return;
+            _lastRoomStatusAutoRefresh = DateTime.UtcNow;
+
+            EnqueueMainThreadCoalesced("ui:auto-refresh-room-status", () =>
+            {
+                var screen = GetTitleScreen();
+                if (screen == null)
+                    return;
+                if (_roomStatusMenuKind == 1)
+                    ShowHostStatusMenu(screen);
+                else if (_roomStatusMenuKind == 2)
+                    ShowClientWaitingMenu(screen);
+            });
+        }
+
+
+        private static void OpenSteamInviteOverlayFromMenu(TitleScreen screen)
+        {
+            if (_steamLobbyId == 0UL)
+            {
+                AddInfoLine(screen, GetText.Instance.GetString("No Steam room yet."), 0xFF9090);
+                return;
+            }
+            if (!SteamConnect.TryOpenInviteOverlay(_steamLobbyId, out var error))
+                _log?.Warning("[NetMod][Steam] Invite overlay failed: {Error}", error);
+            ShowHostStatusMenu(screen);
+        }
+
+        private static string BuildRoomSummaryLine()
+        {
+            var transport = _menuTransport == ConnectionTransport.Steam ? "Steam" : "IP/VPN";
+            var role = _role == NetRole.Host ? "Host" : _role == NetRole.Client ? "Client" : _menuSelection == NetRole.Host ? "Host" : _menuSelection == NetRole.Client ? "Client" : "Room";
+            var code = _menuTransport == ConnectionTransport.Steam ? GetSteamLobbyCodeForUi() : $"{_mpIp}:{_mpPort}";
+            if (string.IsNullOrWhiteSpace(code))
+                code = _menuTransport == ConnectionTransport.Steam ? "creating..." : $"{_mpIp}:{_mpPort}";
+            return $"{transport} {role}  |  {code}";
+        }
+
+        private static string BuildFriendSummaryLine()
+        {
+            var net = NetRef;
+            if (net == null || !net.IsAlive)
+                return "Not connected";
+            if (!net.HasRemote)
+                return net.IsHost ? "Waiting for friend..." : "Connecting to host...";
+            var name = string.IsNullOrWhiteSpace(_remoteUsername) || string.Equals(_remoteUsername, "guest", StringComparison.OrdinalIgnoreCase)
+                ? "friend"
+                : _remoteUsername.Trim();
+            if (net.IsHost)
+                return $"Same lobby: yes  |  Friend: {name}";
+            return $"Same lobby: yes  |  Host: {name}";
         }
 
         private static void ShowConnectionErrorPopup(TitleScreen screen, string title, string details, Action onOk)
@@ -821,6 +1457,7 @@ namespace DeadCellsMultiplayerMod
         private static void NativeStartSteamJoin(TitleScreen screen)
         {
             _steamJoinLobbyResolvePending = true;
+            var joinGeneration = Interlocked.Increment(ref _steamJoinResolveGeneration);
             _waitingForHost = true;
             _clientConnecting = true;
             ShowClientWaitingMenu(screen);
@@ -830,7 +1467,12 @@ namespace DeadCellsMultiplayerMod
             _ = Task.Run(() =>
             {
                 var ok = SteamConnect.TryResolveJoinEndpointFromClipboard(out var join);
-                EnqueueMainThread(() => ApplySteamJoinResult(screen, ok, join, fromOverlay: false));
+                EnqueueMainThreadCoalesced("steam:join-result", () =>
+                {
+                    if (joinGeneration != Volatile.Read(ref _steamJoinResolveGeneration) || !_steamJoinLobbyResolvePending)
+                        return;
+                    ApplySteamJoinResult(screen, ok, join, fromOverlay: false);
+                });
             });
         }
 
@@ -919,6 +1561,7 @@ namespace DeadCellsMultiplayerMod
             ApplySteamPersonaUsername();
 
             _steamJoinLobbyResolvePending = true;
+            var joinGeneration = Interlocked.Increment(ref _steamJoinResolveGeneration);
             _waitingForHost = true;
             _clientConnecting = true;
             ShowClientWaitingMenu(screen);
@@ -928,7 +1571,12 @@ namespace DeadCellsMultiplayerMod
             {
                 _log?.Information("[NetMod][Steam] Overlay join resolving lobby (lobbyId={LobbyId})", lobbyId);
                 var ok = SteamConnect.TryResolveJoinEndpointFromLobbyId(lobbyId, out var join);
-                EnqueueMainThread(() => ApplySteamJoinResult(screen, ok, join, fromOverlay: true));
+                EnqueueMainThreadCoalesced("steam:join-result", () =>
+                {
+                    if (joinGeneration != Volatile.Read(ref _steamJoinResolveGeneration) || !_steamJoinLobbyResolvePending)
+                        return;
+                    ApplySteamJoinResult(screen, ok, join, fromOverlay: true);
+                });
             });
         }
 
@@ -947,6 +1595,31 @@ namespace DeadCellsMultiplayerMod
             SendUsernameToRemote();
         }
 
+        private static bool _steamUnavailableNotified;
+
+        /// <summary>
+        /// True only when the Steam transport is both selected AND usable. Without a working
+        /// Steam client the lobby path can never connect, so the menu quietly falls back to the
+        /// direct IP/LAN transport instead of failing with an obscure lobby error.
+        /// </summary>
+        private static bool ShouldUseSteamTransport()
+        {
+            if (_menuTransport != ConnectionTransport.Steam)
+                return false;
+
+            if (ModEntry.IsSteamAvailable)
+                return true;
+
+            if (!_steamUnavailableNotified)
+            {
+                _steamUnavailableNotified = true;
+                _log?.Warning("[NetMod] Steam transport unavailable; using direct IP/LAN transport instead");
+                MultiplayerUI.PushSystemMessage(Localize("Steam unavailable - using direct IP/LAN instead."));
+            }
+
+            return false;
+        }
+
         private static void StartNetwork(NetRole role, TitleScreen screen)
         {
             try
@@ -959,23 +1632,16 @@ namespace DeadCellsMultiplayerMod
 
                 if (role == NetRole.Host)
                 {
-                    if (_menuTransport == ConnectionTransport.Steam)
+                    if (ShouldUseSteamTransport())
                         ModEntry.Instance.StartSteamHostFromMenu(_mpPort);
                     else
                         ModEntry.Instance.StartHostFromMenu(_mpIp, _mpPort);
                     _waitingForHost = false;
-                    try
-                    {
-                        screen.startNewGame(custom: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log?.Warning("[NetMod] Failed to start host run: {Message}", ex.Message);
-                    }
+                    StartHostRun(screen);
                 }
                 else if (role == NetRole.Client)
                 {
-                    if (_menuTransport == ConnectionTransport.Steam)
+                    if (ShouldUseSteamTransport())
                     {
                         if (_steamHostSteamId == 0UL)
                         {
@@ -996,12 +1662,13 @@ namespace DeadCellsMultiplayerMod
                         _pendingAutoStart = false;
                         _autoStartTriggered = false;
                         _seedArrived = false;
+                        ClearStructuredLaunchFlagsLocked();
                         _clientConnectAttempt = 0;
                         _clientConnecting = true;
                         _waitingForHost = true;
                     }
 
-                    if (_menuTransport == ConnectionTransport.Steam)
+                    if (ShouldUseSteamTransport())
                         ModEntry.Instance.StartSteamClientFromMenu(_steamHostSteamId);
                     else
                         ModEntry.Instance.StartClientFromMenu(_mpIp, _mpPort);
@@ -1029,7 +1696,7 @@ namespace DeadCellsMultiplayerMod
                     return;
                 }
 
-                if (_menuTransport == ConnectionTransport.Steam)
+                if (ShouldUseSteamTransport())
                 {
                     ModEntry.Instance.StartSteamHostFromMenu(_mpPort);
                 }
@@ -1049,14 +1716,32 @@ namespace DeadCellsMultiplayerMod
 
         private static void StartHostRun(TitleScreen screen)
         {
-            StartHostServerOnly();
-            try
+            lock (Sync)
             {
-                screen.startNewGame(custom: false);
+                if (_initialHostLaunchPendingSequence > 0)
+                {
+                    MultiplayerUI.PushSystemMessage(Localize("The co-op run is already starting."));
+                    return;
+                }
             }
-            catch (Exception ex)
+
+            StartHostServerOnly();
+            var precommitted = PrecommitInitialHostRunSeed(out _, out var sequence, out var descriptor);
+            if (!precommitted || descriptor == null)
             {
-                _log?.Warning("[NetMod] Failed to start host run: {Message}", ex.Message);
+                _log?.Warning("[NetMod][RunLaunch] Could not prepare the host launch descriptor");
+                MultiplayerUI.PushSystemMessage(Localize("Could not prepare the co-op run launch."));
+                return;
+            }
+
+            if (!TryBeginInitialHostLaunch(screen, descriptor, out var beginError))
+            {
+                CancelPrecommittedHostRunSeed("initial_launch_begin_failed");
+                _log?.Warning(
+                    "[NetMod][RunLaunch] Could not begin initial launch seq={Sequence}: {Error}",
+                    sequence,
+                    beginError);
+                MultiplayerUI.PushSystemMessage(Localize("Could not prepare the co-op run launch."));
             }
         }
 

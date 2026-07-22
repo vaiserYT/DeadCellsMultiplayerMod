@@ -1,11 +1,17 @@
 using Steamworks;
 using DeadCellsMultiplayerMod.Tools;
+using System.Threading;
 
 
 namespace DeadCellsMultiplayerMod
 {
     public partial class ModEntry
     {
+        private static readonly object s_steamCallbackPumpLock = new();
+        private static int s_steamCallbackShutdown;
+        private static bool s_steamProcessExitHookInstalled;
+        private static bool s_steamMainThreadPumpLogged;
+
         private static void TryParseConnectLobbyFromCommandLine()
         {
             var args = Environment.GetCommandLineArgs();
@@ -29,32 +35,65 @@ namespace DeadCellsMultiplayerMod
             {
                 s_steamOverlayCallbackPending = false;
                 Instance?.Logger.Warning("[NetMod] Steam overlay join callback registration gave up after {Count} retries", SteamOverlayCallbackMaxRetries);
+                MarkSteamUnavailable($"overlay callbacks never registered after {SteamOverlayCallbackMaxRetries} retries");
                 return;
             }
             s_steamOverlayCallbackRetryCount++;
             var shouldLogFailure = s_steamOverlayCallbackRetryCount == 1 || s_steamOverlayCallbackRetryCount % 60 == 0;
-            if (!TryEnsureSteamApiInitialized($"callback registration attempt {s_steamOverlayCallbackRetryCount}", shouldLogFailure))
+            var initialized = TryEnsureSteamApiInitialized(
+                $"callback registration attempt {s_steamOverlayCallbackRetryCount}",
+                shouldLogFailure);
+
+            if (!initialized && s_steamUnavailable)
             {
-                if (shouldLogFailure)
-                    Instance?.Logger.Debug("[NetMod] Steam overlay: SteamAPI.Init()=false (attempt {Attempt}). Trying callback without Init (game may have Steam).", s_steamOverlayCallbackRetryCount);
-                s_steamOverlayJoinCallback = Callback<GameLobbyJoinRequested_t>.Create(OnGameLobbyJoinRequested);
-                s_steamRichPresenceJoinCallback = Callback<GameRichPresenceJoinRequested_t>.Create(OnGameRichPresenceJoinRequested);
+                // Positively known to be unusable — stop retrying. LAN/direct IP is unaffected.
                 s_steamOverlayCallbackPending = false;
-                StartSteamCallbackPumpTimer();
-                Instance?.Logger.Information("[NetMod] Steam overlay join callbacks registered (game had Steam initialized)");
                 return;
             }
-            s_steamOverlayJoinCallback = Callback<GameLobbyJoinRequested_t>.Create(OnGameLobbyJoinRequested);
-            s_steamRichPresenceJoinCallback = Callback<GameRichPresenceJoinRequested_t>.Create(OnGameRichPresenceJoinRequested);
+
+            if (!initialized && shouldLogFailure)
+            {
+                Instance?.Logger.Debug(
+                    "[NetMod] Steam overlay: SteamAPI.Init()=false (attempt {Attempt}). Trying callback without Init (game may have Steam).",
+                    s_steamOverlayCallbackRetryCount);
+            }
+
+            try
+            {
+                // Callback<T>.Create throws when Steamworks was never initialized, which is the
+                // normal state on a machine with no Steam client. Treat that as "Steam features
+                // off" rather than letting it escape into the per-frame update path.
+                s_steamOverlayJoinCallback = Callback<GameLobbyJoinRequested_t>.Create(OnGameLobbyJoinRequested);
+                s_steamRichPresenceJoinCallback = Callback<GameRichPresenceJoinRequested_t>.Create(OnGameRichPresenceJoinRequested);
+            }
+            catch (Exception ex)
+            {
+                s_steamOverlayJoinCallback = null;
+                s_steamRichPresenceJoinCallback = null;
+                s_steamOverlayCallbackPending = false;
+                MarkSteamUnavailable($"overlay callback registration threw: {ex.GetType().Name}");
+                return;
+            }
+
             s_steamOverlayCallbackPending = false;
             StartSteamCallbackPumpTimer();
-            Instance?.Logger.Information("[NetMod] Steam overlay join callbacks registered (attempt {Attempt})", s_steamOverlayCallbackRetryCount);
+            Instance?.Logger.Information(
+                "[NetMod] Steam overlay join callbacks registered (attempt {Attempt}, steamInitialized={Initialized})",
+                s_steamOverlayCallbackRetryCount,
+                initialized);
         }
 
         private static void WriteOverlayJoinDiagnostic(string callbackType, string data)
         {
-            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "dccm_overlay_join_fired.txt");
-            System.IO.File.WriteAllText(path, $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}Z | {callbackType} | {data}");
+            try
+            {
+                var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "dccm_overlay_join_fired.txt");
+                System.IO.File.WriteAllText(path, $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}Z | {callbackType} | {data}");
+            }
+            catch
+            {
+                // Diagnostics must never abort a Steam callback or join request.
+            }
         }
 
         private static void OnGameLobbyJoinRequested(GameLobbyJoinRequested_t data)
@@ -120,9 +159,31 @@ namespace DeadCellsMultiplayerMod
             return 0UL;
         }
 
-        private static void TryRunSteamCallbacks()
+        internal static bool TryRunSteamCallbacksSerialized()
         {
-            SteamAPI.RunCallbacks();
+            if (Volatile.Read(ref s_steamCallbackShutdown) != 0 ||
+                Environment.HasShutdownStarted ||
+                AppDomain.CurrentDomain.IsFinalizingForUnload())
+            {
+                return false;
+            }
+            if (!Monitor.TryEnter(s_steamCallbackPumpLock))
+                return false;
+
+            try
+            {
+                SteamAPI.RunCallbacks();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Instance?.Logger.Debug("[NetMod][Steam] Steam callback pump skipped after error: {Message}", ex.Message);
+                return false;
+            }
+            finally
+            {
+                Monitor.Exit(s_steamCallbackPumpLock);
+            }
         }
 
         /// <summary>
@@ -131,7 +192,7 @@ namespace DeadCellsMultiplayerMod
         internal static void PumpSteamCallbacksForOverlay()
         {
             var callbacksStart = RuntimeHitchWatch.Start();
-            TryRunSteamCallbacks();
+            TryRunSteamCallbacksSerialized();
             var callbacksMs = RuntimeHitchWatch.GetElapsedMilliseconds(callbacksStart);
             if (callbacksMs >= RuntimeHitchWatch.InteractionSlowThresholdMs)
             {
@@ -160,17 +221,58 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        internal static bool EnsureSteamApiForNetworking(string source)
+        {
+            return TryEnsureSteamApiInitialized(source, logFailure: true);
+        }
+
+        internal static T RunSteamNetworkingSerialized<T>(Func<T> action)
+        {
+            if (action == null)
+                throw new ArgumentNullException(nameof(action));
+
+            lock (s_steamCallbackPumpLock)
+                return action();
+        }
+
+        internal static void RunSteamNetworkingSerialized(Action action)
+        {
+            if (action == null)
+                return;
+
+            lock (s_steamCallbackPumpLock)
+                action();
+        }
+
         private static bool TryEnsureSteamApiInitialized(string source, bool logFailure)
         {
             if (s_steamApiReady)
                 return true;
 
-            SteamConnect.PrepareSteamNativePathForRuntime();
-            if (SteamAPI.Init())
+            if (s_steamUnavailable)
+                return false;
+
+            try
             {
-                s_steamApiReady = true;
-                Instance?.Logger.Information("[NetMod][Steam] SteamAPI.Init succeeded ({Source})", source);
-                return true;
+                SteamConnect.PrepareSteamNativePathForRuntime();
+                lock (s_steamCallbackPumpLock)
+                {
+                    if (s_steamApiReady)
+                        return true;
+                    if (SteamAPI.Init())
+                    {
+                        s_steamApiReady = true;
+                        Instance?.Logger.Information("[NetMod][Steam] SteamAPI.Init succeeded ({Source})", source);
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // No steam_api64.dll, no running Steam client, or a non-Steam install: Init can
+                // THROW here rather than return false. That must never escape into the game loop.
+                MarkSteamUnavailable($"SteamAPI.Init threw: {ex.GetType().Name}");
+                return false;
             }
 
             if (logFailure)
@@ -226,14 +328,54 @@ namespace DeadCellsMultiplayerMod
         /// </summary>
         private static void StartSteamCallbackPumpTimer()
         {
-            if (s_steamCallbackPumpTimer != null)
+            if (Volatile.Read(ref s_steamCallbackShutdown) != 0)
                 return;
-            s_steamCallbackPumpTimer = new Timer(
-                _ => SteamAPI.RunCallbacks(),
-                null,
-                TimeSpan.FromMilliseconds(100),
-                TimeSpan.FromMilliseconds(100));
-            Instance?.Logger.Debug("[NetMod] Steam callback pump timer started");
+
+            EnsureSteamProcessExitHook();
+
+            // Never call SteamAPI.RunCallbacks from a ThreadPool timer. Dead Cells can invalidate its
+            // Steam pipe during level/main-menu teardown while that timer is still alive; the native
+            // ManualDispatch call then raises an uncatchable 0xC0000005. Boot/Hero/menu hooks already
+            // pump callbacks every game frame on the main thread, which is both sufficient and safe.
+            var staleTimer = Interlocked.Exchange(ref s_steamCallbackPumpTimer, null);
+            try { staleTimer?.Dispose(); } catch { }
+
+            if (!s_steamMainThreadPumpLogged)
+            {
+                s_steamMainThreadPumpLogged = true;
+                Instance?.Logger.Information("[NetMod][Steam] Callback pump uses main-thread hooks only");
+            }
+        }
+
+        private static void EnsureSteamProcessExitHook()
+        {
+            if (s_steamProcessExitHookInstalled)
+                return;
+            lock (s_steamCallbackPumpLock)
+            {
+                if (s_steamProcessExitHookInstalled)
+                    return;
+                AppDomain.CurrentDomain.ProcessExit += OnSteamProcessExit;
+                s_steamProcessExitHookInstalled = true;
+            }
+        }
+
+        private static void OnSteamProcessExit(object? sender, EventArgs e)
+        {
+            Interlocked.Exchange(ref s_steamCallbackShutdown, 1);
+            var timer = Interlocked.Exchange(ref s_steamCallbackPumpTimer, null);
+            try { timer?.Dispose(); } catch { }
+
+            // Do not dispose callback wrappers while another timer/game-thread pump is inside
+            // SteamAPI.RunCallbacks. That shutdown race can execute managed callback code after
+            // the runtime has started tearing down.
+            lock (s_steamCallbackPumpLock)
+            {
+                try { s_steamOverlayJoinCallback?.Dispose(); } catch { }
+                try { s_steamRichPresenceJoinCallback?.Dispose(); } catch { }
+                s_steamOverlayJoinCallback = null;
+                s_steamRichPresenceJoinCallback = null;
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using dc.pr;
 using ModCore.Utilities;
 using dc.tool;
@@ -11,6 +12,14 @@ namespace DeadCellsMultiplayerMod
 {
     public partial class ModEntry
     {
+        private long _ignoreRemoteCombatUntilTicks;
+
+        private bool IsRemoteCombatGraceActive()
+        {
+            return _ignoreRemoteCombatUntilTicks != 0 &&
+                   Stopwatch.GetTimestamp() < _ignoreRemoteCombatUntilTicks;
+        }
+
         private void UpdateGhostHeads()
         {
             var hitchStart = RuntimeHitchWatch.Start();
@@ -476,6 +485,11 @@ namespace DeadCellsMultiplayerMod
             var ghost = _ghost;
             if (net == null || me == null || ghost == null) return;
 
+            // Buffer snapshots while native code replaces or resumes the display tree. Creating a
+            // GhostKing in this window can attach it to the outgoing level and break the return path.
+            if (IsRemoteKingTransitionActive || IsRemoteKingCreationBlocked)
+                return;
+
             if (!net.TryConsumeRemoteSnapshot(out var remotes))
                 return;
 
@@ -552,11 +566,23 @@ namespace DeadCellsMultiplayerMod
                     if (useDownedOffset)
                         drawY -= DownedGhostBodyYOffsetPx;
 
-                    if (clientLastDownedOffsets[index] != useDownedOffset)
+                    var wasUsingDownedOffset = clientLastDownedOffsets[index];
+                    if (wasUsingDownedOffset != useDownedOffset)
                     {
                         client._targetable = !useDownedOffset;
                         clientLastDownedOffsets[index] = useDownedOffset;
                         headDirty = true;
+                    }
+
+                    if (!useDownedOffset &&
+                        (wasUsingDownedOffset || IsRemoteReviveVisibilityGraceActive(remote.Id)))
+                    {
+                        RestoreRemoteKingRenderAfterRevive(
+                            index,
+                            client,
+                            drawX,
+                            drawY,
+                            wasUsingDownedOffset ? "snapshot-transition" : "snapshot-grace");
                     }
 
                     if (rLastX[index] != drawX || rLastY[index] != drawY)
@@ -657,6 +683,18 @@ namespace DeadCellsMultiplayerMod
 
         private bool ShouldKeepRemoteKingVisibleInRoom(NetNode.RemoteSnapshot remote, string localLevelId)
         {
+            // A downed state carries an authoritative safe revive anchor. Pit/lava deaths can
+            // briefly leave the normal room marker pointing at an invalid branch, so never dispose
+            // the remote shell while that same-level corpse must remain visible and revivable.
+            if (IsRemoteDownedVisibleInCurrentLevel(remote.Id, localLevelId))
+                return true;
+
+            // After revive, allow a short marker-settle window and force the existing shell visible.
+            // Without this, the stale environmental-death marker can immediately dispose the player
+            // again until a sublevel transition rebuilds all remote entities.
+            if (IsRemoteReviveVisibilityGraceActive(remote.Id))
+                return true;
+
             if (!string.IsNullOrWhiteSpace(localLevelId) &&
                 !string.IsNullOrWhiteSpace(remote.LevelId) &&
                 !string.Equals(remote.LevelId, localLevelId, StringComparison.Ordinal))
@@ -754,7 +792,7 @@ namespace DeadCellsMultiplayerMod
         private GhostKing? EnsureClientKingSlot(int slot)
         {
             var existingDuringTransition = slot >= 0 && slot < clients.Length ? clients[slot] : null;
-            if (IsRemoteKingTransitionActive)
+            if (IsRemoteKingTransitionActive || IsRemoteKingCreationBlocked)
                 return existingDuringTransition;
 
             var hitchStart = RuntimeHitchWatch.Start();
@@ -787,6 +825,19 @@ namespace DeadCellsMultiplayerMod
 
             ApplyCachedRemoteDiveSkillInfoIfAny(clientIds[slot], created);
 
+            try
+            {
+                var net = GameMenu.NetRef;
+                if (net != null && net.IsAlive && net.IsHost && clientIds[slot] > 0)
+                {
+                    global::DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization
+                        .NotifyPlayerCombatStateChanged("remote-player-representation-recreated");
+                }
+            }
+            catch
+            {
+            }
+
             LogGhostRuntimeStepIfSlow(
                 "ModEntry.EnsureClientKingSlot",
                 hitchStart,
@@ -795,6 +846,113 @@ namespace DeadCellsMultiplayerMod
                     $"slot={slot} remoteId={clientIds[slot]} created=1 skin={(string.IsNullOrWhiteSpace(knownSkin) ? 0 : 1)} head={(string.IsNullOrWhiteSpace(knownHead) ? 0 : 1)}"));
 
             return created;
+        }
+
+        private static MethodInfo? FindRuntimeParameterlessMethod(object process, string methodName)
+        {
+            const BindingFlags flags =
+                BindingFlags.Instance |
+                BindingFlags.Public |
+                BindingFlags.NonPublic |
+                BindingFlags.DeclaredOnly;
+
+            for (global::System.Type? type = process.GetType(); type != null; type = type.BaseType)
+            {
+                var method = type.GetMethod(
+                    methodName,
+                    flags,
+                    binder: null,
+                    types: global::System.Type.EmptyTypes,
+                    modifiers: null);
+                if (method != null)
+                    return method;
+            }
+
+            return null;
+        }
+
+        private static bool TryDisposeRuntimeProcessImmediately(object? process)
+        {
+            if (process == null)
+                return true;
+
+            try
+            {
+                var destroy = FindRuntimeParameterlessMethod(process, "destroy");
+                try { destroy?.Invoke(process, null); } catch { }
+
+                var disposeImmediately =
+                    FindRuntimeParameterlessMethod(process, "disposeImmediately");
+                if (disposeImmediately == null)
+                    return false;
+
+                disposeImmediately.Invoke(process, null);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void DisposeClientSlotForSubLevelTransition(int slot, bool clearIdentity)
+        {
+            if (slot < 0 || slot >= clients.Length)
+                return;
+
+            _pendingClientDisposeTicks.Remove(slot);
+
+            var previousRemoteId = clientIds[slot];
+
+            var head = clientHeads[slot];
+            clientHeads[slot] = null;
+            if (head != null && !TryDisposeRuntimeProcessImmediately(head))
+            {
+                try { head.dispose(); } catch { }
+            }
+            pendingClientHeadRecreate[slot] = false;
+            ResetGhostHeadRuntimeState(slot);
+
+            GhostKing? client = clients[slot];
+            clients[slot] = null!;
+            if (client != null)
+            {
+                try { client.PrepareForNetworkTransition(); } catch { }
+                try { client.visible = false; } catch { }
+
+                if (!TryDisposeRuntimeProcessImmediately(client))
+                {
+                    try { client.destroy(); } catch { }
+                    try
+                    {
+                        EnsureGhostKingRenderSafe(
+                            client,
+                            "DisposeClientSlot.runtime-immediate-unavailable",
+                            detachForTransition: true);
+                    }
+                    catch { }
+                }
+            }
+            clientLastBodyAnims[slot] = null;
+            clientLastBodyAnimQueues[slot] = null;
+            clientLastBodyAnimGs[slot] = null;
+            clientLastHeadAnims[slot] = null;
+            clientLastDirs[slot] = 0;
+            clientLastDownedOffsets[slot] = false;
+            rLastX[slot] = 0;
+            rLastY[slot] = 0;
+
+            if (!clearIdentity)
+                return;
+
+            if (previousRemoteId > 0)
+            {
+                _remoteLastDoorMarkers.Remove(previousRemoteId);
+                ClearCachedRemoteDiveSkillInfo(previousRemoteId);
+            }
+
+            clientIds[slot] = 0;
+            clientLabels[slot] = null;
         }
 
         private void DisposeClientSlot(int slot, bool clearIdentity)
@@ -818,6 +976,7 @@ namespace DeadCellsMultiplayerMod
             var client = clients[slot];
             if (client != null)
             {
+                try { client.PrepareForNetworkTransition(); } catch { }
                 client.destroy();
                 client.dispose();
                 client.disposeGfx();
@@ -851,6 +1010,13 @@ namespace DeadCellsMultiplayerMod
             var net = _net;
             if (net == null || me == null) return;
 
+            if (IsRemoteKingTransitionActive || IsRemoteCombatGraceActive())
+            {
+                if (net.TryConsumeRemoteWeaponSnapshots(out var guardedUpdates))
+                    NetNode.ReleaseConsumedList(guardedUpdates);
+                return;
+            }
+
             if (!net.TryConsumeRemoteWeaponSnapshots(out var updates))
                 return;
 
@@ -861,7 +1027,8 @@ namespace DeadCellsMultiplayerMod
                 foreach (var update in updates)
                 {
                     var updateStart = RuntimeHitchWatch.Start();
-                    ApplyRemoteWeaponUpdate(update.Id, update.Kind, update.Slot, update.PermanentId, update.Ammo);
+                    if (!TryApplyRemoteWeaponUpdate(update.Id, update.Kind, update.Slot, update.PermanentId, update.Ammo))
+                        continue;
                     applied++;
                     LogGhostRuntimeStepIfSlow(
                         "ModEntry.ReceiveGhostWeapons.ApplyRemoteWeaponUpdate",
@@ -891,6 +1058,9 @@ namespace DeadCellsMultiplayerMod
 
         private void DrainRemoteCombatQueuesAfterLevelChange()
         {
+            _ignoreRemoteCombatUntilTicks = Stopwatch.GetTimestamp()
+                + (long)(Stopwatch.Frequency * 0.65);
+
             var net = _net;
             if (net == null)
                 return;
@@ -907,7 +1077,7 @@ namespace DeadCellsMultiplayerMod
             var net = _net;
             if (net == null || me == null) return;
 
-            if (IsRemoteKingTransitionActive || IsLocalDiveNetGuardActive())
+            if (IsRemoteKingTransitionActive || IsRemoteCombatGraceActive() || IsLocalDiveNetGuardActive())
             {
                 if (net.TryConsumeRemoteAttacks(out var guardedAttacks))
                     NetNode.ReleaseConsumedList(guardedAttacks);
@@ -944,7 +1114,8 @@ namespace DeadCellsMultiplayerMod
                         continue;
                     }
 
-                    ApplyRemoteWeaponUpdate(attack.Id, attack.Kind, attack.Slot, attack.PermanentId, attack.Ammo);
+                    if (!TryApplyRemoteWeaponUpdate(attack.Id, attack.Kind, attack.Slot, attack.PermanentId, attack.Ammo))
+                        continue;
                     if (!TryGetClientIndex(localId, attack.Id, out var index))
                         continue;
 
@@ -1039,6 +1210,7 @@ namespace DeadCellsMultiplayerMod
         {
             if (client?.spr?._animManager == null) return;
             if (string.IsNullOrWhiteSpace(anim)) return;
+            if (DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.IsUnsafeRemoteGhostAnimation(anim)) return;
             var shieldActive = client.kingWeaponsManager != null && client.kingWeaponsManager.IsShieldActive;
             if (shieldActive && ShouldLoopRemoteAnim(anim))
             {
@@ -1196,10 +1368,34 @@ namespace DeadCellsMultiplayerMod
             return me != null && self != null && ReferenceEquals(self, me.inventory);
         }
 
+        private bool TryApplyRemoteWeaponUpdate(int remoteId, string? kindId, int slot, int permanentId, int? ammo = null)
+        {
+            if (string.IsNullOrWhiteSpace(kindId) || kindId.Length > 160 ||
+                slot < -1 || slot > 1 || permanentId < 0)
+                return false;
+
+            try
+            {
+                ApplyRemoteWeaponUpdate(remoteId, kindId, slot, permanentId, ammo);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning(
+                    ex,
+                    "[NetMod][RemoteWeaponGuard] ignored invalid/unsafe remote weapon update remoteId={RemoteId} slot={Slot} kind={Kind}",
+                    remoteId,
+                    slot,
+                    kindId ?? string.Empty);
+                return false;
+            }
+        }
+
         private void ApplyRemoteWeaponUpdate(int remoteId, string? kindId, int slot, int permanentId, int? ammo = null)
         {
             var hitchStart = RuntimeHitchWatch.Start();
             if (string.IsNullOrWhiteSpace(kindId)) return;
+            if (slot < -1 || slot > 1 || permanentId < 0) return;
             var net = _net;
             var localId = net?.id ?? 0;
             if (!TryGetClientIndex(localId, remoteId, out var index))
@@ -1209,7 +1405,7 @@ namespace DeadCellsMultiplayerMod
             if (client?.inventory == null) return;
 
             var cleaned = kindId.Replace("|", "/").Trim();
-            if (cleaned.Length == 0) return;
+            if (cleaned.Length == 0 || cleaned.Length > 160) return;
 
             var inv = client.inventory;
             var existing = permanentId != 0 ? inv.getByPermanentId(permanentId) : null;
@@ -1285,12 +1481,36 @@ namespace DeadCellsMultiplayerMod
                 _inventorySyncGuard = false;
             }
 
+            // Detached ghost inventories are long-lived. Remove the item that was replaced in this
+            // slot once it is no longer equipped anywhere, otherwise every weapon swap leaks another
+            // InventItem into the ghost inventory for the rest of the run.
+            TryRemoveSupersededRemoteWeapon(inv, currentSlotItem, existing);
+
             LogGhostRuntimeStepIfSlow(
                 "ModEntry.ApplyRemoteWeaponUpdate",
                 hitchStart,
                 string.Create(
                     System.Globalization.CultureInfo.InvariantCulture,
                     $"remoteId={remoteId} slot={slot} permanentId={permanentId} ammo={(ammo.HasValue ? ammo.Value : -1)} kind={cleaned}"));
+        }
+
+        private static void TryRemoveSupersededRemoteWeapon(Inventory inv, InventItem? superseded, InventItem replacement)
+        {
+            if(inv == null || superseded == null || replacement == null || ReferenceEquals(superseded, replacement))
+                return;
+
+            try
+            {
+                if(ReferenceEquals(inv.getEquippedWeaponOn(0), superseded) ||
+                   ReferenceEquals(inv.getEquippedWeaponOn(1), superseded))
+                    return;
+
+                inv.remove(superseded);
+            }
+            catch
+            {
+                // Cosmetic ghost cleanup must never affect the run.
+            }
         }
 
         private static void ApplyRemoteWeaponAmmo(InventItem item, int? ammo)
@@ -1362,6 +1582,10 @@ namespace DeadCellsMultiplayerMod
         private void ResetNetworkState()
         {
             GameDataSync.RestoreOrigHpMultipliers();
+            GameMenu.ClearPendingNetworkMainThreadActions();
+            GameDataSync.ResetTransientNetworkState();
+            global::DeadCellsMultiplayerMod.AdvancedCoop.CoopAdvancedHardening.ResetSessionState();
+            try { global::DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.ClearTrackingForLevelChange(); } catch { }
             ResetFakeDeathState(unlockLocalHero: true, sendNetworkUpState: false);
             ResetLocalSkinSendCache();
             ResetDoorMarkerState();

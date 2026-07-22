@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using DeadCellsMultiplayerMod.Interaction;
 using DeadCellsMultiplayerMod.Mobs.MobsSynchronization;
 
@@ -392,7 +393,44 @@ public sealed partial class NetNode
         if (parts.Length > 4)
             int.TryParse(parts[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out generation);
 
-        die = new MobDie(parsedUserId, mobIndex, x, y, generation);
+        var type = string.Empty;
+        if (parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5]))
+        {
+            try
+            {
+                type = Encoding.UTF8.GetString(Convert.FromBase64String(parts[5]));
+            }
+            catch
+            {
+                type = string.Empty;
+            }
+        }
+
+        die = new MobDie(parsedUserId, mobIndex, x, y, generation, type);
+        return true;
+    }
+
+    private static bool TryParseBossVictoryPayload(string payload, out BossVictoryState state)
+    {
+        state = default;
+        if (string.IsNullOrWhiteSpace(payload))
+            return false;
+
+        var parts = payload.Split('|');
+        if (parts.Length != 2)
+            return false;
+        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var generation) ||
+            generation <= 0)
+        {
+            return false;
+        }
+        if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var encounterId) ||
+            encounterId <= 0)
+        {
+            return false;
+        }
+
+        state = new BossVictoryState(generation, encounterId);
         return true;
     }
 
@@ -454,7 +492,7 @@ public sealed partial class NetNode
         return true;
     }
 
-    /// <summary>Parse attack event: attack|skillId|blockSec|forcedDirSec|reqTarget|data|targetUid|dir (8 parts)</summary>
+    /// <summary>Parse attack event: attack|skillId|blockSec|forcedDirSec|reqTarget|data|targetUid|dir[|attackSeq] (8-9 parts)</summary>
     private static bool TryParseMobAttackEvent(string ev, int index, double x, double y, int dir, string type, int generation, out MobAttack attack)
     {
         attack = default;
@@ -492,11 +530,16 @@ public sealed partial class NetNode
         if (parts.Length > 7)
             int.TryParse(parts[7], NumberStyles.Integer, CultureInfo.InvariantCulture, out attackDir);
 
-        attack = new MobAttack(index, skillId, requiresTargetInArea, data, x, y, targetUserId, attackDir != 0 ? attackDir : dir, blockSec, forcedDirSec, type ?? string.Empty, generation);
+        // Phase 3 (optional): per-boss monotonic attack sequence for deterministic replay/reorder drop.
+        var attackSeq = 0;
+        if (parts.Length > 8)
+            int.TryParse(parts[8], NumberStyles.Integer, CultureInfo.InvariantCulture, out attackSeq);
+
+        attack = new MobAttack(index, skillId, requiresTargetInArea, data, x, y, targetUserId, attackDir != 0 ? attackDir : dir, blockSec, forcedDirSec, type ?? string.Empty, generation, attackSeq);
         return true;
     }
 
-    /// <summary>Parse hit event: hit|life or hit|life|maxLife</summary>
+    /// <summary>Parse hit event: hit|life or hit|life|damageHint.</summary>
     private static bool TryParseMobHitEvent(string ev, int index, double x, double y, int userId, string? mobType, int generation, out MobHit hit)
     {
         hit = default;
@@ -510,7 +553,11 @@ public sealed partial class NetNode
         if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var life))
             return false;
 
-        hit = new MobHit(userId, index, life, x, y, mobType ?? string.Empty, generation);
+        var damageHint = 0.0;
+        if (parts.Length > 2)
+            double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out damageHint);
+
+        hit = new MobHit(userId, index, life, x, y, mobType ?? string.Empty, generation, damageHint);
         return true;
     }
 
@@ -767,11 +814,19 @@ public sealed partial class NetNode
         if (!TryParseBool(parts[4], out var broken))
             return false;
 
-        ev = new InterDoorEvent(userId, x, y, action, broken);
+        var levelId = parts.Length >= 6
+            ? (parts[5] ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim()
+            : string.Empty;
+
+        ev = new InterDoorEvent(userId, x, y, action, broken, levelId);
         return true;
     }
 
-    private static bool TryParseInterElevatorPayload(string payload, out InterElevatorEvent ev)
+    private static bool TryParseInterElevatorPayload(
+        string payload,
+        int? senderId,
+        bool forceSenderId,
+        out InterElevatorEvent ev)
     {
         ev = default;
         if (string.IsNullOrWhiteSpace(payload))
@@ -781,16 +836,88 @@ public sealed partial class NetNode
         if (parts.Length < 2)
             return false;
 
-        if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x))
-            return false;
-        if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+        // Backwards compatibility: old packets were simply X|Y.
+        if (parts.Length == 2)
+        {
+            if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var legacyX) ||
+                !double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var legacyY))
+            {
+                return false;
+            }
+
+            ev = new InterElevatorEvent(senderId ?? 0, legacyX, legacyY, 0, string.Empty);
+            return true;
+        }
+
+        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var userId))
+            userId = senderId ?? 0;
+        if (forceSenderId && senderId.HasValue)
+            userId = senderId.Value;
+        if (userId <= 0)
             return false;
 
-        ev = new InterElevatorEvent(x, y);
+        if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) ||
+            !double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+        {
+            return false;
+        }
+
+        long sequence = 0;
+        if (parts.Length >= 4)
+            long.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out sequence);
+
+        var levelId = parts.Length >= 5
+            ? (parts[4] ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim()
+            : string.Empty;
+
+        ev = new InterElevatorEvent(userId, x, y, sequence, levelId);
         return true;
     }
 
-    private static bool TryParseInterPressurePlatePayload(string payload, out InterPressurePlateEvent ev)
+    private static bool TryParseInterElevatorStatePayload(
+        string payload,
+        int? senderId,
+        bool forceSenderId,
+        out InterElevatorStateEvent ev)
+    {
+        ev = default;
+        if (string.IsNullOrWhiteSpace(payload))
+            return false;
+
+        var parts = payload.Split('|');
+        if (parts.Length < 7)
+            return false;
+
+        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var userId))
+            userId = senderId ?? 0;
+        if (forceSenderId && senderId.HasValue)
+            userId = senderId.Value;
+        if (userId <= 0)
+            return false;
+
+        if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var anchorX) ||
+            !double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var anchorY) ||
+            !long.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sequence) ||
+            !double.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out var platformX) ||
+            !double.TryParse(parts[5], NumberStyles.Float, CultureInfo.InvariantCulture, out var platformY) ||
+            !TryParseBool(parts[6], out var moving))
+        {
+            return false;
+        }
+
+        var levelId = parts.Length >= 8
+            ? (parts[7] ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim()
+            : string.Empty;
+
+        ev = new InterElevatorStateEvent(userId, anchorX, anchorY, sequence, platformX, platformY, moving, levelId);
+        return true;
+    }
+
+    private static bool TryParseInterPressurePlatePayload(
+        string payload,
+        int? senderId,
+        bool forceSenderId,
+        out InterPressurePlateEvent ev)
     {
         ev = default;
         if (string.IsNullOrWhiteSpace(payload))
@@ -800,12 +927,41 @@ public sealed partial class NetNode
         if (parts.Length < 2)
             return false;
 
-        if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x))
-            return false;
-        if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+        // Backwards compatibility: old packets were simply X|Y.
+        if (parts.Length == 2)
+        {
+            if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var legacyX) ||
+                !double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var legacyY))
+            {
+                return false;
+            }
+
+            ev = new InterPressurePlateEvent(senderId ?? 0, legacyX, legacyY, 0, string.Empty);
+            return true;
+        }
+
+        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var userId))
+            userId = senderId ?? 0;
+        if (forceSenderId && senderId.HasValue)
+            userId = senderId.Value;
+        if (userId <= 0)
             return false;
 
-        ev = new InterPressurePlateEvent(x, y);
+        if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) ||
+            !double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+        {
+            return false;
+        }
+
+        long sequence = 0;
+        if (parts.Length >= 4)
+            long.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out sequence);
+
+        var levelId = parts.Length >= 5
+            ? (parts[4] ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim()
+            : string.Empty;
+
+        ev = new InterPressurePlateEvent(userId, x, y, sequence, levelId);
         return true;
     }
 

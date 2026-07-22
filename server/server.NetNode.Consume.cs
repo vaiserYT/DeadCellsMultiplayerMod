@@ -42,7 +42,7 @@ public sealed partial class NetNode
     {
         lock (_sync)
         {
-            if (_primaryRemoteId != 0 && _remotes.TryGetValue(_primaryRemoteId, out var state) && state.HasRemote)
+            if (_primaryRemoteId != 0 && _remotes.TryGetValue(_primaryRemoteId, out var state) && state.HasRemote && state.HasPosition)
             {
                 remoteId = state.Id;
                 rx = state.X;
@@ -52,6 +52,25 @@ public sealed partial class NetNode
             remoteId = 0;
             rx = 0;
             ry = 0;
+            return false;
+        }
+    }
+
+    public bool TryGetRemotePosition(int userId, out double x, out double y, out string? levelId)
+    {
+        lock (_sync)
+        {
+            if (userId > 0 && _remotes.TryGetValue(userId, out var state) && state.HasRemote && state.HasPosition)
+            {
+                x = state.X;
+                y = state.Y;
+                levelId = state.LevelId;
+                return true;
+            }
+
+            x = 0;
+            y = 0;
+            levelId = null;
             return false;
         }
     }
@@ -69,7 +88,7 @@ public sealed partial class NetNode
             snapshot = RentConsumedList<RemoteSnapshot>(_remotes.Count);
             foreach (var state in _remotes.Values)
             {
-                if (!state.HasRemote)
+                if (!state.HasRemote || !state.HasPosition)
                     continue;
 
                 var hasAnim = state.HasAnim;
@@ -122,7 +141,7 @@ public sealed partial class NetNode
             snapshot = RentConsumedList<RemoteWeaponSnapshot>(_remotes.Count);
             foreach (var state in _remotes.Values)
             {
-                if (!state.HasRemote || !state.HasWeaponUpdate)
+                if (!state.HasRemote || !state.HasPosition || !state.HasWeaponUpdate)
                     continue;
 
                 int? ammo = state.WeaponAmmo != int.MinValue ? state.WeaponAmmo : (int?)null;
@@ -159,6 +178,7 @@ public sealed partial class NetNode
             _pendingMobCharges.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
+            _pendingBossVictories.Clear();
             _pendingMobAttacks.Clear();
             _pendingMobDraws.Clear();
         }
@@ -201,6 +221,14 @@ public sealed partial class NetNode
         lock (_sync)
         {
             return TryConsumePendingListLocked(ref _pendingMobDies, out dies);
+        }
+    }
+
+    public bool TryConsumeBossVictories(out List<BossVictoryState> victories)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingBossVictories, out victories);
         }
     }
 
@@ -249,6 +277,22 @@ public sealed partial class NetNode
         }
     }
 
+    public bool TryConsumeBossIntroEnds(out List<string> completions)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingBossIntroEnds, out completions);
+        }
+    }
+
+    public bool TryConsumeBossIntroReadyStates(out List<BossIntroReadyState> readyStates)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingBossIntroReadyStates, out readyStates);
+        }
+    }
+
     public bool TryConsumeBossHeroTeleportEvents(out List<BossHeroTeleportEvent> events)
     {
         lock (_sync)
@@ -286,6 +330,14 @@ public sealed partial class NetNode
         lock (_sync)
         {
             return TryConsumePendingListLocked(ref _pendingInterElevatorEvents, out events);
+        }
+    }
+
+    public bool TryConsumeInterElevatorStateEvents(out List<InterElevatorStateEvent> events)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingInterElevatorStateEvents, out events);
         }
     }
 
@@ -484,6 +536,38 @@ public sealed partial class NetNode
                 if (state.Id > 0)
                     target.Add(state.Id);
             }
+        }
+    }
+
+    public void CopyConnectedClientIdsTo(HashSet<int> target)
+    {
+        if (target == null)
+            return;
+
+        lock (_clientsLock)
+        {
+            foreach (var pair in _clients)
+            {
+                if (pair.Key > 0 && pair.Value.HandshakeComplete)
+                    target.Add(pair.Key);
+            }
+            foreach (var pair in _steamClients)
+            {
+                if (pair.Key > 0 && pair.Value.HandshakeComplete)
+                    target.Add(pair.Key);
+            }
+        }
+    }
+
+    private bool IsHostClientHandshakeComplete(int userId)
+    {
+        if (userId <= 0)
+            return false;
+
+        lock (_clientsLock)
+        {
+            return (_clients.TryGetValue(userId, out var tcpClient) && tcpClient.HandshakeComplete) ||
+                (_steamClients.TryGetValue(userId, out var steamClient) && steamClient.HandshakeComplete);
         }
     }
 }

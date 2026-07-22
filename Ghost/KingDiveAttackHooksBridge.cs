@@ -38,7 +38,10 @@ public partial class ModEntry
     private void Hook_DiveAttack_onStart(Hook_DiveAttack.orig_onStart orig, DiveAttack self)
     {
         if (!IsDiveAttackHookContextValid(self, out _))
+        {
+            try { self?.end(); } catch { }
             return;
+        }
 
         try
         {
@@ -58,7 +61,10 @@ public partial class ModEntry
     {
         s_diveOnOwnerLandOrig ??= orig;
         if (!IsDiveAttackHookContextValid(self, out var hero))
+        {
+            try { self?.end(); } catch { }
             return;
+        }
 
         var wasDiving = IsDiveReallyActive(self);
         bool executed;
@@ -149,6 +155,21 @@ public partial class ModEntry
             return false;
         }
 
+        try
+        {
+            if (ModEntry.IsEntityDownedForCombat(hero))
+                return false;
+            if (hero.life <= 0 || !hero._targetable)
+                return false;
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (!HasValidCombatCooldown(hero))
+            return false;
+
         return true;
     }
 
@@ -232,6 +253,22 @@ public partial class ModEntry
             if (spr == null)
                 return false;
             return spr.groupName != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool HasValidCombatCooldown(dc.Entity? entity)
+    {
+        if (entity == null)
+            return false;
+
+        try
+        {
+            var cd = entity.cd;
+            return cd != null && cd.fastCheck != null;
         }
         catch
         {
@@ -387,6 +424,29 @@ public partial class ModEntry
     private static bool IsEntityQuadHitSafe(dc.Entity entity)
     {
         if (entity == null)
+            return false;
+
+        try
+        {
+            if (entity.destroyed || entity.life <= 0 || !entity._targetable)
+                return false;
+        }
+        catch
+        {
+            return false;
+        }
+
+        try
+        {
+            if (ModEntry.IsEntityDownedForCombat(entity))
+                return false;
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (!HasValidCombatCooldown(entity))
             return false;
 
         try
@@ -864,12 +924,28 @@ public partial class ModEntry
         if (!remoteIsDiving)
             return true;
 
+        // Cursed/fake death can leave a remote dive-land packet queued for a player that is now
+        // downed. Replaying that packet through the local Hero context is unsafe because vanilla
+        // dive-hit resolution expects every target's cooldown.fastCheck to still be alive.
+        if (ModEntry.IsRemotePlayerDowned(attack.Id))
+            return true;
+
         if (!TryGetClientIndex(localId, attack.Id, out var index))
             return true;
 
         var client = clients[index];
         if (client == null)
             return true;
+
+        try
+        {
+            if (client.life <= 0 || !client._targetable)
+                return true;
+        }
+        catch
+        {
+            return true;
+        }
 
         try
         {

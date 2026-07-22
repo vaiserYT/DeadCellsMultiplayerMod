@@ -612,9 +612,16 @@ namespace DeadCellsMultiplayerMod
             if (bindings == null)
                 return -1;
             if ((uint)actionCode >= (uint)bindings.length)
-                return 0;
+                return -1;
 
-            return Marshal.ReadInt32(bindings.bytes, actionCode << 2);
+            try
+            {
+                return Marshal.ReadInt32(bindings.bytes, actionCode << 2);
+            }
+            catch
+            {
+                return -1;
+            }
         }
 
         private static double GetCurrentUnixTimeSeconds()

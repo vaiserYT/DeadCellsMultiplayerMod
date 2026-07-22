@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO.Pipes;
 using System.Text;
+using System.Threading.Channels;
 using ModCore.Utilities;
 using Newtonsoft.Json;
 using Steamworks;
@@ -40,7 +41,21 @@ namespace DeadCellsMultiplayerMod
         }
     }
 
-    internal sealed class SteamP2PWorkerBridge : IDisposable
+    internal interface ISteamP2PBridge : IDisposable
+    {
+        bool IsRunning { get; }
+        SteamConnect.HostLobbyResult? HostLobbyResult { get; }
+        ulong LocalSteamId { get; }
+        bool TrySend(ulong steamId, EP2PSend sendType, int channel, byte[] payload, out string error);
+        bool TryClosePeer(ulong steamId);
+        bool TrySetRichPresence(string key, string value, out string error);
+        bool TryClearRichPresence(out string error);
+        bool TryReadPacket(out SteamP2PWorkerPacket packet);
+        bool TryReadWarning(out string warning);
+        bool TryReadSessionFail(out ulong steamId);
+    }
+
+    internal sealed class SteamP2PWorkerBridge : ISteamP2PBridge
     {
         private const int StartupTimeoutMs = 15000;
         private const int PipeConnectPollMs = 25;
@@ -52,15 +67,22 @@ namespace DeadCellsMultiplayerMod
         private readonly StreamReader _eventReader;
         private readonly string _bootstrapResponsePath;
         private readonly object _commandSync = new();
-        private readonly ConcurrentQueue<SteamP2PWorkerPacket> _packets = new();
+        private readonly Channel<SteamP2PWorkerPacket> _packets = Channel.CreateBounded<SteamP2PWorkerPacket>(
+            new BoundedChannelOptions(4096)
+            {
+                SingleReader = true,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false
+            });
         private readonly ConcurrentQueue<string> _warnings = new();
         private readonly ConcurrentQueue<ulong> _sessionFailSteamIds = new();
         private readonly CancellationTokenSource _readerCts = new();
         private readonly Task _readerTask;
         private volatile bool _disposed;
 
-        internal SteamConnect.HostLobbyResult? HostLobbyResult { get; }
-        internal ulong LocalSteamId { get; }
+        public SteamConnect.HostLobbyResult? HostLobbyResult { get; }
+        public ulong LocalSteamId { get; }
 
         private SteamP2PWorkerBridge(
             Process process,
@@ -139,6 +161,8 @@ namespace DeadCellsMultiplayerMod
                 startInfo.Environment[SteamP2PWorkerEnvironment.EnvCommandPipe] = commandPipeName;
                 startInfo.Environment[SteamP2PWorkerEnvironment.EnvEventPipe] = eventPipeName;
                 startInfo.Environment[SteamP2PWorkerEnvironment.EnvBootstrapResponsePath] = responsePath;
+                startInfo.Environment["SteamAppId"] = "588650";
+                startInfo.Environment["SteamGameId"] = "588650";
                 if (role == NetRole.Host && hostPort > 0)
                 {
                     startInfo.Environment[SteamP2PWorkerEnvironment.EnvHostPort] = hostPort.ToString(CultureInfo.InvariantCulture);
@@ -317,7 +341,7 @@ namespace DeadCellsMultiplayerMod
 
         public bool TryReadPacket(out SteamP2PWorkerPacket packet)
         {
-            return _packets.TryDequeue(out packet);
+            return _packets.Reader.TryRead(out packet);
         }
 
         public bool TryReadWarning(out string warning)
@@ -426,7 +450,9 @@ namespace DeadCellsMultiplayerMod
                         }
 
                         var payload = Encoding.UTF8.GetString(bytes);
-                        _packets.Enqueue(new SteamP2PWorkerPacket(evt.SteamId, evt.Channel, payload));
+                        await _packets.Writer.WriteAsync(
+                            new SteamP2PWorkerPacket(evt.SteamId, evt.Channel, payload),
+                            ct).ConfigureAwait(false);
                         continue;
                     }
 
@@ -447,6 +473,7 @@ namespace DeadCellsMultiplayerMod
             }
             finally
             {
+                _packets.Writer.TryComplete();
                 if (!_disposed)
                 {
                     string msg;
@@ -544,7 +571,9 @@ namespace DeadCellsMultiplayerMod
 
             if (string.IsNullOrWhiteSpace(line))
             {
-                error = "Steam P2P worker returned empty startup event";
+                // The child writes the real bootstrap exception to responsePath before exiting.
+                // Surface it instead of hiding every failure behind the same empty-event message.
+                error = BuildStartupError("Steam P2P worker returned empty startup event", process, responsePath);
                 return null;
             }
 
@@ -681,9 +710,9 @@ namespace DeadCellsMultiplayerMod
                     hostSteamId = 0UL;
 
                 SteamConnect.PrepareSteamNativePathForRuntime();
-                if (SteamAPI.RestartAppIfNecessary(new AppId_t(DeadCellsAppId)))
-                    throw new InvalidOperationException("Steam requested app restart");
-
+                // This process is intentionally spawned by the already-running modded game. Calling
+                // RestartAppIfNecessary here can terminate the worker before it writes its ready
+                // event, producing the misleading "empty startup event" error.
                 if (!SteamAPI.Init())
                     throw new InvalidOperationException("Steam API init failed in Steam P2P worker");
 

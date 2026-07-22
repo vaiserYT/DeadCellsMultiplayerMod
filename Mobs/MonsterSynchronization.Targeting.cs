@@ -321,7 +321,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (!double.TryParse(speedPart, NumberStyles.Float, CultureInfo.InvariantCulture, out var speed))
                 speed = 1.0;
 
-            parsed = new ParsedAnimPayload(group, reverse, System.Math.Max(0.01, speed));
+            parsed = new ParsedAnimPayload(group, reverse, System.Math.Clamp(speed, 0.01, MaxClientAnimPayloadSpeed));
             return true;
         }
 
@@ -349,6 +349,198 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             return true;
+        }
+        
+        private static bool ApplyBossAnimPayloadForce(Mob mob, string payload)
+        {
+            if (mob == null || string.IsNullOrWhiteSpace(payload))
+                return false;
+
+            if (!TryGetParsedAnimPayloadCached(payload, out var parsed))
+                return false;
+
+            try
+            {
+                var spr = mob.spr;
+                if (spr == null)
+                    return false;
+
+                var animManager = GetMobAnimManager(mob);
+                var top = GetTopAnimInstance(animManager);
+
+                var currentGroup = top?.group?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(currentGroup))
+                    currentGroup = spr.groupName?.ToString() ?? string.Empty;
+
+                // Randomized anim variants (walkIdleA / walkIdleB / ...) are rolled independently
+                // per peer. They are the same logical state, so the client's locally chosen
+                // variant must not be restarted (or, worse, swapped in place) every frame just
+                // because the host rolled another letter.
+                var groupsMatch = string.Equals(currentGroup, parsed.Group, StringComparison.Ordinal) ||
+                                  IsSameAnimVariantFamily(currentGroup, parsed.Group);
+
+                if (!groupsMatch)
+                {
+                    // CRASH FIX (bossanim-framesafe): never assign top.group / spr.groupName in place.
+                    // Swapping the group string while the anim instance keeps its old frame index
+                    // makes the next AnimManager._update fetch an out-of-range frame
+                    // ("Unknown frame: behemothWalkIdleB(60)") and hard-crashes the render loop.
+                    // Group changes must go through play(), which resets the frame counter, and
+                    // only to groups this sprite's lib actually contains.
+                    if (animManager == null || !SpriteHasAnimGroup(spr, parsed.Group))
+                        return false;
+
+                    if (!TryBeginForcedBossAnimGroup(mob, parsed.Group))
+                        return false;
+
+                    animManager.play(parsed.Group.AsHaxeString(), null, null).loop(null);
+                    top = GetTopAnimInstance(animManager);
+                }
+
+                if (top != null)
+                {
+                    if (top.reverse != parsed.Reverse)
+                        top.reverse = parsed.Reverse;
+                    if (System.Math.Abs(top.speed - parsed.Speed) > ClientAnimSpeedEpsilon)
+                        top.speed = parsed.Speed;
+                }
+
+                lock (Sync)
+                {
+                    clientLastAppliedAnimPayloadByMob[mob] = payload;
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// True when the sprite's currently attached lib actually contains <paramref name="group"/>.
+        /// Boss transformations swap sprite libs natively; a host anim name from the other side of
+        /// such a swap must be ignored instead of handed to slib (which throws).
+        /// </summary>
+        private static bool SpriteHasAnimGroup(HSprite? spr, string group)
+        {
+            if (spr == null || string.IsNullOrWhiteSpace(group))
+                return false;
+
+            try
+            {
+                var groups = spr.lib?.groups;
+                return groups != null && groups.exists(group.AsHaxeString());
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsSameAnimVariantFamily(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
+                return false;
+
+            return string.Equals(StripAnimVariantSuffix(a), StripAnimVariantSuffix(b), StringComparison.Ordinal);
+        }
+
+        private static string StripAnimVariantSuffix(string group)
+        {
+            // Dead Cells names randomized variants with a single trailing capital letter after a
+            // lowercase/digit character (behemothWalkIdleA, behemothWalkIdleB, ...).
+            if (group.Length >= 2)
+            {
+                var last = group[^1];
+                if (last >= 'A' && last <= 'Z')
+                {
+                    var prev = group[^2];
+                    if ((prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9'))
+                        return group[..^1];
+                }
+            }
+
+            return group;
+        }
+
+        /// <summary>
+        /// Rate-limits forced boss anim group restarts. If native client code re-picks a different
+        /// group right after a forced play(), re-forcing the same target every frame would pin the
+        /// boss to frame 0 forever. One forced restart per target group per short window keeps the
+        /// visual converging without fighting the local animation state machine at frame rate.
+        /// </summary>
+        private static bool TryBeginForcedBossAnimGroup(Mob mob, string group)
+        {
+            double frame = 0.0;
+            try
+            {
+                var level = mob._level ?? currentLevel;
+                if (level != null)
+                    frame = level.ftime;
+            }
+            catch
+            {
+            }
+
+            lock (Sync)
+            {
+                if (clientLastForcedBossAnimByMob.TryGetValue(mob, out var last) &&
+                    string.Equals(last.Group, group, StringComparison.Ordinal))
+                {
+                    var delta = frame - last.Frame;
+                    if (delta >= 0.0 && delta < ClientBossAnimForceReplayCooldownFrames)
+                        return false;
+                }
+
+                clientLastForcedBossAnimByMob[mob] = (group, frame);
+                return true;
+            }
+        }
+
+        private static long s_livingTrackedBossCacheTickMs;
+        private static bool s_livingTrackedBossCacheValue;
+
+        /// <summary>
+        /// True while any tracked, non-destroyed boss encounter combatant is still alive in the
+        /// current level. Unlike a level-id check this goes false the moment the fight is actually
+        /// over, and it covers Boss Rush duo clones that can outlive the primary Level.boss.
+        /// Cached for 250ms — callers poll it per frame from door/interaction code.
+        /// </summary>
+        internal static bool HasLivingTrackedBoss()
+        {
+            var now = System.Environment.TickCount64;
+            if (s_livingTrackedBossCacheTickMs != 0 && now - s_livingTrackedBossCacheTickMs < 250)
+                return s_livingTrackedBossCacheValue;
+
+            var alive = false;
+            lock (Sync)
+            {
+                for (var i = 0; i < trackedMobs.Count; i++)
+                {
+                    var mob = trackedMobs[i];
+                    if (mob == null)
+                        continue;
+                    try
+                    {
+                        if (mob.destroyed || mob.life <= 0)
+                            continue;
+                        if (Bosses.BossSyncHelpers.IsBossMob(mob))
+                        {
+                            alive = true;
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            s_livingTrackedBossCacheValue = alive;
+            s_livingTrackedBossCacheTickMs = now;
+            return alive;
         }
     }
 }

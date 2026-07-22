@@ -26,11 +26,13 @@ namespace DeadCellsMultiplayerMod
         private bool _cameraCycleCommaTextPressed;
         private bool _cameraCyclePeriodTextPressed;
         private bool _cameraSpectateTextInputHookInstalled;
+        private bool _automaticDownedSpectateActive;
         private HlAction<Event>? _cameraSpectateWindowEventHandler;
 
         private void ProcessCameraSpectateInput()
         {
             EnsureCameraSpectateTextInputHook();
+            MaintainAutomaticDownedSpectate();
             EnsureSpectatedRemoteCameraStillValid();
             MaintainLocalCameraRefollow();
 
@@ -248,7 +250,12 @@ namespace DeadCellsMultiplayerMod
         {
             Span<int> orderedTargets = stackalloc int[clients.Length + 1];
             var count = 0;
-            orderedTargets[count++] = 0;
+
+            // While downed, the local hidden/frozen hero is never a useful camera target. Keep
+            // manual cycling available for sessions with multiple living teammates, but do not let
+            // the player accidentally cycle back to their own corpse. Revive restores local view.
+            if (!_localFakeDead)
+                orderedTargets[count++] = 0;
 
             for (var i = 0; i < clientIds.Length; i++)
             {
@@ -261,11 +268,28 @@ namespace DeadCellsMultiplayerMod
                 orderedTargets[count++] = remoteId;
             }
 
-            if (count <= 1)
+            if (count == 0)
             {
                 _spectatedRemoteCameraId = 0;
                 _spectatedCameraOrderIndex = 0;
-                RequestLocalCameraRefollow("spectate-local-only");
+                RequestLocalCameraRefollow("spectate-no-valid-target");
+                return;
+            }
+
+            if (count == 1)
+            {
+                var onlyTargetId = orderedTargets[0];
+                _spectatedRemoteCameraId = onlyTargetId;
+                _spectatedCameraOrderIndex = 0;
+                if (onlyTargetId == 0)
+                {
+                    RequestLocalCameraRefollow("spectate-local-only");
+                }
+                else
+                {
+                    _cameraRefollowUntilTicks = 0;
+                    TrackPreferredCameraTarget(immediate: true, forceTrack: true);
+                }
                 return;
             }
 
@@ -301,7 +325,80 @@ namespace DeadCellsMultiplayerMod
             }
 
             _cameraRefollowUntilTicks = 0;
-            TrackPreferredCameraTarget(immediate: true);
+            TrackPreferredCameraTarget(immediate: true, forceTrack: true);
+        }
+
+        private void MaintainAutomaticDownedSpectate()
+        {
+            var shouldAutoSpectate = _netRole != NetRole.None && _localFakeDead && me != null;
+            if (!shouldAutoSpectate)
+            {
+                if (!_automaticDownedSpectateActive)
+                    return;
+
+                var previousTargetId = _spectatedRemoteCameraId;
+                _automaticDownedSpectateActive = false;
+                _spectatedRemoteCameraId = 0;
+                _spectatedCameraOrderIndex = 0;
+                RequestLocalCameraRefollow($"auto-spectate-ended:{previousTargetId}");
+                Logger.Information("[NetMod][Spectate] automatic downed spectate ended; camera restored to local player");
+                return;
+            }
+
+            if (!_automaticDownedSpectateActive)
+            {
+                _automaticDownedSpectateActive = true;
+                _cameraRefollowUntilTicks = 0;
+            }
+
+            // Preserve a valid manually selected living teammate. This keeps camera cycling useful
+            // in sessions with more than two players without the automatic selector fighting it.
+            if (_spectatedRemoteCameraId > 0 &&
+                TryResolveRemoteCameraTarget(_spectatedRemoteCameraId, out _))
+            {
+                return;
+            }
+
+            var previousInvalidTargetId = _spectatedRemoteCameraId;
+            _spectatedRemoteCameraId = 0;
+            _spectatedCameraOrderIndex = 0;
+
+            if (!TryFindFirstLivingRemoteCameraTarget(out var targetId, out var targetOrderIndex))
+            {
+                // When everyone is down, keep the local corpse view until the synchronized restart
+                // instead of issuing a viewport.track call every frame.
+                if (previousInvalidTargetId > 0)
+                    RequestLocalCameraRefollow($"auto-spectate-no-living-target:{previousInvalidTargetId}");
+                return;
+            }
+
+            _spectatedRemoteCameraId = targetId;
+            _spectatedCameraOrderIndex = targetOrderIndex;
+            _cameraRefollowUntilTicks = 0;
+            TrackPreferredCameraTarget(immediate: true, forceTrack: true);
+            Logger.Information("[NetMod][Spectate] automatic downed spectate following remote player {RemoteId}", targetId);
+        }
+
+        private bool TryFindFirstLivingRemoteCameraTarget(out int targetId, out int targetOrderIndex)
+        {
+            targetId = 0;
+            targetOrderIndex = 0;
+            var orderIndex = 0;
+
+            for (var i = 0; i < clientIds.Length; i++)
+            {
+                var remoteId = clientIds[i];
+                if (remoteId <= 0)
+                    continue;
+                if (!TryResolveRemoteCameraTarget(remoteId, out _))
+                    continue;
+
+                targetId = remoteId;
+                targetOrderIndex = orderIndex;
+                return true;
+            }
+
+            return false;
         }
 
         private void MaintainLocalCameraRefollow()

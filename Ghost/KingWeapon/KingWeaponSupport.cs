@@ -17,6 +17,9 @@ internal static class KingWeaponSupport
     private static readonly ConditionalWeakTable<Weapon, KingSkin> WeaponToSource = new();
     private static readonly ConditionalWeakTable<InventItem, KingSkin> ItemToSource = new();
     private static readonly ConditionalWeakTable<OldSkill, SkillHooks> WrappedSkills = new();
+    private static readonly ConditionalWeakTable<Weapon, object> RetiredRemoteWeapons = new();
+    private static readonly ConditionalWeakTable<InventItem, object> RetiredRemoteItems = new();
+    private static readonly object RetiredMarker = new();
 
     [ThreadStatic]
     private static int _contextDepth;
@@ -27,6 +30,137 @@ internal static class KingWeaponSupport
 
     internal static bool IsInKingContext => _contextDepth > 0;
     internal static bool IsLocalHeroDamageAllowedInKingContext => _allowLocalHeroDamageDepth > 0;
+
+    /// <summary>
+    /// Some Dead Cells weapons are not safe to instantiate or advance against the detached remote
+    /// ghost. Flint is the confirmed case: its powered feedback/timing path can dereference local
+    /// runtime state that does not exist for the ghost. These weapons stay visual-only; MobSync
+    /// remains responsible for authoritative enemy damage and death.
+    /// </summary>
+    internal static bool RequiresVisualOnlyRemoteReplay(string? kindId)
+    {
+        return RequiresVisualOnlyRemoteReplay(kindId, null, out _);
+    }
+
+    /// <summary>
+    /// Detects Flint and any powered-feedback weapon before a detached ghost is allowed to bind,
+    /// patch or advance its runtime. The kind-id check covers known data aliases while the runtime
+    /// reflection check catches generated proxy names/members such as stopPoweredFeedback even when
+    /// the item id itself does not contain the display name "Flint".
+    /// </summary>
+    internal static bool RequiresVisualOnlyRemoteReplay(string? kindId, Weapon? runtimeWeapon, out string reason)
+    {
+        var kind = kindId?.Trim() ?? string.Empty;
+        var compactKind = CompactWeaponId(kind);
+
+        if(compactKind.Contains("flint", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "kind-flint";
+            return true;
+        }
+
+        // Flint has appeared under a non-display internal id in some game/proxy revisions.
+        if(compactKind.Contains("powerfulmelee", StringComparison.OrdinalIgnoreCase) ||
+           compactKind.Contains("poweredmelee", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "kind-powered-melee";
+            return true;
+        }
+
+        if(runtimeWeapon != null && TryFindPoweredFeedbackRuntimeSignal(runtimeWeapon, out var signal))
+        {
+            reason = signal;
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
+    private static string CompactWeaponId(string value)
+    {
+        if(string.IsNullOrEmpty(value))
+            return string.Empty;
+
+        return value
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .Replace(" ", string.Empty, StringComparison.Ordinal)
+            .Replace("/", string.Empty, StringComparison.Ordinal)
+            .Replace(".", string.Empty, StringComparison.Ordinal);
+    }
+
+    private static bool TryFindPoweredFeedbackRuntimeSignal(Weapon weapon, out string signal)
+    {
+        signal = string.Empty;
+        if(weapon == null)
+            return false;
+
+        System.Type? runtimeType;
+        try
+        {
+            runtimeType = weapon.GetType();
+        }
+        catch
+        {
+            return false;
+        }
+
+        while(runtimeType != null)
+        {
+            var typeName = runtimeType.FullName ?? runtimeType.Name ?? string.Empty;
+            var compactTypeName = CompactWeaponId(typeName);
+            if(compactTypeName.Contains("flint", StringComparison.OrdinalIgnoreCase) ||
+               compactTypeName.Contains("powerfulmelee", StringComparison.OrdinalIgnoreCase) ||
+               compactTypeName.Contains("poweredmelee", StringComparison.OrdinalIgnoreCase))
+            {
+                signal = "runtime-type:" + typeName;
+                return true;
+            }
+
+            try
+            {
+                var members = runtimeType.GetMembers(
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Static |
+                    System.Reflection.BindingFlags.Public |
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.DeclaredOnly);
+
+                for(int i = 0; i < members.Length; i++)
+                {
+                    var memberName = members[i]?.Name ?? string.Empty;
+                    if(memberName.Contains("poweredFeedback", StringComparison.OrdinalIgnoreCase) ||
+                       memberName.Contains("stopPoweredFeedback", StringComparison.OrdinalIgnoreCase))
+                    {
+                        signal = "runtime-member:" + memberName;
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // Generated Hashlink proxy reflection is best-effort only.
+            }
+
+            runtimeType = runtimeType.BaseType;
+        }
+
+        return false;
+    }
+
+    /// <summary>Rejects remote-only powered feedback animations that can reference a missing weapon controller.</summary>
+    internal static bool IsUnsafeRemoteGhostAnimation(string? anim)
+    {
+        if(string.IsNullOrWhiteSpace(anim))
+            return false;
+
+        var value = anim.Trim();
+        if(value.IndexOf("stopPoweredFeedback", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if(value.IndexOf("poweredFeedback", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if(value.IndexOf("flint", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
+    }
     internal static bool TryGetCurrentContextSource(out KingSkin source)
     {
         if(!IsInKingContext || _currentContextSource == null)
@@ -112,7 +246,7 @@ internal static class KingWeaponSupport
         public HlAction<double>? DynOnInterrupt;
     }
 
-    public static Weapon CreateWeapon(Hero owner, InventItem item, KingSkin source)
+    public static Weapon CreateWeaponCandidate(Hero owner, InventItem item)
     {
         Weapon weapon;
         try
@@ -127,9 +261,23 @@ internal static class KingWeaponSupport
         if(weapon == null)
             weapon = new Weapon(owner, item);
 
+        return weapon;
+    }
+
+    public static void ActivateRemoteWeapon(Weapon weapon, KingSkin source)
+    {
+        if(weapon == null || source == null)
+            return;
+
         Bind(weapon, source);
         SyncSource(weapon);
         PatchSkills(weapon);
+    }
+
+    public static Weapon CreateWeapon(Hero owner, InventItem item, KingSkin source)
+    {
+        var weapon = CreateWeaponCandidate(owner, item);
+        ActivateRemoteWeapon(weapon, source);
         return weapon;
     }
 
@@ -140,12 +288,14 @@ internal static class KingWeaponSupport
 
         WeaponToSource.Remove(weapon);
         WeaponToSource.Add(weapon, source);
+        RetiredRemoteWeapons.Remove(weapon);
 
         var item = weapon.item;
         if(item != null)
         {
             ItemToSource.Remove(item);
             ItemToSource.Add(item, source);
+            RetiredRemoteItems.Remove(item);
         }
     }
 
@@ -154,10 +304,73 @@ internal static class KingWeaponSupport
         if(weapon == null)
             return;
 
-        var item = weapon.item;
+        InventItem? item = null;
+        try { item = weapon.item; } catch { }
         if(item != null)
-            ItemToSource.Remove(item);
-        WeaponToSource.Remove(weapon);
+        {
+            try { ItemToSource.Remove(item); } catch { }
+        }
+        try { WeaponToSource.Remove(weapon); } catch { }
+    }
+
+    /// <summary>
+    /// Retires a detached remote weapon while its owner is still bound to the GhostKing.
+    /// Native weapon disposal can touch the owner's cooldowns and schedule delayed skill callbacks;
+    /// running it after Unbind would make those paths operate on the real local Hero instead.
+    /// </summary>
+    public static void RetireRemoteWeapon(Weapon weapon)
+    {
+        if(weapon == null)
+            return;
+
+        InventItem? item = null;
+        try { item = weapon.item; } catch { }
+        try
+        {
+            RetiredRemoteWeapons.Remove(weapon);
+            RetiredRemoteWeapons.Add(weapon, RetiredMarker);
+        }
+        catch { }
+        if(item != null)
+        {
+            try
+            {
+                RetiredRemoteItems.Remove(item);
+                RetiredRemoteItems.Add(item, RetiredMarker);
+            }
+            catch { }
+        }
+
+        // Disarm while the generated proxy is still valid. Disposal may invalidate skill access.
+        try { DisarmSkillCallbacks(weapon); } catch { }
+
+        Hero? owner = null;
+        try { owner = weapon.owner; } catch { }
+        if(owner != null && TryGetSource(weapon, out var source) && source != null)
+        {
+            try
+            {
+                WithKingContextCore(owner, source, () =>
+                {
+                    try
+                    {
+                        if(!weapon.destroyed)
+                            weapon.dispose();
+                    }
+                    catch
+                    {
+                    }
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        // A Haxe Timer may still hold one of our wrapper delegates after the weapon has been
+        // disposed. Removing the binding makes an already-captured wrapper a no-op instead of
+        // falling back to the local Hero.
+        Unbind(weapon);
     }
 
     public static bool TryGetSource(Weapon weapon, out KingSkin source)
@@ -182,7 +395,18 @@ internal static class KingWeaponSupport
 
     public static bool IsKingWeapon(Weapon weapon)
     {
-        return weapon != null && WeaponToSource.TryGetValue(weapon, out _);
+        return weapon != null &&
+            (WeaponToSource.TryGetValue(weapon, out _) || RetiredRemoteWeapons.TryGetValue(weapon, out _));
+    }
+
+    public static bool IsRetiredRemoteWeapon(Weapon weapon)
+    {
+        return weapon != null && RetiredRemoteWeapons.TryGetValue(weapon, out _);
+    }
+
+    public static bool IsRetiredRemoteItem(InventItem? item)
+    {
+        return item != null && RetiredRemoteItems.TryGetValue(item, out _);
     }
 
     public static void WithKingContext(Weapon weapon, Action action)
@@ -190,13 +414,14 @@ internal static class KingWeaponSupport
         if(action == null)
             return;
 
-        if(_contextDepth > 0)
+        if(!TryGetSource(weapon, out var src))
         {
-            action();
+            // This overload exists only for detached remote weapons. Once a weapon is unbound it
+            // is retired; delayed Haxe Timer callbacks must not execute against the local Hero.
             return;
         }
 
-        if(!TryGetSource(weapon, out var src))
+        if(_contextDepth > 0)
         {
             action();
             return;
@@ -277,7 +502,7 @@ internal static class KingWeaponSupport
 
     public static void SyncSource(Weapon weapon)
     {
-        if(weapon == null)
+        if(weapon == null || IsRetiredRemoteWeapon(weapon))
             return;
 
         if(!TryGetSource(weapon, out var source))
@@ -297,7 +522,7 @@ internal static class KingWeaponSupport
 
     public static void PatchSkills(Weapon weapon)
     {
-        if(weapon == null)
+        if(weapon == null || IsRetiredRemoteWeapon(weapon))
             return;
 
         var arr = weapon.skills;
@@ -319,7 +544,7 @@ internal static class KingWeaponSupport
 
     public static void PatchCurrentSkill(Weapon weapon)
     {
-        if(weapon == null)
+        if(weapon == null || IsRetiredRemoteWeapon(weapon))
             return;
 
         WeaponSkill s;
@@ -381,5 +606,46 @@ internal static class KingWeaponSupport
 
         if(hooks.DynOnInterrupt != null)
             skill.dynOnInterrupt = r => WithKingContext(weapon, () => hooks.DynOnInterrupt?.Invoke(r));
+    }
+
+    private static void DisarmSkillCallbacks(Weapon weapon)
+    {
+        if(weapon == null)
+            return;
+
+        var arr = weapon.skills;
+        if(arr != null)
+        {
+            for(int i = 0; i < arr.length; i++)
+            {
+                if(arr.array[i] is OldSkill skill)
+                    DisarmSkillCallbacks(skill);
+            }
+        }
+
+        try
+        {
+            var current = weapon.get_curSkill();
+            if(current != null)
+                DisarmSkillCallbacks(current);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void DisarmSkillCallbacks(OldSkill skill)
+    {
+        if(skill == null)
+            return;
+
+        try { skill.dynOnChargeStart = () => { }; } catch { }
+        try { skill.dynOnCharging = _ => { }; } catch { }
+        try { skill.dynOnChargeComplete = () => { }; } catch { }
+        try { skill.dynOnExecute = _ => { }; } catch { }
+        try { skill.dynOnAttackAnim = () => { }; } catch { }
+        try { skill.dynOnFxFrame = () => { }; } catch { }
+        try { skill.dynOnInterrupt = _ => { }; } catch { }
+        WrappedSkills.Remove(skill);
     }
 }

@@ -315,6 +315,14 @@ public class SettingsUI :
             Ref<bool>.From(ref mobsSyncTraceNow),
             widgetParent);
 
+        bool bossSyncTraceNow = MultiplayerSettingsStorage.DebugBossSyncTrace;
+        self.addToggleWidget(
+            GameMenu.Localize("Boss sync trace logging").AsHaxeString(),
+            null,
+            new HlFunc<bool>(ToggleDebugBossSyncTraceSetting),
+            Ref<bool>.From(ref bossSyncTraceNow),
+            widgetParent);
+
         bool showPerfLogsNow = MultiplayerSettingsStorage.ShowPerfLogs;
         self.addToggleWidget(
             GameMenu.Localize("Show perf logs").AsHaxeString(),
@@ -523,6 +531,13 @@ public class SettingsUI :
     {
         var enabled = !MultiplayerSettingsStorage.DebugMobsSyncTrace;
         MultiplayerSettingsStorage.DebugMobsSyncTrace = enabled;
+        return enabled;
+    }
+
+    private static bool ToggleDebugBossSyncTraceSetting()
+    {
+        var enabled = !MultiplayerSettingsStorage.DebugBossSyncTrace;
+        MultiplayerSettingsStorage.DebugBossSyncTrace = enabled;
         return enabled;
     }
 

@@ -81,15 +81,20 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             s_clientAffectAppliesScratch.Clear();
+            s_latestPacketSyncIdsScratch.Clear();
             var rejectedGeneration = 0;
             var rejectedCount = 0;
             lock (Sync)
             {
                 PruneInvalidTrackedMobsLocked();
-                for (int i = 0; i < states.Count; i++)
+                // Queues append chunked packets. Process newest-to-oldest and accept one state
+                // per sync id so a delayed older chunk cannot overwrite the latest affect state.
+                for (int i = states.Count - 1; i >= 0; i--)
                 {
                     var state = states[i];
                     if (!ShouldAcceptPacketGenerationLocked(state.Generation, ref rejectedCount, ref rejectedGeneration))
+                        continue;
+                    if (!s_latestPacketSyncIdsScratch.Add(state.Index))
                         continue;
 
                     var mob = ResolveMobBySyncIdLocked(state.Index);
@@ -103,6 +108,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             LogRejectedPacketGeneration("clientStateOnHost", rejectedCount, rejectedGeneration);
+            s_latestPacketSyncIdsScratch.Clear();
 
             for (int i = 0; i < s_clientAffectAppliesScratch.Count; i++)
             {
@@ -134,7 +140,99 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 hostLastAppliedClientAffectPayloadBySyncId[mobSyncId] = payload;
             }
 
-            ApplyExplicitAffectPayload(mob, payload);
+            // Client status reports are not authoritative over the host's complete affect list.
+            // Track only affects that this client path actually created, so an empty/different client
+            // payload cannot prune native elite phase, invulnerability, stun or mutation state.
+            ApplyClientOwnedAffectPayloadOnHost(mobSyncId, mob, payload);
+        }
+
+        private static void ApplyClientOwnedAffectPayloadOnHost(int mobSyncId, Mob mob, string payload)
+        {
+            if (mob == null || mob.destroyed || mobSyncId < 0)
+                return;
+
+            var desired = ParseAffectStatePayload(payload);
+            HashSet<int> previousOwned;
+            lock (Sync)
+            {
+                previousOwned = hostClientOwnedAffectIdsByMob.TryGetValue(mob, out var existing)
+                    ? new HashSet<int>(existing)
+                    : new HashSet<int>();
+            }
+
+            var nextOwned = new HashSet<int>();
+
+            foreach (var affectId in previousOwned)
+            {
+                if (desired.Contains(affectId))
+                {
+                    nextOwned.Add(affectId);
+                    continue;
+                }
+
+                try
+                {
+                    mob.removeAllAffects(affectId);
+                }
+                catch
+                {
+                    // Keep ownership if removal failed so a later state can retry safely.
+                    nextOwned.Add(affectId);
+                }
+            }
+
+            foreach (var affectId in desired)
+            {
+                if (previousOwned.Contains(affectId))
+                    continue;
+
+                var alreadyPresent = false;
+                try { alreadyPresent = mob.hasAffect(affectId); } catch { }
+
+                // Never claim/remove an affect that already existed on the authoritative host.
+                if (alreadyPresent)
+                    continue;
+
+                try
+                {
+                    mob.setAffectS(affectId, AuthoritativeAffectPresenceSeconds, HaxeProxy.Runtime.Ref<double>.Null, null);
+                    nextOwned.Add(affectId);
+                }
+                catch
+                {
+                }
+            }
+
+            lock (Sync)
+            {
+                if (nextOwned.Count > 0)
+                    hostClientOwnedAffectIdsByMob[mob] = nextOwned;
+                else
+                    hostClientOwnedAffectIdsByMob.Remove(mob);
+            }
+        }
+
+        private static bool ShouldAcceptHostPositionFrameLocked(int syncId, double incomingFrame, bool forceWhenUntimed)
+        {
+            if (syncId < 0)
+                return false;
+
+            if (!double.IsFinite(incomingFrame) || incomingFrame <= 0.0)
+            {
+                if (forceWhenUntimed || !clientLastAcceptedHostPositionFrameBySyncId.ContainsKey(syncId))
+                    return true;
+                return false;
+            }
+
+            if (clientLastAcceptedHostPositionFrameBySyncId.TryGetValue(syncId, out var lastFrame) &&
+                incomingFrame + 0.001 < lastFrame)
+            {
+                return false;
+            }
+
+            if (!clientLastAcceptedHostPositionFrameBySyncId.TryGetValue(syncId, out lastFrame) || incomingFrame > lastFrame)
+                clientLastAcceptedHostPositionFrameBySyncId[syncId] = incomingFrame;
+            return true;
         }
 
         private static void ApplyIncomingHostMobStates(IReadOnlyList<NetNode.MobStateSnapshot> states)
@@ -144,22 +242,51 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             s_hostStateAppliesScratch.Clear();
             s_usedTrackedMobsScratch.Clear();
+            s_latestPacketSyncIdsScratch.Clear();
             var rejectedGeneration = 0;
             var rejectedCount = 0;
             lock (Sync)
             {
                 PruneInvalidTrackedMobsLocked();
 
+                // A newest delta snapshot may omit the type while an older full snapshot in the
+                // same accumulated batch contains it. Cache current-generation type metadata first
+                // so newest-wins processing can still bind a previously-unmapped mob safely.
                 for (int i = 0; i < states.Count; i++)
+                {
+                    var metadataState = states[i];
+                    if (metadataState.Generation == s_levelIdentityToken &&
+                        !string.IsNullOrWhiteSpace(metadataState.Type))
+                    {
+                        hostMobTypeBySyncId[metadataState.Index] = metadataState.Type;
+                    }
+                }
+
+                // Incoming state packets are accumulated across wire chunks. Newest snapshot for
+                // each sync id wins; this prevents stale HP/position data and 0-HP ghost regressions.
+                for (int i = states.Count - 1; i >= 0; i--)
                 {
                     var state = states[i];
                     if (!ShouldAcceptPacketGenerationLocked(state.Generation, ref rejectedCount, ref rejectedGeneration))
+                        continue;
+                    if (!s_latestPacketSyncIdsScratch.Add(state.Index))
                         continue;
 
                     if (!string.IsNullOrWhiteSpace(state.Type))
                         hostMobTypeBySyncId[state.Index] = state.Type;
 
-                    var mob = ResolveTrackedMobForIncomingStateLocked(state, s_usedTrackedMobsScratch);
+                    var effectiveState = state;
+                    if (string.IsNullOrWhiteSpace(effectiveState.Type) &&
+                        hostMobTypeBySyncId.TryGetValue(state.Index, out var cachedType) &&
+                        !string.IsNullOrWhiteSpace(cachedType))
+                    {
+                        effectiveState = new NetNode.MobStateSnapshot(
+                            state.Index, state.X, state.Y, state.Dir, state.Life, state.MaxLife,
+                            state.AnimPayload, cachedType, state.StatePayload, state.Generation,
+                            state.Time, state.Dx, state.Dy);
+                    }
+
+                    var mob = ResolveTrackedMobForIncomingStateLocked(effectiveState, s_usedTrackedMobsScratch);
                     if (mob == null)
                         continue;
 
@@ -167,23 +294,53 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     var incomingDir = NormalizeDir(state.Dir);
                     clientLastReportedMobLife[mob] = state.Life;
                     clientAuthoritativeStateSeenSyncIds.Add(state.Index);
+
+                    var hasPreviousTarget = clientMobTargets.TryGetValue(mob, out var previousTarget);
+                    var positionFresh = ShouldAcceptHostPositionFrameLocked(
+                        state.Index,
+                        state.Time,
+                        forceWhenUntimed: !hasPreviousTarget || state.Life <= 0);
                     s_hostStateAppliesScratch.Add(new PendingHostStateApply(
                         state.Index,
                         mob,
                         state.Life,
                         state.MaxLife,
-                        incomingDir,
-                        state.StatePayload ?? string.Empty));
+                        positionFresh ? incomingDir : 0,
+                        positionFresh ? state.StatePayload ?? string.Empty : string.Empty));
+                    if (!positionFresh && hasPreviousTarget)
+                        continue;
 
                     var mergedAnimPayload = state.AnimPayload ?? string.Empty;
                     var hasExplicitStatePayload = TryDecodeStatePayloadFromWire(state.StatePayload, out var mergedStatePayload);
-                    if (clientMobTargets.TryGetValue(mob, out var previousTarget))
+                    if (hasPreviousTarget)
                     {
                         if (string.IsNullOrEmpty(mergedAnimPayload))
                             mergedAnimPayload = previousTarget.AnimPayload;
                         if (!hasExplicitStatePayload)
                             mergedStatePayload = previousTarget.StatePayload;
                     }
+
+                    // See ApplyIncomingHostMobMoves: the horizontal snap flag must not persist
+                    // across packets or interpolation dies after the first teleport. Vertical
+                    // snap stays latched only while no horizontal teleport is also in flight.
+                    var forcePositionSnap =
+                        ShouldForceClientMobPositionSnap(
+                            mob,
+                            hasPreviousTarget,
+                            previousTarget,
+                            state.X,
+                            state.Y,
+                            state.AnimPayload);
+                    var forceVerticalPositionSnap =
+                        (hasPreviousTarget && previousTarget.ForceVerticalPositionSnap && !previousTarget.ForcePositionSnap) ||
+                        ShouldForceClientMobVerticalPositionSnap(
+                            mob,
+                            hasPreviousTarget,
+                            previousTarget,
+                            state.X,
+                            state.Y,
+                            state.AnimPayload,
+                            state.Dy);
 
                     clientMobTargets[mob] = new ClientMobState(
                         state.X,
@@ -195,13 +352,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         mergedStatePayload,
                         state.Time,
                         state.Dx,
-                        state.Dy);
+                        state.Dy,
+                        GetCurrentFrame(mob),
+                        forcePositionSnap,
+                        forceVerticalPositionSnap);
                 }
             }
 
             LogRejectedPacketGeneration("hostStateOnClient", rejectedCount, rejectedGeneration);
 
             s_usedTrackedMobsScratch.Clear();
+            s_latestPacketSyncIdsScratch.Clear();
 
             for (int i = 0; i < s_hostStateAppliesScratch.Count; i++)
             {
@@ -222,20 +383,25 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (moves == null || moves.Count == 0)
                 return;
 
+            s_latestPacketSyncIdsScratch.Clear();
             var rejectedGeneration = 0;
             var rejectedCount = 0;
             lock (Sync)
             {
                 PruneInvalidTrackedMobsLocked();
 
-                for (int i = 0; i < moves.Count; i++)
+                for (int i = moves.Count - 1; i >= 0; i--)
                 {
                     var move = moves[i];
                     if (!ShouldAcceptPacketGenerationLocked(move.Generation, ref rejectedCount, ref rejectedGeneration))
                         continue;
+                    if (!s_latestPacketSyncIdsScratch.Add(move.Index))
+                        continue;
 
                     var mob = ResolveTrackedMobBySyncIdLocked(move.Index);
                     if (mob == null)
+                        continue;
+                    if (!ShouldAcceptHostPositionFrameLocked(move.Index, move.Time, forceWhenUntimed: false))
                         continue;
 
                     var mergedAnimPayload = move.AnimPayload ?? string.Empty;
@@ -243,6 +409,32 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     {
                         if (string.IsNullOrEmpty(mergedAnimPayload))
                             mergedAnimPayload = previousTarget.AnimPayload;
+
+                        // ForcePositionSnap must describe THIS packet's discontinuity only.
+                        // Carrying the previous flag forward (|=) pinned the mob to hard-snap on
+                        // every subsequent frame after one teleport — permanently killing
+                        // interpolation and making high-BC blink enemies stutter for the rest of
+                        // the fight. The vertical flag is still latched (a fall-through recovery
+                        // must persist until the mob is grounded), but the horizontal snap is
+                        // recomputed fresh each packet.
+                        var forcePositionSnap =
+                            ShouldForceClientMobPositionSnap(
+                                mob,
+                                true,
+                                previousTarget,
+                                move.X,
+                                move.Y,
+                                move.AnimPayload);
+                        var forceVerticalPositionSnap =
+                            (previousTarget.ForceVerticalPositionSnap && !previousTarget.ForcePositionSnap) ||
+                            ShouldForceClientMobVerticalPositionSnap(
+                                mob,
+                                true,
+                                previousTarget,
+                                move.X,
+                                move.Y,
+                                move.AnimPayload,
+                                move.Dy);
 
                         clientMobTargets[mob] = new ClientMobState(
                             move.X,
@@ -254,12 +446,225 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                             previousTarget.StatePayload,
                             move.Time,
                             move.Dx,
-                            move.Dy);
+                            move.Dy,
+                            GetCurrentFrame(mob),
+                            forcePositionSnap,
+                            forceVerticalPositionSnap);
                     }
                 }
             }
 
             LogRejectedPacketGeneration("hostMoveOnClient", rejectedCount, rejectedGeneration);
+            s_latestPacketSyncIdsScratch.Clear();
+        }
+
+        private static bool ShouldForceClientMobPositionSnap(
+            Mob mob,
+            bool hasPreviousTarget,
+            ClientMobState previousTarget,
+            double targetX,
+            double targetY,
+            string? animPayload)
+        {
+            if (!TryGetClientMobSnapSource(
+                    mob,
+                    hasPreviousTarget,
+                    previousTarget,
+                    targetX,
+                    targetY,
+                    out var sourceX,
+                    out var sourceY))
+            {
+                return false;
+            }
+
+            return ShouldTreatMobMoveAsTeleport(sourceX, sourceY, targetX, targetY, animPayload);
+        }
+
+        private static bool ShouldForceClientMobVerticalPositionSnap(
+            Mob mob,
+            bool hasPreviousTarget,
+            ClientMobState previousTarget,
+            double targetX,
+            double targetY,
+            string? animPayload,
+            double hostDy)
+        {
+            // Never vertically relocate a mob on the same packet that created/repaired its mapping.
+            // Wait for an established target first so a distant same-type fallback cannot be placed
+            // below the wrong floor.
+            if (!hasPreviousTarget || !IsTeleportLikeAnimPayload(animPayload))
+                return false;
+
+            var hostVelocityYPx = ToPredictionPixelsPerFrame(hostDy);
+            if (!double.IsFinite(hostVelocityYPx) ||
+                System.Math.Abs(hostVelocityYPx) > ClientTeleportVerticalSnapMaxHostVerticalSpeedPx)
+            {
+                return false;
+            }
+
+            if (!TryGetClientMobSnapSource(
+                    mob,
+                    hasPreviousTarget,
+                    previousTarget,
+                    targetX,
+                    targetY,
+                    out var sourceX,
+                    out var sourceY))
+            {
+                return false;
+            }
+
+            // Every confirmed gravity-mob teleport receives the safe-above-floor landing path,
+            // including mostly horizontal teleports. Keeping the client's old Y while moving to a
+            // different floor profile is what allowed the entity to start inside solid tiles.
+            var horizontalDelta = System.Math.Abs(targetX - sourceX);
+            var verticalDelta = System.Math.Abs(targetY - sourceY);
+            return verticalDelta >= ClientTeleportVerticalSnapMinimumDeltaPx ||
+                   horizontalDelta >= ClientTeleportAnimSnapDistancePx;
+        }
+
+        private static bool TryGetClientMobSnapSource(
+            Mob mob,
+            bool hasPreviousTarget,
+            ClientMobState previousTarget,
+            double targetX,
+            double targetY,
+            out double sourceX,
+            out double sourceY)
+        {
+            sourceX = 0.0;
+            sourceY = 0.0;
+            if (mob == null || !double.IsFinite(targetX) || !double.IsFinite(targetY))
+                return false;
+
+            if (hasPreviousTarget)
+            {
+                // Prefer the mob's ACTUAL rendered position as the teleport source. The last
+                // target may not have been reached yet (grounded mobs converge over several
+                // frames), so measuring from the target under-reports the real visual jump and
+                // can miss a blink that happens mid-correction. Fall back to the previous target
+                // only when the live position is unreadable.
+                double liveX, liveY;
+                try
+                {
+                    liveX = GetWorldX(mob);
+                    liveY = GetWorldY(mob);
+                }
+                catch
+                {
+                    liveX = double.NaN;
+                    liveY = double.NaN;
+                }
+
+                if (double.IsFinite(liveX) && double.IsFinite(liveY))
+                {
+                    // Use whichever source is FARTHER from the target, so neither a lagging
+                    // render position nor a stale target can hide a genuine discontinuity.
+                    var targetToPrevSq =
+                        (previousTarget.X - targetX) * (previousTarget.X - targetX) +
+                        (previousTarget.Y - targetY) * (previousTarget.Y - targetY);
+                    var targetToLiveSq =
+                        (liveX - targetX) * (liveX - targetX) +
+                        (liveY - targetY) * (liveY - targetY);
+
+                    if (targetToLiveSq >= targetToPrevSq)
+                    {
+                        sourceX = liveX;
+                        sourceY = liveY;
+                    }
+                    else
+                    {
+                        sourceX = previousTarget.X;
+                        sourceY = previousTarget.Y;
+                    }
+                }
+                else
+                {
+                    sourceX = previousTarget.X;
+                    sourceY = previousTarget.Y;
+                }
+            }
+            else
+            {
+                try
+                {
+                    sourceX = GetWorldX(mob);
+                    sourceY = GetWorldY(mob);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            return double.IsFinite(sourceX) && double.IsFinite(sourceY);
+        }
+
+        private static bool ShouldTreatMobMoveAsTeleport(
+            double sourceX,
+            double sourceY,
+            double targetX,
+            double targetY,
+            string? animPayload)
+        {
+            if (!double.IsFinite(sourceX) || !double.IsFinite(sourceY) ||
+                !double.IsFinite(targetX) || !double.IsFinite(targetY))
+            {
+                return false;
+            }
+
+            var dx = targetX - sourceX;
+            var dy = targetY - sourceY;
+            var absDx = System.Math.Abs(dx);
+            var absDy = System.Math.Abs(dy);
+            var distanceSq = dx * dx + dy * dy;
+
+            if (IsTeleportLikeAnimPayload(animPayload))
+            {
+                return distanceSq >=
+                       ClientTeleportAnimSnapDistancePx * ClientTeleportAnimSnapDistancePx;
+            }
+
+            // A large vertical delta by itself is usually a normal fall, drop attack, elevator
+            // movement, or knock-back. Only classify an unlabelled discontinuity as a teleport when
+            // it is strongly horizontal. This keeps gravity/collision vanilla and prevents the
+            // client from being placed through a floor by a false teleport snap.
+            if (absDx >= ClientTeleportHorizontalSnapDistancePx &&
+                absDy <= ClientTeleportUnlabelledMaxVerticalDeltaPx &&
+                absDx >= absDy * ClientTeleportHorizontalDominanceRatio)
+            {
+                return true;
+            }
+
+            // Magnitude backstop: an unlabelled jump this large in either axis cannot be ordinary
+            // per-frame motion, so treat it as a teleport even without horizontal dominance. This
+            // is what catches high-BC blink enemies that warp diagonally or straight up/down and
+            // carry no teleport anim token. Flyers get the whole delta; gravity mobs keep their
+            // safe-landing path (this only decides that a discontinuity occurred).
+            return distanceSq >=
+                   ClientTeleportUnlabelledMagnitudeSnapDistancePx * ClientTeleportUnlabelledMagnitudeSnapDistancePx;
+        }
+
+        private static bool IsTeleportLikeAnimPayload(string? animPayload)
+        {
+            if (string.IsNullOrWhiteSpace(animPayload))
+                return false;
+
+            return animPayload.IndexOf("teleport", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   animPayload.IndexOf("warp", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   animPayload.IndexOf("blink", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsJumpLikeAnimPayload(string? animPayload)
+        {
+            if (string.IsNullOrWhiteSpace(animPayload))
+                return false;
+
+            return animPayload.IndexOf("jump", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   animPayload.IndexOf("leap", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   animPayload.IndexOf("pounce", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   animPayload.IndexOf("hop", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static void ApplyAuthoritativeAffectState(int mobSyncId, Mob mob, string? wirePayload)
@@ -278,23 +683,47 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             lock (Sync)
             {
-                if (clientLastAppliedHostAffectPayloadBySyncId.TryGetValue(mobSyncId, out var lastApplied) &&
+                var sameMob = clientLastAppliedHostAffectMobBySyncId.TryGetValue(mobSyncId, out var lastMob) &&
+                              ReferenceEquals(lastMob, mob);
+                if (sameMob &&
+                    clientLastAppliedHostAffectPayloadBySyncId.TryGetValue(mobSyncId, out var lastApplied) &&
                     string.Equals(lastApplied, safePayload, StringComparison.Ordinal))
                 {
                     return;
                 }
 
                 clientLastAppliedHostAffectPayloadBySyncId[mobSyncId] = safePayload;
+                clientLastAppliedHostAffectMobBySyncId[mobSyncId] = mob;
             }
 
-            if (BossSyncHelpers.IsBossMob(mob))
+            RunWithSuppressedClientAffectDirty(() =>
             {
-                BossStateSync.ApplyBossStateFromPayload(mob, safePayload);
-                return;
-            }
+                if (BossSyncHelpers.IsBossMob(mob))
+                {
+                    BossStateSync.ApplyBossStateFromPayload(mob, safePayload);
+                    MarkClientBossPresentationLease(mob);
+                    return;
+                }
 
-            ApplyExplicitAffectPayload(mob, safePayload);
-            BossStateSync.ApplyBossStateFromPayload(mob, safePayload);
+                ApplyExplicitAffectPayload(mob, safePayload);
+                BossStateSync.ApplyBossStateFromPayload(mob, safePayload);
+            });
+        }
+
+        private static void RunWithSuppressedClientAffectDirty(Action action)
+        {
+            if (action == null)
+                return;
+
+            suppressClientAffectDirtyDepth++;
+            try
+            {
+                action();
+            }
+            finally
+            {
+                suppressClientAffectDirtyDepth--;
+            }
         }
 
         private static void ApplyExplicitAffectPayload(Mob mob, string payload)
@@ -462,15 +891,105 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     if (!ShouldAcceptPacketGenerationLocked(attack.Generation, ref rejectedCount, ref rejectedGeneration))
                         continue;
                     mob = ResolveTrackedMobForIncomingAttackLocked(attack);
+                    // Phase 3: deterministically drop a replayed / out-of-order boss attack whose
+                    // sequence was already applied for this stable identity. Pure check only — the
+                    // high-water mark is advanced *after* the attack is actually queued below.
+                    if (mob != null && IsReplayedBossAttackLocked(mob, attack.AttackSeq))
+                        continue;
                 }
 
                 if (mob == null)
+                {
+                    QueuePendingClientBossAttack(attack);
                     continue;
+                }
 
+                // Native boss attacks are not atomic: their projectiles, phase transitions, landing
+                // motion, cleanup and dialogue often run for many later updates.  The client queue
+                // guard still prevents the replica from choosing unrelated attacks, while the
+                // presentation lease below lets the host-selected skill finish its vanilla lifecycle.
                 TryQueueClientMobAttack(mob, attack.SkillId, attack.RequiresTargetInArea, attack.Data, attack.TargetUserId, attack.Dir);
+                // Phase 3 fix: only now that the attack was dispatched to the client attack
+                // processor is the sequence considered applied. An attack that was buffered (mob
+                // unresolved) never reaches here, so a legitimate retry is not blocked.
+                lock (Sync)
+                {
+                    MarkBossAttackAppliedLocked(mob, attack.AttackSeq);
+                }
             }
 
             LogRejectedPacketGeneration("hostAttackOnClient", rejectedCount, rejectedGeneration);
+        }
+
+        private static void QueuePendingClientBossAttack(NetNode.MobAttack attack)
+        {
+            lock (Sync)
+            {
+                var expectedType = attack.Type;
+                if (string.IsNullOrWhiteSpace(expectedType))
+                    hostMobTypeBySyncId.TryGetValue(attack.Index, out expectedType);
+                if (!BossSyncHelpers.IsBossTypeSignature(expectedType))
+                    return;
+
+                if (clientPendingBossAttacks.Count >= ClientPendingBossAttackLimit)
+                    clientPendingBossAttacks.RemoveAt(0);
+
+                clientPendingBossAttacks.Add(new PendingClientBossAttack(
+                    attack,
+                    GetCurrentFrame(null) + ClientPendingBossAttackRetryFrames));
+            }
+        }
+
+        private static void RetryPendingClientBossAttacks()
+        {
+            s_resolvedClientBossAttacksScratch.Clear();
+            var frame = GetCurrentFrame(null);
+
+            lock (Sync)
+            {
+                for (var i = clientPendingBossAttacks.Count - 1; i >= 0; i--)
+                {
+                    var pending = clientPendingBossAttacks[i];
+                    if (pending.Attack.Generation != s_levelIdentityToken ||
+                        frame > pending.ExpiresAtFrame)
+                    {
+                        clientPendingBossAttacks.RemoveAt(i);
+                        continue;
+                    }
+
+                    var mob = ResolveTrackedMobForIncomingAttackLocked(pending.Attack);
+                    if (mob == null)
+                        continue;
+
+                    clientPendingBossAttacks.RemoveAt(i);
+                    // Phase 3: a fresher packet may already have applied this (or a newer) sequence
+                    // while it was buffered; drop the stale replay instead of double-firing. Pure
+                    // check — the mark is advanced only after the attack is queued below.
+                    if (IsReplayedBossAttackLocked(mob, pending.Attack.AttackSeq))
+                        continue;
+                    s_resolvedClientBossAttacksScratch.Add(new ResolvedClientBossAttack(mob, pending.Attack));
+                }
+            }
+
+            // Reverse the scratch list because pending entries were removed newest-to-oldest.
+            for (var i = s_resolvedClientBossAttacksScratch.Count - 1; i >= 0; i--)
+            {
+                var resolved = s_resolvedClientBossAttacksScratch[i];
+                TryQueueClientMobAttack(
+                    resolved.Mob,
+                    resolved.Attack.SkillId,
+                    resolved.Attack.RequiresTargetInArea,
+                    resolved.Attack.Data,
+                    resolved.Attack.TargetUserId,
+                    resolved.Attack.Dir);
+                // Phase 3 fix: sequence is applied only after the buffered attack was dispatched.
+                lock (Sync)
+                {
+                    MarkBossAttackAppliedLocked(resolved.Mob, resolved.Attack.AttackSeq);
+                }
+            }
+
+            s_resolvedClientBossAttacksScratch.Clear();
         }
 
         private static void ConsumeIncomingMobDraws(NetNode net)
@@ -544,7 +1063,14 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             var intent = new ClientMobAttackIntent(skillId, requiresTargetInArea, data, targetUserId, attackDir);
-            ProcessClientMobAttackIntent(mob, intent);
+            if (BossSyncHelpers.IsBossMob(mob))
+            {
+                MarkClientBossSkillCallbackLease(mob);
+                // Force boss entity sync when attack starts to ensure projectiles/tentacles are in sync
+                if (TryGetMobSyncId(mob, out var mobSyncId))
+                    EnqueueHostMobDirtyLocked(mobSyncId, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
+            }
+            WithClientNetworkAttackReplayContext(mob, () => ProcessClientMobAttackIntent(mob, intent));
         }
 
         private static void ProcessClientMobAttackIntent(Mob mob, ClientMobAttackIntent intent)
@@ -670,6 +1196,25 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (ShouldSkipClientOldSkillExecuteFromMarker(mob, normalizedSkillId))
                 return;
 
+            // Context validation: skill bodies read level state directly (the Giant hand's
+            // shootGrid reads level .wid), and executing one against a detached or mid-transition
+            // mob hard-throws inside native code. A Hashlink exception unwinding out of a
+            // half-executed skill leaves VM state inconsistent - prime suspect for the stackless
+            // 0xCFFFFFFF exits. Never replay into that state.
+            if (mob == null || mob.destroyed || mob._level == null ||
+                (currentLevel != null && !ReferenceEquals(mob._level, currentLevel)))
+                return;
+
+            var replayKey = BuildMobStateTypeSignature(mob) + "|" + normalizedSkillId;
+            lock (Sync)
+            {
+                // Self-healing blocklist: a (boss type, skill) pair that ever threw is never
+                // replayed again this session. The anim payload still shows the attack visually;
+                // only the crashing native re-execution stops.
+                if (s_poisonedOldSkillReplays.Contains(replayKey))
+                    return;
+            }
+
             try
             {
                 var skillId = normalizedSkillId.AsHaxeString();
@@ -714,9 +1259,15 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
             catch (Exception ex)
             {
-                Log.Warning(ex, "[MobsSync] Client oldSkill execute failed: {SkillId}", normalizedSkillId);
+                lock (Sync)
+                {
+                    s_poisonedOldSkillReplays.Add(replayKey);
+                }
+                Log.Warning(ex, "[MobsSync] Client oldSkill execute failed (replay poisoned for this session): {SkillId}", normalizedSkillId);
             }
         }
+
+        private static readonly HashSet<string> s_poisonedOldSkillReplays = new(StringComparer.Ordinal);
 
         private static void ProcessClientOldSkillPrepare(Mob mob, string rawSkillId, ClientMobAttackIntent intent)
         {
@@ -1374,9 +1925,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                     var mob = ResolveMobFromDieLocked(die);
                     if (mob == null)
+                    {
+                        // A dropped boss death is what strands the client boss at 0/1 HP with a
+                        // locked camera and no rewards. Buffer boss-typed packets for retry and
+                        // bounded escalation instead of losing them.
+                        RememberUnresolvedBossDieLocked(die);
                         continue;
+                    }
 
                     var isBoss = BossSyncHelpers.IsBossMob(mob);
+                    if (isBoss && clientCompletedAuthoritativeBossDeaths.Contains(mob))
+                        continue;
                     var life = 0;
                     try
                     {
@@ -1416,16 +1975,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 // local kill), corrupting their death state - the source of the level-transition
                 // render fatal. The deferred flush skips mobs that finish destroying themselves
                 // and only completes genuinely stuck ghosts.
-                if (!IsHost(GameMenu.NetRef) && !BossSyncHelpers.IsBossMob(mob))
-                {
-                    TryDeferCulledClientMobDeath(mob);
+                if (!IsHost(GameMenu.NetRef) && !BossSyncHelpers.IsBossMob(mob) && TryDeferCulledClientMobDeath(mob))
                     continue;
-                }
 
                 TryWakeMobForForcedSimulation(mob);
                 try
                 {
-                    RunWithAuthoritativeClientBossDie(mob, () =>
+                    RunWithAuthoritativeClientMobDie(mob, () =>
                     {
                         RunWithSuppressedMobDieSend(() =>
                         {
@@ -1433,13 +1989,39 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                             mob.onDie();
                         });
                     });
+
+                    if (BossSyncHelpers.IsBossMob(mob) && IsCompletedAuthoritativeBossDeath(mob))
+                    {
+                        lock (Sync)
+                        {
+                            clientCompletedAuthoritativeBossDeaths.Add(mob);
+                            s_clientBossAuthoritativeZeroLifeFrame.Remove(mob);
+                        }
+                    }
+
                 }
                 catch
                 {
                 }
+
             }
 
             s_dieVictimsScratch.Clear();
+        }
+
+        private static bool IsCompletedAuthoritativeBossDeath(Mob mob)
+        {
+            if (mob == null)
+                return false;
+
+            try
+            {
+                return mob.destroyed || mob.life <= 0;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static void ApplyIncomingMobHits(IReadOnlyList<NetNode.MobHit> hits, bool reResolveMobBySyncIdOnApply)
@@ -1484,11 +2066,21 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         continue;
 
                     var targetLife = System.Math.Clamp(hit.Hp, 0, maxLife);
-                    var replaySpecialHit = false;
+                    var isBoss = BossSyncHelpers.IsBossMob(mob);
+                    // Never assign a remote client's absolute boss HP to the host.  It may be one
+                    // packet behind or use a freshly rebuilt phase proxy.  Replay the reported
+                    // damage through native host hit handling so invulnerability, phase changes,
+                    // onDamage and final-death callbacks remain authoritative and idempotent.
+                    var replaySpecialHit = isHost && isBoss && hit.DamageHint > 0.0;
+                    if (replaySpecialHit)
+                        targetLife = prevLife;
 
-                    if (targetLife >= prevLife)
+                    // On a client, every hit in this queue came from the authoritative host.  Apply
+                    // its absolute result even when it raises a locally speculative/stale boss HP
+                    // value.  Host-side client reports remain damage intents, never healing input.
+                    if (isHost && !replaySpecialHit && targetLife >= prevLife)
                     {
-                        replaySpecialHit = ShouldReplayIncomingHitWithoutLifeDelta(mob);
+                        replaySpecialHit = hit.DamageHint > 0.0 || ShouldReplayIncomingHitWithoutLifeDelta(mob);
                         if (!replaySpecialHit)
                             continue;
 
@@ -1507,8 +2099,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         maxLife,
                         forceDie,
                         syncId,
-                        BossSyncHelpers.IsBossMob(mob),
-                        replaySpecialHit));
+                        isBoss,
+                        replaySpecialHit,
+                        hit.DamageHint));
                 }
             }
 
@@ -1542,7 +2135,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (update.ReplaySpecialHit)
                 {
                     TryWakeMobForForcedSimulation(mob);
-                    TryReplayIncomingSpecialHitReaction(mob);
+                    TryReplayIncomingSpecialHitReaction(mob, update.DamageHint);
                     appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);
                 }
                 else if (update.ForceDie)
@@ -1590,15 +2183,33 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (isHost)
                     TryApplyHostMobHitCombatRefresh(mob, update.SourceUserId, update.PreviousLife, appliedLife, update.ReplaySpecialHit);
 
+                if (isHost && update.IsBoss)
+                {
+                    var bossStillPresent = false;
+                    try { bossStillPresent = !mob.destroyed; } catch { }
+                    if (bossStillPresent)
+                    {
+                        // The same host frame publishes a reliable, fully-typed boss keyframe.
+                        // This heals HP, phase, and proxy bindings together instead of waiting for
+                        // the periodic resync after a remote player's hit.
+                        QueueHostMobDirty(mob, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
+                    }
+                }
+
                 if (isHost && net != null && update.SyncId >= 0)
                 {
-                    var sx = GetWorldX(mob);
-                    var sy = GetWorldY(mob);
-                    var dir = NormalizeDir(mob.dir);
-                    var hitEv = $"hit|{appliedLife.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
-                    if (TryGetCurrentLevelIdentityToken(out var identityToken))
+                    var destroyed = false;
+                    try { destroyed = mob.destroyed; } catch { }
+                    // A lethal native replay already emitted the authoritative death/tombstone.
+                    // Do not read coordinates from a disposed proxy just to send a redundant HP=0.
+                    if (!destroyed && TryGetCurrentLevelIdentityToken(out var identityToken))
                     {
-                        var evUpdate = new NetNode.MobEventUpdate(update.SyncId, sx, sy, dir, SingleEvent(hitEv), generation: identityToken);
+                        var sx = GetWorldX(mob);
+                        var sy = GetWorldY(mob);
+                        var dir = NormalizeDir(mob.dir);
+                        var hitEv = $"hit|{appliedLife.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+                        var mobType = BuildMobStateTypeSignature(mob);
+                        var evUpdate = new NetNode.MobEventUpdate(update.SyncId, sx, sy, dir, SingleEvent(hitEv), mobType, identityToken);
                         MobSyncTrace.LogSendMobEvents(MobSyncNetRoleForTrace(net), SingleUpdate(evUpdate));
                         net.SendMobEvents(SingleUpdate(evUpdate));
                     }
@@ -1613,35 +2224,58 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null)
                 return;
 
+            var replayAttempted = false;
             try
             {
                 var damage = System.Math.Max(1.0, targetMaxLife * 8.0);
+                Hero? sourceHero = ModEntry.me ?? ModCore.Modules.Game.Instance?.HeroInstance;
+                try
+                {
+                    if (sourceHero != null && sourceHero.destroyed)
+                        sourceHero = null;
+                }
+                catch
+                {
+                    sourceHero = null;
+                }
+
                 var attackUtils = AttackUtils.Class;
                 var createFromHeroAndHit = attackUtils?.createFromHeroAndHit;
                 if (createFromHeroAndHit != null)
                 {
-                    _ = createFromHeroAndHit(null, damage, null, mob);
+                    replayAttempted = true;
+                    _ = createFromHeroAndHit(sourceHero, damage, null, mob);
                     if (TryFinalizeHostMobDeath(mob))
+                        return;
+
+                    // A boss that is alive after one valid finishing hit may have entered its next
+                    // phase or a temporary invulnerability window. Never immediately hit it again
+                    // or force life to zero; that skipped multi-phase vanilla boss logic.
+                    if (GetMobLifeOrFallback(mob, 1) > 0)
                         return;
                 }
 
                 var createFromHero = attackUtils?.createFromHero;
                 var hit = attackUtils?.hit;
-                if (createFromHero != null && hit != null)
+                if (!replayAttempted && createFromHero != null && hit != null)
                 {
-                    var attack = createFromHero(null, damage, null);
+                    var attack = createFromHero(sourceHero, damage, null);
                     if (attack != null)
                     {
+                        replayAttempted = true;
                         hit(attack, mob);
                         if (TryFinalizeHostMobDeath(mob))
+                            return;
+
+                        if (GetMobLifeOrFallback(mob, 1) > 0)
                             return;
                     }
                 }
 
-                if (TryFinalizeHostMobDeath(mob))
+                if (replayAttempted || TryFinalizeHostMobDeath(mob))
                     return;
 
-                // Last-resort force; some bosses need explicit life zero before onDie branching.
+                // Last resort only when this game/proxy revision exposes no valid attack helper.
                 mob.life = 0;
                 TryFinalizeHostMobDeath(mob);
             }
@@ -1723,7 +2357,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
         }
 
-        private static void TryReplayIncomingSpecialHitReaction(Mob mob)
+        private static void TryReplayIncomingSpecialHitReaction(Mob mob, double damageHint = 1.0)
         {
             if (mob == null)
                 return;
@@ -1738,11 +2372,29 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             {
                 RunWithSuppressedMobHitSend(() =>
                 {
+                    var safeDamage = double.IsFinite(damageHint) && damageHint > 0.0
+                        ? System.Math.Clamp(damageHint, 1.0, System.Math.Max(1.0, GetMobLifeOrFallback(mob, 1) * 8.0))
+                        : 1.0;
+                    Hero? replaySourceHero = null;
+                    if (IsHost(GameMenu.NetRef))
+                    {
+                        replaySourceHero = ModEntry.me ?? ModCore.Modules.Game.Instance?.HeroInstance;
+                        try
+                        {
+                            if (replaySourceHero != null && replaySourceHero.destroyed)
+                                replaySourceHero = null;
+                        }
+                        catch
+                        {
+                            replaySourceHero = null;
+                        }
+                    }
+
                     var attackUtils = AttackUtils.Class;
                     var createFromHeroAndHit = attackUtils?.createFromHeroAndHit;
                     if (createFromHeroAndHit != null)
                     {
-                        _ = createFromHeroAndHit(null, 1.0, null, mob);
+                        _ = createFromHeroAndHit(replaySourceHero, safeDamage, null, mob);
                         return;
                     }
 
@@ -1751,7 +2403,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     if (createFromHero == null || hit == null)
                         return;
 
-                    var attack = createFromHero(null, 1.0, null);
+                    var attack = createFromHero(replaySourceHero, safeDamage, null);
                     if (attack != null)
                         hit(attack, mob);
                 });
@@ -1817,21 +2469,140 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return registryMob;
             }
 
+            var missReason = registryMob == null ? "missing_sync_id" : "type_mismatch";
             MobSyncTrace.LogIncomingMappingMismatch(
                 "hit",
                 hit.MobIndex,
                 hit.Type ?? string.Empty,
                 registryMob != null ? BuildMobStateTypeSignature(registryMob) : string.Empty,
-                registryMob == null ? "missing_sync_id" : "type_mismatch");
+                missReason);
 
-            // Only the missing_sync_id case feeds the ghost despawn echo: the host tracks NO mob
-            // at this syncId in the current generation, so the client's same-generation mob at
-            // this syncId can only be a stale ghost. (type_mismatch means the host DOES have a
-            // mob there — echoing a death then could kill a legitimate mob.)
+            // Host-side recovery: if the sync-id dictionary was pruned but the actual mob is
+            // still alive in the current level, rebind by type + nearby position. This keeps
+            // client kills authoritative without reviving a host-only ghost mob later.
+            if (registryMob == null &&
+                TryResolveHostMissingHitMobLocked(hit, out var fallbackMob, out var candidateCount) &&
+                fallbackMob != null)
+            {
+                TryRebindTrackedMobSyncIdLocked(fallbackMob, hit.MobIndex);
+                MobSyncTrace.LogFallbackMatchResolved(
+                    "hit_missing_sync_id",
+                    hit.MobIndex,
+                    hit.Type ?? string.Empty,
+                    hit.X,
+                    hit.Y,
+                    candidateCount,
+                    rebound: true);
+                return fallbackMob;
+            }
+
+            // Only unresolved missing_sync_id feeds the ghost despawn echo: the host tracks NO mob
+            // and cannot find a live local candidate, so the client's same-generation mob at this
+            // syncId can only be stale. (type_mismatch means the host DOES have a mob there —
+            // echoing a death then could kill a legitimate mob.)
             if (registryMob == null)
                 RecordGhostHitMissLocked(hit);
 
             return null;
+        }
+
+        private static bool TryResolveHostMissingHitMobLocked(NetNode.MobHit hit, out Mob? uniqueMob, out int candidateCount)
+        {
+            uniqueMob = null;
+            candidateCount = 0;
+
+            if (!IsHost(GameMenu.NetRef))
+                return false;
+            if (hit.MobIndex < 0)
+                return false;
+            if (string.IsNullOrWhiteSpace(hit.Type))
+                return false;
+            if (!double.IsFinite(hit.X) || !double.IsFinite(hit.Y))
+                return false;
+
+            var level = currentLevel;
+            var entities = level?.entities;
+            if (entities == null || entities.length <= 0)
+                return false;
+
+            var maxDistanceSq = MobHitMissingSyncIdRebindDistancePx * MobHitMissingSyncIdRebindDistancePx;
+            var bestDistanceSq = double.MaxValue;
+            var secondBestDistanceSq = double.MaxValue;
+            Mob? bestMob = null;
+
+            for (int i = 0; i < entities.length; i++)
+            {
+                if (entities.getDyn(i) is not Mob mob)
+                    continue;
+                if (!IsStateRebindCandidateLocked(mob))
+                    continue;
+                if (!DoesMobMatchStateType(mob, hit.Type))
+                    continue;
+
+                // Do not steal another valid sync id. This fallback is only for mobs that are
+                // alive locally but lost/unbound in the host registry.
+                if (MobToId.TryGetValue(mob, out var existingSyncId) && existingSyncId != hit.MobIndex)
+                    continue;
+
+                double dx;
+                double dy;
+                try
+                {
+                    dx = GetWorldX(mob) - hit.X;
+                    dy = GetWorldY(mob) - hit.Y;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (!double.IsFinite(dx) || !double.IsFinite(dy))
+                    continue;
+
+                var distanceSq = dx * dx + dy * dy;
+                if (distanceSq > maxDistanceSq)
+                    continue;
+
+                candidateCount++;
+                if (distanceSq < bestDistanceSq)
+                {
+                    secondBestDistanceSq = bestDistanceSq;
+                    bestDistanceSq = distanceSq;
+                    bestMob = mob;
+                }
+                else if (distanceSq < secondBestDistanceSq)
+                {
+                    secondBestDistanceSq = distanceSq;
+                }
+            }
+
+            if (bestMob == null || candidateCount <= 0)
+                return false;
+
+            if (candidateCount > 1 &&
+                secondBestDistanceSq < double.MaxValue &&
+                System.Math.Sqrt(secondBestDistanceSq) - System.Math.Sqrt(bestDistanceSq) < MobFallbackMinimumScoreGap)
+            {
+                lock (Sync)
+                {
+                    var currentFrame = (int)GetCurrentFrame(null);
+                    if (currentFrame - s_lastAmbiguousFallbackLogFrame >= AmbiguousFallbackLogCooldownFrames)
+                    {
+                        MobSyncTrace.LogAmbiguousMatchRejected(
+                            "hit_missing_sync_id",
+                            hit.MobIndex,
+                            hit.Type ?? string.Empty,
+                            hit.X,
+                            hit.Y,
+                            candidateCount);
+                        s_lastAmbiguousFallbackLogFrame = currentFrame;
+                    }
+                }
+                return false;
+            }
+
+            uniqueMob = bestMob;
+            return true;
         }
 
         /// <summary>
@@ -1984,7 +2755,57 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             lock (Sync)
             {
-                return ResolveMobBySyncIdLocked(die.MobIndex);
+                var mapped = ResolveMobBySyncIdLocked(die.MobIndex);
+                if (mapped != null)
+                {
+                    if (string.IsNullOrWhiteSpace(die.Type) ||
+                        DoesMobMatchStateType(mapped, die.Type) ||
+                        (BossSyncHelpers.IsBossMob(mapped) && DoesBossMatchAuthoritativeType(mapped, die.Type)))
+                    {
+                        return mapped;
+                    }
+
+                    InvalidateTrackedSyncCacheLocked(die.MobIndex, "death_type_mismatch");
+                    MobSyncTrace.LogIncomingMappingMismatch(
+                        "death",
+                        die.MobIndex,
+                        die.Type,
+                        BuildMobStateTypeSignature(mapped),
+                        "type_mismatch");
+                }
+
+                // An untyped legacy MOBDIE packet must never let an
+                // unrelated missing normal-mob death fall through and select the only boss.
+                if (string.IsNullOrWhiteSpace(die.Type))
+                    return null;
+
+                // MOBEVENT deaths carry the host type signature.  This is the last-resort path for
+                // a boss whose native phase rebuilt the local wrapper between its final HP state
+                // and death packet.  Require one unique compatible boss; never guess among Boss
+                // Rush encounters.
+                Mob? uniqueBoss = null;
+                var candidateCount = 0;
+                for (var i = 0; i < trackedMobs.Count; i++)
+                {
+                    var candidate = trackedMobs[i];
+                    if (candidate == null || !IsStateRebindCandidateLocked(candidate) ||
+                        !BossSyncHelpers.IsBossMob(candidate) ||
+                        !DoesBossMatchAuthoritativeType(candidate, die.Type))
+                    {
+                        continue;
+                    }
+
+                    candidateCount++;
+                    uniqueBoss = candidate;
+                    if (candidateCount > 1)
+                        return null;
+                }
+
+                if (uniqueBoss == null)
+                    return null;
+
+                TryRebindTrackedMobSyncIdLocked(uniqueBoss, die.MobIndex);
+                return uniqueBoss;
             }
         }
 

@@ -11,6 +11,7 @@ using ModCore.Utilities;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Text;
@@ -40,6 +41,12 @@ namespace DeadCellsMultiplayerMod
         private static readonly object _bossRuneLock = new();
         private static int? _remoteBossRune;
         private static int? _hostBossRune;
+        private static readonly object _bossRuneHudRefreshLock = new();
+        private static int? _pendingBossRuneHudValue;
+        private static long _bossRuneHudRefreshUntilTickMs;
+        private static long _nextBossRuneHudRefreshTickMs;
+        private const long BossRuneHudRefreshDurationMs = 3000;
+        private const long BossRuneHudRefreshIntervalMs = 150;
         private static string? _remoteProgressPayload;
         public static string? HostProgressPayload;
         private static bool _origProgressCaptured;
@@ -144,29 +151,109 @@ namespace DeadCellsMultiplayerMod
             ModEntry.kingInitialized = false;
             ModEntry._ghost = null!;
             var net = GameMenu.NetRef;
-            var shouldSynchronizeSeed = ShouldSynchronizeRunSeed(gdata);
+            var launchKind = GetLaunchKind(gdata);
+            var nativeBossRushLaunch = IsBossRushLaunchKind(launchKind);
+            var expectedBossRushLaunch = nativeBossRushLaunch ||
+                                         (net?.IsHost == true && GameMenu.HasPrecommittedHostBossRushLaunch()) ||
+                                         (net != null && !net.IsHost && GameMenu.HasPendingRemoteBossRushLaunch());
+            if (expectedBossRushLaunch && !nativeBossRushLaunch)
+            {
+                // Some generated bindings expose the Boss Rush launch variant with a runtime name
+                // that does not contain the expected token. The synchronized door precommit is a
+                // stronger signal than the local type name, so normalize the wire identity here.
+                launchKind = "dc.LaunchMode+BossRush";
+            }
+            var shouldSynchronizeSeed = gdata is LaunchMode.NewGame || expectedBossRushLaunch;
             if (net == null || !net.IsAlive)
                 RestoreOriginalUserState(self, true);
 
             if (net != null && net.IsHost)
             {
-                if (shouldSynchronizeSeed)
-                    Seed = GameMenu.ForceGenerateServerSeed("NewGame_hook");
-                else
-                    Seed = lvl;
-                SendBossRune(self, net);
-                SendSerializerSync(net);
-                if (shouldSynchronizeSeed)
-                    net.SendSeed(Seed);
-            }
-            else if (net != null)
-            {
-                if (shouldSynchronizeSeed && GameMenu.TryGetRemoteSeed(out var remoteSeed))
+                var reusedPrecommittedSeed = false;
+                var seedSequence = 0;
+                if (shouldSynchronizeSeed &&
+                    GameMenu.TryConsumePrecommittedHostRunSeed(launchKind, out var precommittedSeed, out var precommittedSequence))
                 {
-                    Seed = remoteSeed;
+                    Seed = precommittedSeed;
+                    seedSequence = precommittedSequence;
+                    reusedPrecommittedSeed = true;
+                    _log?.Information(
+                        "[NetMod] Reusing precommitted host seed seq={Sequence} seed={Seed} launch={LaunchKind}",
+                        seedSequence,
+                        Seed,
+                        launchKind);
+                }
+                else if (shouldSynchronizeSeed && ShouldGenerateFreshHostSeed(gdata))
+                {
+                    Seed = GameMenu.ForceGenerateServerSeed("NewGame_hook");
                 }
                 else
                 {
+                    Seed = lvl;
+                }
+
+                SendBossRune(self, net);
+                SendSerializerSync(net);
+                if (shouldSynchronizeSeed)
+                {
+                    if (!reusedPrecommittedSeed)
+                        seedSequence = GameMenu.RegisterHostRunSeed(Seed, launchKind, "user.newGame");
+
+                    // Commit/ACK/execute is now the authoritative launch barrier. The legacy seed
+                    // remains as a migration/debug packet, but cannot make a v0.8.90 client load by itself.
+                    GameMenu.CommitHostRunLaunchFromHook(Seed, seedSequence, launchKind);
+                    // Resending the same precommitted sequence is intentional: it refreshes the
+                    // host cache and covers a client that completed its handshake during the intro.
+                    net.SendSeed(seedSequence, Seed, launchKind);
+                    GameMenu.MarkRunLaunchLoading(seedSequence, $"host_user.newGame:{launchKind}");
+                }
+            }
+            else if (net != null)
+            {
+                if (shouldSynchronizeSeed &&
+                    GameMenu.TryConsumeNextRemoteRunSeed(out var remoteSeed, out var remoteSequence, out var remoteLaunchKind))
+                {
+                    Seed = remoteSeed;
+                    GameMenu.MarkRunLaunchLoading(remoteSequence, $"client_user.newGame:{remoteLaunchKind}");
+                    if (!string.IsNullOrWhiteSpace(remoteLaunchKind) &&
+                        !string.Equals(remoteLaunchKind, launchKind, StringComparison.Ordinal))
+                    {
+                        _log?.Warning(
+                            "[NetMod] Host/client launch kind differs for seed seq={Sequence}: host={HostLaunch} client={ClientLaunch}",
+                            remoteSequence,
+                            remoteLaunchKind,
+                            launchKind);
+                    }
+                }
+                else if (GameMenu.TryGetPendingRemoteBossRushSeed(out var authoritativeBossRushSeed))
+                {
+                    // Authoritative host seed already received but not consumed via the coordinator
+                    // (e.g. arrived a frame late). This is still the host's seed, not a local one.
+                    Seed = authoritativeBossRushSeed;
+                    _log?.Warning(
+                        "[NetMod][BossRushSeed] Using already-received authoritative host Boss Rush seed {Seed} (coordinator consume missed)",
+                        authoritativeBossRushSeed);
+                }
+                else if (shouldSynchronizeSeed)
+                {
+                    // Protocol 17: never silently generate a local Boss Rush / run on the client. The
+                    // launch gate (GameMenu.TryBeginLocalBossRushLoad / structured auto-start) is meant
+                    // to guarantee the authoritative seed is present before newGame runs, so reaching
+                    // here is a hard desync. Keep the native seed only as an unavoidable last resort and
+                    // surface it loudly instead of quietly diverging.
+                    Seed = lvl;
+                    _log?.Error(
+                        "[NetMod][BossRushSeed] CRITICAL desync: no authoritative host seed available at newGame (bossRush={BossRush}); refusing to hide the failure. localSeed={LocalSeed}",
+                        expectedBossRushLaunch,
+                        lvl);
+                    DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI.MultiplayerUI.PushSystemMessage(
+                        GameMenu.Localize("Run failed to synchronize with your friend. Please return to the menu and retry."),
+                        8.0,
+                        1.0);
+                }
+                else
+                {
+                    // Non-synchronized nested launches (challenge rooms, daily, etc.) are intentionally local.
                     Seed = lvl;
                 }
                 if (TryGetRemoteBossRune(out var bossRune))
@@ -179,6 +266,22 @@ namespace DeadCellsMultiplayerMod
                 }
 
                 CaptureOriginalUserData(self, allowReplaceWhenBetter: true);
+            }
+
+            if (expectedBossRushLaunch)
+            {
+                _log?.Information(
+                    "[NetMod][BossRushSeed] Applying authoritative seed role={Role} localSeed={LocalSeed} chosenSeed={ChosenSeed} launch={LaunchKind}",
+                    net?.IsHost == true ? "host" : "client",
+                    lvl,
+                    Seed,
+                    launchKind);
+                BossSyncDiag.Trace(
+                    "bossrush seed applied role={Role} chosenSeed={Seed} localSeed={LocalSeed} launch={Kind}",
+                    BossSyncDiag.Role(net),
+                    Seed,
+                    lvl,
+                    launchKind);
             }
             lvl = Seed;
             _isTwitch = isTwitch;
@@ -194,7 +297,50 @@ namespace DeadCellsMultiplayerMod
 
         private static bool ShouldSynchronizeRunSeed(LaunchMode? launch)
         {
-            return launch is LaunchMode.NewGame;
+            // The initial full run needs a seed barrier. Boss Rush also needs one: the boss
+            // sequence, modifiers and arena order all derive from the launch seed, so without a
+            // shared seed each side fights different encounters. The historical double-load race
+            // this gate used to prevent came from the client-side reconcile restart firing on an
+            // unconsumed nested seed; that restart is now suppressed for Boss Rush kinds in
+            // GameMenu.ReceiveHostRunSeed, so sharing the seed is safe. Challenge rooms, daily
+            // modes and other nested launches stay local.
+            return launch is LaunchMode.NewGame || IsBossRushLaunch(launch);
+        }
+
+        private static bool ShouldGenerateFreshHostSeed(LaunchMode? launch)
+        {
+            return launch is LaunchMode.NewGame || IsBossRushLaunch(launch);
+        }
+
+        internal static bool IsBossRushLaunch(LaunchMode? launch)
+        {
+            return IsBossRushLaunchKind(GetLaunchKind(launch));
+        }
+
+        /// <summary>
+        /// Launch kinds travel on the wire as the runtime type name of the LaunchMode variant
+        /// (e.g. "dc.LaunchMode+BossRush"), so a substring check identifies the mode without a
+        /// compile-time dependency on the generated binding shape.
+        /// </summary>
+        internal static bool IsBossRushLaunchKind(string? launchKind)
+        {
+            return !string.IsNullOrEmpty(launchKind) &&
+                   launchKind.Contains("BossRush", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetLaunchKind(LaunchMode? launch)
+        {
+            if (launch == null)
+                return "unknown";
+
+            try
+            {
+                return launch.GetType().FullName ?? launch.GetType().Name ?? "unknown";
+            }
+            catch
+            {
+                return "unknown";
+            }
         }
 
         public static void MarkProgressPayloadDirty() { }
@@ -380,15 +526,24 @@ namespace DeadCellsMultiplayerMod
 
         public static void TriggerRemoteDeath()
         {
-            _suppressDeathBroadcast = true;
-            GameMenu.EnqueueMainThread(() =>
+            GameMenu.EnqueueCriticalMainThreadCoalesced("game:remote-death", () =>
             {
+                if (ModEntry.IsLocalPlayerDowned())
+                    return;
+
+                _suppressDeathBroadcast = true;
                 try
                 {
                     ModEntry.me?.kill();
                 }
                 catch
                 {
+                }
+                finally
+                {
+                    // kill()/onHeroDie normally consumes this synchronously. Never leave a stale
+                    // suppression flag behind if the hero vanished or native death handling threw.
+                    _suppressDeathBroadcast = false;
                 }
             });
         }
@@ -412,10 +567,11 @@ namespace DeadCellsMultiplayerMod
 
             var levelId = payload[..sep];
             var seedText = payload[(sep + 1)..];
-            if (string.IsNullOrWhiteSpace(levelId))
+            if (string.IsNullOrWhiteSpace(levelId) || levelId.Length > 128)
                 return;
 
-            if (!double.TryParse(seedText, NumberStyles.Float, CultureInfo.InvariantCulture, out var seed))
+            if (!double.TryParse(seedText, NumberStyles.Float, CultureInfo.InvariantCulture, out var seed) ||
+                double.IsNaN(seed) || double.IsInfinity(seed))
                 return;
 
             lock (_levelSeedLock)
@@ -435,6 +591,10 @@ namespace DeadCellsMultiplayerMod
                 if (_remoteLevelSeed.HasValue && string.Equals(_remoteLevelId, levelId, StringComparison.Ordinal))
                 {
                     rng.seed = _remoteLevelSeed.Value;
+                    // One level-seed packet belongs to one graph generation. Leaving it cached made
+                    // a later visit to the same biome reuse an old seed before the new packet arrived.
+                    _remoteLevelId = null;
+                    _remoteLevelSeed = null;
                     return true;
                 }
             }
@@ -447,6 +607,7 @@ namespace DeadCellsMultiplayerMod
             if (net == null || !net.IsAlive || rng == null || string.IsNullOrWhiteSpace(levelId))
                 return;
 
+            GameMenu.PublishInitialLevelSeed(levelId, rng.seed, net);
             SendSerializerSync(net);
             net.SendLevelSeed(levelId, rng.seed);
         }
@@ -644,7 +805,7 @@ namespace DeadCellsMultiplayerMod
                 return;
             }
 
-            int? previousRemote = null;
+            int? previousRemote;
             lock (_bossRuneLock)
             {
                 previousRemote = _remoteBossRune;
@@ -656,27 +817,32 @@ namespace DeadCellsMultiplayerMod
             if (net != null && net.IsHost)
                 return;
 
-            // Only the *host changing* the boss rune should force a graph reload: the first BOSSRUNE after a
-            // reconnect has no previousRemote (cleared session state) but matches local — pending=true was wrong
-            // and triggered reloadAfterBossRuneModif + curCine crashes.
+            RequestBossRuneHudRefresh(bossRune);
+
+            // The client must rebuild only when an established remote boss-rune value changes.
+            // Treating the first sync as a change causes a redundant startup reload; skipping a real
+            // change lets the client load the host graph against stale boss-cell state.
             if (previousRemote.HasValue && previousRemote.Value != bossRune)
                 MarkPendingBossRuneReload(bossRune);
             // _log?.Information("[NetMod] Received remote boss rune {BossRune}", bossRune);
 
-            GameMenu.EnqueueMainThread(() =>
+            GameMenu.EnqueueCriticalMainThreadCoalesced("game:boss-rune-apply", () =>
             {
                 try
                 {
                     var user = dc.Main.Class.ME?.user;
                     if (user != null)
+                    {
                         ApplyRemoteBossRune(user, bossRune);
+                        PumpBossRuneHudRefresh();
+                    }
                 }
                 catch
                 {
                 }
 
-                // If the level graph arrived before the first BOSSRUNE, TryTriggerBossRuneReload bailed early;
-                // re-evaluate after user state matches remote.
+                // The level graph and BOSSRUNE packets may arrive in either order. Re-evaluate after
+                // applying the value so the coalesced, throttled reload path can run once both exist.
                 try
                 {
                     var n = GameMenu.NetRef;
@@ -869,6 +1035,259 @@ namespace DeadCellsMultiplayerMod
             }
 
             _hasRemoteBossRune = true;
+            RequestBossRuneHudRefresh(bossRune);
+        }
+
+        internal static void RequestBossRuneHudRefreshFromRemoteState()
+        {
+            if (TryGetRemoteBossRune(out var bossRune))
+                RequestBossRuneHudRefresh(bossRune);
+        }
+
+        private static void RequestBossRuneHudRefresh(int bossRune)
+        {
+            var net = GameMenu.NetRef;
+            if (net == null || !net.IsAlive || net.IsHost)
+                return;
+
+            var now = Environment.TickCount64;
+            lock (_bossRuneHudRefreshLock)
+            {
+                _pendingBossRuneHudValue = bossRune;
+                _bossRuneHudRefreshUntilTickMs = now + BossRuneHudRefreshDurationMs;
+                _nextBossRuneHudRefreshTickMs = 0;
+            }
+        }
+
+        internal static void PumpBossRuneHudRefresh()
+        {
+            var net = GameMenu.NetRef;
+            if (net == null || !net.IsAlive || net.IsHost)
+            {
+                ClearBossRuneHudRefresh();
+                return;
+            }
+
+            int bossRune;
+            var now = Environment.TickCount64;
+            lock (_bossRuneHudRefreshLock)
+            {
+                if (!_pendingBossRuneHudValue.HasValue)
+                    return;
+                if (now > _bossRuneHudRefreshUntilTickMs)
+                {
+                    _pendingBossRuneHudValue = null;
+                    return;
+                }
+                if (_nextBossRuneHudRefreshTickMs != 0 && now < _nextBossRuneHudRefreshTickMs)
+                    return;
+
+                bossRune = _pendingBossRuneHudValue.Value;
+                _nextBossRuneHudRefreshTickMs = now + BossRuneHudRefreshIntervalMs;
+            }
+
+            var user = dc.Main.Class.ME?.user ?? ModEntry.me?._level?.game?.user;
+            if (user != null)
+            {
+                try { user.br_setActivated(bossRune); }
+                catch
+                {
+                    try { user.bossRuneActivated = bossRune; } catch { }
+                }
+
+                try
+                {
+                    var gameData = user.game?.data;
+                    if (gameData?.cgData != null)
+                        gameData.cgData.numBossCells = bossRune;
+                }
+                catch
+                {
+                }
+            }
+
+            TryRefreshBossRuneHud(bossRune);
+        }
+
+        private static void ClearBossRuneHudRefresh()
+        {
+            lock (_bossRuneHudRefreshLock)
+            {
+                _pendingBossRuneHudValue = null;
+                _bossRuneHudRefreshUntilTickMs = 0;
+                _nextBossRuneHudRefreshTickMs = 0;
+            }
+        }
+
+        private static void TryRefreshBossRuneHud(int bossRune)
+        {
+            object? hud = null;
+            try { hud = dc.pr.Game.Class.ME?.hud; } catch { }
+            if (hud == null)
+                return;
+
+            // Re-showing is harmless and makes the vanilla HUD re-evaluate visibility after the
+            // boss-cell selector closes. The reflection pass below only touches members whose names
+            // explicitly identify the boss-rune/cell display, avoiding a full HUD teardown/rebuild.
+            try { dc.pr.Game.Class.ME?.hud?.show(null); } catch { }
+
+            var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+            RefreshBossRuneHudObject(hud, bossRune, depth: 0, visited);
+        }
+
+        private static void RefreshBossRuneHudObject(
+            object target,
+            int bossRune,
+            int depth,
+            HashSet<object> visited)
+        {
+            if (target == null || depth > 2 || !visited.Add(target))
+                return;
+
+            var type = target.GetType();
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            foreach (var methodName in BossRuneHudRefreshMethodNames)
+            {
+                MethodInfo[] methods;
+                try
+                {
+                    methods = type.GetMethods(flags)
+                        .Where(m => string.Equals(m.Name, methodName, StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var method in methods)
+                {
+                    try
+                    {
+                        var parameters = method.GetParameters();
+                        if (parameters.Length == 0)
+                        {
+                            method.Invoke(target, null);
+                            break;
+                        }
+                        if (parameters.Length == 1 && TryConvertBossRuneValue(bossRune, parameters[0].ParameterType, out var value))
+                        {
+                            method.Invoke(target, new[] { value });
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            try
+            {
+                foreach (var field in type.GetFields(flags))
+                {
+                    if (!IsBossRuneHudMemberName(field.Name))
+                        continue;
+
+                    object? value = null;
+                    try { value = field.GetValue(target); } catch { }
+                    if (TryConvertBossRuneValue(bossRune, field.FieldType, out var converted))
+                    {
+                        try { field.SetValue(target, converted); } catch { }
+                        continue;
+                    }
+
+                    if (value != null && !IsSimpleBossRuneValueType(value.GetType()))
+                        RefreshBossRuneHudObject(value, bossRune, depth + 1, visited);
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                foreach (var property in type.GetProperties(flags))
+                {
+                    if (!IsBossRuneHudMemberName(property.Name) || property.GetIndexParameters().Length != 0)
+                        continue;
+
+                    if (property.CanWrite && TryConvertBossRuneValue(bossRune, property.PropertyType, out var converted))
+                    {
+                        try { property.SetValue(target, converted); } catch { }
+                        continue;
+                    }
+
+                    if (!property.CanRead)
+                        continue;
+
+                    object? value = null;
+                    try { value = property.GetValue(target); } catch { }
+                    if (value != null && !IsSimpleBossRuneValueType(value.GetType()))
+                        RefreshBossRuneHudObject(value, bossRune, depth + 1, visited);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static readonly string[] BossRuneHudRefreshMethodNames =
+        {
+            "updateBossRune",
+            "updateBossRunes",
+            "updateBossCells",
+            "refreshBossRune",
+            "refreshBossRunes",
+            "refreshBossCells",
+            "updateBossCellDisplay",
+            "refreshBossCellDisplay",
+            "setBossRune",
+            "setBossRunes",
+            "setBossCells",
+            "setNumBossCells",
+            "setBossRuneActivated"
+        };
+
+        private static bool IsBossRuneHudMemberName(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return false;
+
+            var normalized = name.Replace("_", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
+            return normalized.Contains("boss", StringComparison.Ordinal) &&
+                   (normalized.Contains("rune", StringComparison.Ordinal) ||
+                    normalized.Contains("cell", StringComparison.Ordinal));
+        }
+
+        private static bool IsSimpleBossRuneValueType(System.Type type)
+        {
+            var underlying = Nullable.GetUnderlyingType(type) ?? type;
+            return underlying.IsPrimitive || underlying.IsEnum || underlying == typeof(string) || underlying == typeof(decimal);
+        }
+
+        private static bool TryConvertBossRuneValue(int bossRune, System.Type targetType, out object? value)
+        {
+            value = null;
+            var underlying = Nullable.GetUnderlyingType(targetType) ?? targetType;
+            try
+            {
+                if (underlying == typeof(int)) value = bossRune;
+                else if (underlying == typeof(long)) value = (long)bossRune;
+                else if (underlying == typeof(short)) value = (short)bossRune;
+                else if (underlying == typeof(byte)) value = (byte)System.Math.Clamp(bossRune, byte.MinValue, byte.MaxValue);
+                else if (underlying == typeof(uint)) value = (uint)System.Math.Max(0, bossRune);
+                else if (underlying == typeof(ulong)) value = (ulong)System.Math.Max(0, bossRune);
+                else if (underlying == typeof(ushort)) value = (ushort)System.Math.Clamp(bossRune, ushort.MinValue, ushort.MaxValue);
+                else return false;
+                return true;
+            }
+            catch
+            {
+                value = null;
+                return false;
+            }
         }
 
         private static int GetEffectiveBossRune(User user)

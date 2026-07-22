@@ -34,6 +34,7 @@ public sealed class CoopAdvancedHardening :
     private static ILogger? _log;
     private static long _nextLobbyHeartbeatTicks;
     private static long _nextProgressSyncTicks;
+    private static long _nextProgressFullResendTicks;
     private static long _nextHudStatusTicks;
     private static string _lastSentProgress = string.Empty;
     private static string _lastAppliedProgress = string.Empty;
@@ -42,7 +43,10 @@ public sealed class CoopAdvancedHardening :
 
     private const double LobbyHeartbeatSeconds = 0.50;
     private const double ProgressSyncSeconds = 1.50;
+    private const double ProgressFullResendSeconds = 10.0;
     private const double HudStatusSeconds = 3.00;
+    private const int MaxPermanentProgressItems = 4096;
+    private const int MaxPermanentItemIdChars = 128;
 
     public CoopAdvancedHardening(ModEntry entry)
     {
@@ -70,6 +74,7 @@ public sealed class CoopAdvancedHardening :
         {
             _nextLobbyHeartbeatTicks = now + SecondsToTicks(LobbyHeartbeatSeconds);
             SendLobbyHeartbeat(net);
+            GameMenu.RefreshRoomStatusMenuIfVisible();
         }
 
         if (_nextProgressSyncTicks == 0 || now >= _nextProgressSyncTicks)
@@ -98,11 +103,7 @@ public sealed class CoopAdvancedHardening :
         try
         {
             var level = ModEntry.me?._level?.map?.id?.ToString() ?? ModEntry.Instance?.levelId ?? string.Empty;
-            var seed = GameMenu.TryGetHostRunSeed(out var hostSeed)
-                ? hostSeed
-                : GameMenu.TryGetRemoteSeed(out var remoteSeed)
-                    ? remoteSeed
-                    : 0;
+            var seed = GameMenu.TryGetKnownSeed(out var knownSeed) ? knownSeed : 0;
             net.SendLobbyState(GameMenu.Username, level, seed, GetLocalPermanentProgressSignature());
         }
         catch (Exception ex)
@@ -113,15 +114,23 @@ public sealed class CoopAdvancedHardening :
 
     private static void SendPermanentProgress(NetNode net)
     {
+        if (net == null || !net.IsHost)
+            return;
+
         try
         {
             var payload = BuildLocalPermanentProgressPayload();
             if (string.IsNullOrWhiteSpace(payload))
                 return;
-            if (string.Equals(payload, _lastSentProgress, StringComparison.Ordinal))
+
+            var now = Stopwatch.GetTimestamp();
+            var changed = !string.Equals(payload, _lastSentProgress, StringComparison.Ordinal);
+            var fullResendDue = _nextProgressFullResendTicks == 0 || now >= _nextProgressFullResendTicks;
+            if (!changed && !fullResendDue)
                 return;
 
             _lastSentProgress = payload;
+            _nextProgressFullResendTicks = now + SecondsToTicks(ProgressFullResendSeconds);
             net.SendRuneProgress(payload);
         }
         catch (Exception ex)
@@ -163,7 +172,12 @@ public sealed class CoopAdvancedHardening :
             var parts = payload.Split('|');
             var nameIndex = parts.Length >= 2 ? 1 : 0;
             if (parts.Length > nameIndex && !string.IsNullOrWhiteSpace(parts[nameIndex]))
-                GameMenu.ReceiveRemoteUsername(parts[nameIndex].Trim());
+            {
+                var name = parts[nameIndex].Trim();
+                if (name.Length > 64)
+                    name = name[..64];
+                GameMenu.ReceiveRemoteUsername(name);
+            }
         }
         catch (Exception ex)
         {
@@ -178,8 +192,12 @@ public sealed class CoopAdvancedHardening :
 
         lock (Sync)
         {
+            var processed = 0;
             foreach (var raw in payload.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
+                if (processed++ >= MaxPermanentProgressItems || PendingPermanentItems.Count >= MaxPermanentProgressItems)
+                    break;
+
                 var id = SanitizePermanentItemId(raw);
                 if (string.IsNullOrWhiteSpace(id))
                     continue;
@@ -192,6 +210,12 @@ public sealed class CoopAdvancedHardening :
 
     private static void ApplyPendingPermanentProgress()
     {
+        // During level transitions no User may exist. Do not consume the only copy of a received
+        // unlock packet until there is a valid destination to apply it to.
+        var user = GetUser();
+        if (user == null)
+            return;
+
         string[] pending;
         lock (Sync)
         {
@@ -200,10 +224,6 @@ public sealed class CoopAdvancedHardening :
             pending = PendingPermanentItems.ToArray();
             PendingPermanentItems.Clear();
         }
-
-        var user = GetUser();
-        if (user == null)
-            return;
 
         try
         {
@@ -237,6 +257,17 @@ public sealed class CoopAdvancedHardening :
         }
         catch (Exception ex)
         {
+            // Hashlink objects can be temporarily unavailable during a transition. Requeue instead
+            // of losing progression permanently; the next Hero/Frame update will retry.
+            lock (Sync)
+            {
+                foreach (var id in pending)
+                {
+                    if (PendingPermanentItems.Count >= MaxPermanentProgressItems)
+                        break;
+                    PendingPermanentItems.Add(id);
+                }
+            }
             _log?.Warning("[CoopAdvanced] Applying permanent progress failed: {Message}", ex.Message);
         }
     }
@@ -281,6 +312,23 @@ public sealed class CoopAdvancedHardening :
         return result;
     }
 
+    internal static void ResetSessionState()
+    {
+        lock (Sync)
+        {
+            PendingPermanentItems.Clear();
+            _lastSentProgress = string.Empty;
+            _lastAppliedProgress = string.Empty;
+        }
+
+        _nextLobbyHeartbeatTicks = 0;
+        _nextProgressSyncTicks = 0;
+        _nextProgressFullResendTicks = 0;
+        _nextHudStatusTicks = 0;
+        _lastKnownRemoteCount = -1;
+        _wasConnected = false;
+    }
+
     private static User? GetUser()
     {
         try { if (ModEntry.me?._level?.game?.user != null) return ModEntry.me._level.game.user; } catch { }
@@ -294,7 +342,8 @@ public sealed class CoopAdvancedHardening :
     {
         if (string.IsNullOrWhiteSpace(id))
             return string.Empty;
-        return id.Trim().Replace("|", "/").Replace(",", ";").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        var safe = id.Trim().Replace("|", "/").Replace(",", ";").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        return safe.Length <= MaxPermanentItemIdChars ? safe : safe[..MaxPermanentItemIdChars];
     }
 
     private static bool IsProgressPermanentItem(string id)

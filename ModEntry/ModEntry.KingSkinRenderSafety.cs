@@ -16,13 +16,80 @@ namespace DeadCellsMultiplayerMod
     {
         private static bool s_remoteKingRenderDetachedForTransition;
         private static bool s_subLevelRenderGuardArmed;
+        private static int s_activateSubLevelRuntimeHookDepth;
         private static long s_subLevelRenderGuardStartedTicks;
         private static string s_subLevelRenderGuardReason = string.Empty;
         private static long s_lastKingSkinGuardLogTicks;
+        private static long s_remoteKingCreationBlockedUntilTicks;
         private const double KingSkinGuardLogIntervalSeconds = 1.0;
         private const double SubLevelRenderGuardTimeoutSeconds = 8.0;
+        private const double PostNativeRemoteKingCreationDelaySeconds = 0.35;
 
         internal static bool IsRemoteKingTransitionActive => s_remoteKingRenderDetachedForTransition;
+        internal static bool IsRemoteKingTransitionGuardArmed => s_subLevelRenderGuardArmed;
+        internal static bool IsRemoteKingSubLevelTransitionGuardArmed => s_subLevelRenderGuardArmed;
+        internal static bool IsRemoteKingCreationBlocked =>
+            s_remoteKingCreationBlockedUntilTicks != 0 &&
+            Stopwatch.GetTimestamp() < s_remoteKingCreationBlockedUntilTicks;
+
+        private void Hook_Game_activateSubLevel(
+            Hook_Game.orig_activateSubLevel orig,
+            Game self,
+            dc.level.LevelMap levelMap,
+            int? linkId,
+            HaxeProxy.Runtime.Ref<bool> shouldSave,
+            HaxeProxy.Runtime.Ref<bool> outAnim)
+        {
+            var outermost = ++s_activateSubLevelRuntimeHookDepth == 1;
+            var guardActiveForCall = false;
+            var callFailed = false;
+
+            try
+            {
+                if (outermost &&
+                    _netRole != NetRole.None &&
+                    _net != null &&
+                    _net.IsAlive &&
+                    (HasAnyRemoteKingRenderShell() || s_subLevelRenderGuardArmed))
+                {
+                    PrepareRemoteKingsForSubLevelTransition(
+                        string.Create(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            $"activateSubLevel-native:link={linkId?.ToString() ?? "null"}"));
+                    guardActiveForCall = true;
+
+                    Logger.Information(
+                        "[NetMod][ActivateSubLevelGuard] pre-native hard teardown linkId={LinkId} depth={Depth}",
+                        linkId,
+                        s_activateSubLevelRuntimeHookDepth);
+                }
+
+                orig(self, levelMap, linkId, shouldSave, outAnim);
+            }
+            catch
+            {
+                callFailed = true;
+                if (outermost && s_subLevelRenderGuardArmed)
+                    CancelRemoteKingSubLevelTransition("activateSubLevel-native-threw");
+                throw;
+            }
+            finally
+            {
+                s_activateSubLevelRuntimeHookDepth =
+                    global::System.Math.Max(0, s_activateSubLevelRuntimeHookDepth - 1);
+
+                if (outermost &&
+                    !callFailed &&
+                    guardActiveForCall &&
+                    s_subLevelRenderGuardArmed)
+                {
+                    CompleteRemoteKingSubLevelTransitionGuard(
+                        string.Create(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            $"activateSubLevel-native-returned:link={linkId?.ToString() ?? "null"}"));
+                }
+            }
+        }
 
         internal static void CheckRemoteKingRenderSafety(string reason)
         {
@@ -34,6 +101,32 @@ namespace DeadCellsMultiplayerMod
 
         internal static void PrepareRemoteKingsForLevelTransition(string reason)
         {
+            var instance = Instance;
+            var retiredCombatRuntimes = 0;
+            for (var slot = 0; slot < clients.Length; slot++)
+            {
+                var client = clients[slot];
+                if (client == null)
+                    continue;
+
+                try
+                {
+                    client.PrepareForNetworkTransition();
+                    retiredCombatRuntimes++;
+                }
+                catch
+                {
+                }
+            }
+
+            if (retiredCombatRuntimes > 0)
+            {
+                instance?.Logger.Information(
+                    "[NetMod][RemoteCombatTeardown] retired={Count} reason={Reason}",
+                    retiredCombatRuntimes,
+                    reason);
+            }
+
             if (s_remoteKingRenderDetachedForTransition)
                 return;
 
@@ -46,20 +139,69 @@ namespace DeadCellsMultiplayerMod
             s_remoteKingRenderDetachedForTransition = false;
         }
 
+        private static void DelayRemoteKingCreationAfterNativeRender()
+        {
+            s_remoteKingCreationBlockedUntilTicks = Stopwatch.GetTimestamp() +
+                (long)(Stopwatch.Frequency * PostNativeRemoteKingCreationDelaySeconds);
+        }
+
+        /// <summary>
+        /// Fully disposes remote render shells only for an actual boss-cell main-level reload.
+        /// Generic level disposal and sublevel/exit paths deliberately do not call this helper,
+        /// preserving the v0.8.68i Cavern Key, boss-cell-door and exit-teleporter lifecycle.
+        /// </summary>
+        internal static void PrepareAndDisposeRemoteKingsForBossCellReload(string reason)
+        {
+            PrepareRemoteKingsForLevelTransition(reason);
+
+            var instance = Instance;
+            if (instance == null)
+                return;
+
+            // Detaching an HSprite is not enough for main-level reloads such as boss-cell
+            // changes. The old GhostKing process can still be visited by Boot.tryRender while
+            // Game.loadMainLevel is replacing the display tree, causing Null access .groupName.
+            // Fully dispose the old remote shells before native level disposal/reload begins.
+            for (var slot = 0; slot < clients.Length; slot++)
+                instance.DisposeClientSlot(slot, clearIdentity: false);
+
+            instance.DrainRemoteCombatQueuesAfterLevelChange();
+            instance.Logger.Information(
+                "[NetMod][MainLevelRenderGuard] disposed remote shells reason={Reason}",
+                reason);
+        }
+
         internal static void PrepareRemoteKingsForSubLevelTransition(string reason)
         {
+            var wasAlreadyArmed = s_subLevelRenderGuardArmed;
             s_subLevelRenderGuardArmed = true;
-            s_subLevelRenderGuardStartedTicks = Stopwatch.GetTimestamp();
-            s_subLevelRenderGuardReason = string.IsNullOrWhiteSpace(reason)
-                ? "sublevel-transition"
-                : reason;
+
+            if (!wasAlreadyArmed)
+            {
+                s_subLevelRenderGuardStartedTicks = Stopwatch.GetTimestamp();
+                s_subLevelRenderGuardReason = string.IsNullOrWhiteSpace(reason)
+                    ? "sublevel-resume"
+                    : reason;
+            }
 
             var instance = Instance;
             instance?.DrainRemoteCombatQueuesAfterLevelChange();
             instance?.MarkDiveNetGuardAfterSpawnOrRoomChange();
             PrepareRemoteKingsForLevelTransition(s_subLevelRenderGuardReason);
+
+            // Remove each remote process through Process.disposeImmediately rather than
+            // destroy()+dispose()+disposeGfx(). The old triple-dispose path could leave a
+            // destroyed process in the level tree and later crash Game disposal/restart in
+            // Process._dispose with a null controller.manualLock.
+            if (instance != null)
+            {
+                for (var slot = 0; slot < clients.Length; slot++)
+                    instance.DisposeClientSlotForSubLevelTransition(slot, clearIdentity: false);
+            }
+
             instance?.Logger.Information(
-                "[NetMod][SubLevelGuard] armed reason={Reason}",
+                "[NetMod][SubLevelGuard] armed transition-window hard-dispose={HardDispose} reason={Reason}",
+                instance != null,
                 s_subLevelRenderGuardReason);
         }
 
@@ -79,38 +221,55 @@ namespace DeadCellsMultiplayerMod
             Hook_Level.orig_onActivation orig,
             Level self)
         {
-            var wasArmed = s_subLevelRenderGuardArmed;
-            if (!wasArmed)
-            {
-                orig(self);
-                return;
-            }
-
             var targetLevelId = "<unknown>";
+            var activationKind = "unknown";
+
             try
             {
                 targetLevelId = self?.map?.id?.ToString() ?? "<unknown>";
+                if (self != null)
+                    activationKind = self.isSubLevel ? "sublevel" : "parent-or-main";
             }
             catch
             {
             }
 
+            // The strongly typed Game.activateSubLevel hook owns the complete native
+            // transition window. Never auto-arm here; doing so is too late and can leave
+            // the remote shell attached during Level.resume/Boot.tryRender.
+            if (!s_subLevelRenderGuardArmed)
+            {
+                orig(self);
+                return;
+            }
+
             Logger.Information(
-                "[NetMod][SubLevelGuard] activating target={Target} reason={Reason}",
+                "[NetMod][SubLevelGuard] activation inside native guard target={Target} kind={Kind} depth={Depth} reason={Reason}",
                 targetLevelId,
+                activationKind,
+                s_activateSubLevelRuntimeHookDepth,
                 s_subLevelRenderGuardReason);
 
-            // The remote KingSkin must stay detached for the entire native
-            // Level.resume -> Level.onActivation -> Level.initRender sequence.
-            // Calling the original first is intentional: LevelDisp.render invokes
-            // Boot.tryRender inside this call. Re-attaching before it returns brings
-            // back the null groupName crash on timed/no-hit reward rooms.
-            orig(self);
+            try
+            {
+                orig(self);
+            }
+            catch
+            {
+                CancelRemoteKingSubLevelTransition(
+                    string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"level-onActivation-orig-threw:{activationKind}:{targetLevelId}"));
+                throw;
+            }
+
+            if (s_activateSubLevelRuntimeHookDepth > 0)
+                return;
 
             CompleteRemoteKingSubLevelTransitionGuard(
                 string.Create(
                     System.Globalization.CultureInfo.InvariantCulture,
-                    $"level-onActivation:{targetLevelId}"));
+                    $"level-onActivation-outside-native:{activationKind}:{targetLevelId}"));
         }
 
         private void TickRemoteKingSubLevelTransitionGuard()
@@ -137,13 +296,9 @@ namespace DeadCellsMultiplayerMod
             s_subLevelRenderGuardStartedTicks = 0;
             s_subLevelRenderGuardReason = string.Empty;
 
-            // The detached HSprite nodes cannot safely be re-parented because the
-            // active level display changed. Dispose the old ghost shell only after
-            // native rendering completed; the next remote snapshot recreates it in
-            // the currently active parent/sublevel.
-            for (var slot = 0; slot < clients.Length; slot++)
-                DisposeClientSlot(slot, clearIdentity: false);
-
+            // The shell was already removed before native activation. Do not dispose a
+            // second time here. Clear the transition gate and rebuild from the latest
+            // remote snapshot in the now-active level.
             FinishRemoteKingLevelTransition();
             DrainRemoteCombatQueuesAfterLevelChange();
             MarkDiveNetGuardAfterSpawnOrRoomChange();
@@ -154,6 +309,17 @@ namespace DeadCellsMultiplayerMod
                 "[NetMod][SubLevelGuard] completed reason={CompletionReason} armedBy={ArmedReason}",
                 completionReason,
                 armedReason);
+        }
+
+        private static bool HasAnyRemoteKingRenderShell()
+        {
+            for (var slot = 0; slot < clients.Length; slot++)
+            {
+                if (clients[slot] != null)
+                    return true;
+            }
+
+            return false;
         }
 
         internal static bool EnsureGhostKingRenderSafe(GhostKing? king, string reason, bool detachForTransition)

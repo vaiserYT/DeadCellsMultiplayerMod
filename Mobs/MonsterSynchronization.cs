@@ -35,12 +35,19 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private readonly ModEntry modEntry;
         private static bool s_eventReceiverInstalled;
         private static bool s_hooksInstalled;
+        private static long s_lastFrameRecoveryLogTicks;
 
         private static readonly object Sync = new();
         private static readonly List<Mob> trackedMobs = new();
         private static readonly Dictionary<Mob, int> trackedMobIndices = new(ReferenceEqualityComparer.Instance);
         private static readonly Dictionary<int, Mob> IdToMob = new();
         private static readonly Dictionary<Mob, int> MobToId = new(ReferenceEqualityComparer.Instance);
+        private sealed class MobSyncAlias
+        {
+            public int SyncId;
+            public int Generation;
+        }
+        private static ConditionalWeakTable<Mob, MobSyncAlias> s_mobSyncAliases = new();
         private static int nextRuntimeSyncId;
 
         private static readonly Dictionary<Mob, ClientMobState> clientMobTargets = new(ReferenceEqualityComparer.Instance);
@@ -51,14 +58,30 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly Dictionary<int, string> clientLastSentAffectPayloadBySyncId = new();
         private static readonly Dictionary<int, ClientDrawSentState> clientLastSentDrawStateBySyncId = new();
         private static readonly Dictionary<int, string> clientLastAppliedHostAffectPayloadBySyncId = new();
+        private static readonly Dictionary<int, Mob> clientLastAppliedHostAffectMobBySyncId = new();
         private static readonly Dictionary<int, string> hostLastAppliedClientAffectPayloadBySyncId = new();
+        // Affect ids that were actually created on the host from a client report. This prevents
+        // a later client empty payload from pruning unrelated host/elite affects.
+        private static readonly Dictionary<Mob, HashSet<int>> hostClientOwnedAffectIdsByMob = new(ReferenceEqualityComparer.Instance);
         private static readonly Dictionary<Mob, string> clientLastAppliedAnimPayloadByMob = new(ReferenceEqualityComparer.Instance);
+        private static readonly Dictionary<Mob, (string Group, double Frame)> clientLastForcedBossAnimByMob = new(ReferenceEqualityComparer.Instance);
         private static readonly Dictionary<Mob, double> clientLastAnimationApplyFrameByMob = new(ReferenceEqualityComparer.Instance);
         private static readonly Dictionary<Mob, double> clientNetworkAttackStartFrame = new(ReferenceEqualityComparer.Instance);
         private static readonly Dictionary<string, ParsedAnimPayload> parsedAnimPayloadCache = new(StringComparer.Ordinal);
         private static readonly Dictionary<int, string> hostMobTypeBySyncId = new();
         private static readonly Dictionary<int, HashSet<int>> hostClientInterestUsersBySyncId = new();
         private static readonly Dictionary<int, HostMobSentState> hostLastSentMobStatesBySyncId = new();
+        // Latest host simulation frame accepted for each client mob position. Steam move packets are
+        // intentionally unreliable and may arrive out of order; older coordinates must never rewind
+        // a mob after a newer state has already been applied. Guarded by Sync.
+        private static readonly Dictionary<int, double> clientLastAcceptedHostPositionFrameBySyncId = new();
+        private static double s_lastHostActiveReliableKeyframeFrame = -99999.0;
+        private static int s_lastHostActiveReliableKeyframeToken;
+        private static double s_lastHostBossReliableKeyframeFrame = -99999.0;
+        private static int s_lastHostBossReliableKeyframeToken;
+        private static double s_lastHostAuthoritativeFullResyncFrame = -99999.0;
+        private static int s_lastHostAuthoritativeFullResyncToken;
+        private static int s_hostAuthoritativeBootstrapResyncsRemaining;
         private static readonly List<Entity> hostDetectedTargets = new();
         private static readonly List<Entity> s_clientDetectedTargetsScratch = new();
         private static readonly List<Mob> s_batchMobsScratch = new();
@@ -67,11 +90,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly List<PendingHostStateApply> s_hostStateAppliesScratch = new();
         private static readonly List<PendingMobHitApply> s_pendingMobHitAppliesScratch = new();
         private static readonly List<NetNode.MobHit> s_mobHitMergeScratch = new();
+        private static readonly List<PendingClientBossAttack> clientPendingBossAttacks = new();
+        private static readonly List<ResolvedClientBossAttack> s_resolvedClientBossAttacksScratch = new();
         private static readonly List<NetNode.MobDraw> s_drawsScratch = new();
         private static readonly List<NetNode.MobMoveSnapshot> s_moveSnapshotsScratch = new();
         private static readonly List<Mob> s_dieVictimsScratch = new();
         private static readonly HashSet<Mob> s_dieVictimDedupScratch = new(ReferenceEqualityComparer.Instance);
         private static readonly HashSet<Mob> s_usedTrackedMobsScratch = new(ReferenceEqualityComparer.Instance);
+        // Incoming state/move lines can be chunked and several snapshots for the same sync id
+        // may accumulate before one main-thread consume. Walk newest-to-oldest and use this set
+        // so stale snapshots cannot overwrite a newer authoritative state. Guarded by Sync.
+        private static readonly HashSet<int> s_latestPacketSyncIdsScratch = new();
 
         // Client-side deaths deferred because the mob is culled locally (far from the local hero,
         // vanilla never proximity-initialized it). Running vanilla onDie() on such a mob leaves a
@@ -79,6 +108,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         // "Null access .cx" fatal when the other player kills a mob far away). The real death runs
         // in Hook_Mob_postUpdate once vanilla itself starts simulating the mob. Guarded by Sync.
         private static readonly HashSet<Mob> s_pendingCulledMobDeaths = new(ReferenceEqualityComparer.Instance);
+        private static readonly Dictionary<Mob, double> s_pendingCulledMobDeathFirstFrame = new(ReferenceEqualityComparer.Instance);
 
         // Full mob-sync quiescence during level transitions: from door activation until the new
         // level's registry commit, NOTHING is applied to mobs and nothing is sent. The v0.8.25
@@ -131,6 +161,26 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static readonly Dictionary<int, GhostHitMissRecord> s_ghostHitMissBySyncId = new();
         private static readonly List<NetNode.MobStateSnapshot> s_ghostDespawnEchoScratch = new();
+
+        private sealed class HostDeathTombstone
+        {
+            public int SyncId;
+            public int Generation;
+            public double X;
+            public double Y;
+            public int Dir;
+            public int MaxLife;
+            public string Type = string.Empty;
+            public string StatePayload = string.Empty;
+            public double CreatedFrame;
+            public double LastSentFrame = -99999.0;
+            public int SendsRemaining;
+        }
+
+        private static readonly Dictionary<int, HostDeathTombstone> s_hostDeathTombstonesBySyncId = new();
+        private static readonly List<HostDeathTombstone> s_hostDeathTombstoneScratch = new();
+        private static readonly List<NetNode.MobStateSnapshot> s_hostDeathTombstoneStateScratch = new();
+        private static readonly List<int> s_hostDeathTombstoneRemoveScratch = new();
         private static int s_ghostHitMissGeneration;
         private const int GhostHitMissMinCount = 3;
         private const double GhostHitMissMinSeconds = 2.0;
@@ -140,6 +190,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static bool s_levelIdentityReady;
         private static int s_levelIdentityGeneration;
         private static int s_levelIdentityToken;
+        private static int s_lastAmbiguousFallbackLogFrame = -99999;
         private static WeakReference<Level>? s_lastResetLevelRef;
         private static string s_lastResetLevelId = string.Empty;
         private static int s_lastResetIdentityToken;
@@ -154,13 +205,30 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static int forceExactNemesisTargetDepth;
         private static int clientNetworkQueuedAttackDepth;
         private static Mob? clientNetworkQueuedAttackMob;
+        private static int clientNetworkAttackReplayDepth;
+        private static Mob? clientNetworkAttackReplayMob;
         private static readonly HashSet<Mob> clientActiveNetworkAttackMobs = new(ReferenceEqualityComparer.Instance);
+        // Direct boss skill callbacks are allowed only while an attack packet or an accepted host
+        // boss animation has opened this presentation lease. Guarded by Sync.
+        private static readonly HashSet<Mob> clientBossSkillCallbackLeaseMobs = new(ReferenceEqualityComparer.Instance);
         private static readonly HashSet<Mob> clientAiLockedMobs = new(ReferenceEqualityComparer.Instance);
         private static readonly HashSet<Mob> clientPendingSuppressedBossDies = new(ReferenceEqualityComparer.Instance);
+        // Prevent repeated typed tombstones from running a native
+        // final boss onDie twice and duplicating rewards/cinematics. Guarded by Sync.
+        private static readonly HashSet<Mob> clientCompletedAuthoritativeBossDeaths = new(ReferenceEqualityComparer.Instance);
+        // Local client lethal damage is suppressed until the host confirms death. Track that
+        // suppression explicitly so Hook_Mob_onDamage can still report hit|0 instead of the
+        // temporary life=1 recovery value.
+        private static readonly HashSet<Mob> clientPendingSuppressedMobDies = new(ReferenceEqualityComparer.Instance);
         private static readonly HashSet<int> clientAuthoritativeStateSeenSyncIds = new();
         private static readonly HashSet<Mob> s_validationSeenMobsScratch = new(ReferenceEqualityComparer.Instance);
         private static readonly HashSet<int> s_validationSeenSyncIdsScratch = new();
         private static int authoritativeClientBossDieDepth;
+        // Allows host-confirmed deaths to execute vanilla onDie on clients. Without this, the
+        // generic client death guard also blocked authoritative non-boss/elite deaths, leaving
+        // half-dead AI and 0-HP ghosts.
+        private static int authoritativeClientMobDieDepth;
+        private static int suppressClientAffectDirtyDepth;
         private const string MobSyncWorkerDisableEnv = "DCCM_MOB_SYNC_WORKER";
         private const string MobSyncAsyncInProcEnv = "DCCM_MOB_SYNC_ASYNC_INPROC";
         private static bool s_trackedMobValidationPending = true;
@@ -191,6 +259,30 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             return buf;
         }
 
+        private readonly struct PendingClientBossAttack
+        {
+            public readonly NetNode.MobAttack Attack;
+            public readonly double ExpiresAtFrame;
+
+            public PendingClientBossAttack(NetNode.MobAttack attack, double expiresAtFrame)
+            {
+                Attack = attack;
+                ExpiresAtFrame = expiresAtFrame;
+            }
+        }
+
+        private readonly struct ResolvedClientBossAttack
+        {
+            public readonly Mob Mob;
+            public readonly NetNode.MobAttack Attack;
+
+            public ResolvedClientBossAttack(Mob mob, NetNode.MobAttack attack)
+            {
+                Mob = mob;
+                Attack = attack;
+            }
+        }
+
         private readonly struct ClientMobAttackIntent
         {
             public readonly string SkillId;
@@ -219,10 +311,26 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             public readonly string AnimPayload;
             public readonly string StatePayload;
             public readonly double Time;
+            public readonly double ReceivedFrame;
             public readonly double Dx;
             public readonly double Dy;
+            public readonly bool ForcePositionSnap;
+            public readonly bool ForceVerticalPositionSnap;
 
-            public ClientMobState(double x, double y, int dir, int life, int maxLife, string animPayload, string statePayload, double time = 0.0, double dx = 0.0, double dy = 0.0)
+            public ClientMobState(
+                double x,
+                double y,
+                int dir,
+                int life,
+                int maxLife,
+                string animPayload,
+                string statePayload,
+                double time = 0.0,
+                double dx = 0.0,
+                double dy = 0.0,
+                double receivedFrame = 0.0,
+                bool forcePositionSnap = false,
+                bool forceVerticalPositionSnap = false)
             {
                 X = x;
                 Y = y;
@@ -232,8 +340,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 AnimPayload = animPayload ?? string.Empty;
                 StatePayload = statePayload ?? string.Empty;
                 Time = time;
+                ReceivedFrame = receivedFrame;
                 Dx = dx;
                 Dy = dy;
+                ForcePositionSnap = forcePositionSnap;
+                ForceVerticalPositionSnap = forceVerticalPositionSnap;
             }
         }
 
@@ -306,8 +417,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             public readonly int SyncId;
             public readonly bool IsBoss;
             public readonly bool ReplaySpecialHit;
+            public readonly double DamageHint;
 
-            public PendingMobHitApply(Mob mob, int sourceUserId, int previousLife, int targetLife, int targetMaxLife, bool forceDie, int syncId, bool isBoss, bool replaySpecialHit)
+            public PendingMobHitApply(Mob mob, int sourceUserId, int previousLife, int targetLife, int targetMaxLife, bool forceDie, int syncId, bool isBoss, bool replaySpecialHit, double damageHint)
             {
                 Mob = mob;
                 SourceUserId = sourceUserId;
@@ -318,6 +430,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 SyncId = syncId;
                 IsBoss = isBoss;
                 ReplaySpecialHit = replaySpecialHit;
+                DamageHint = double.IsFinite(damageHint) && damageHint > 0.0 ? damageHint : 0.0;
             }
         }
 
@@ -409,6 +522,29 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         void IOnFrameUpdate.OnFrameUpdate(double dt)
         {
+            try
+            {
+                OnFrameUpdateCore(dt);
+            }
+            catch (Exception ex)
+            {
+                // A malformed/stale packet or a weapon-specific Hashlink wrapper exception must not
+                // escape the frame receiver and close the entire game. Preserve the mob registry,
+                // discard only transient network work, and let the periodic host full-resync heal it.
+                try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
+
+                var now = System.Diagnostics.Stopwatch.GetTimestamp();
+                var minTicks = System.Diagnostics.Stopwatch.Frequency * 3L;
+                if (s_lastFrameRecoveryLogTicks == 0 || now - s_lastFrameRecoveryLogTicks >= minTicks)
+                {
+                    s_lastFrameRecoveryLogTicks = now;
+                    modEntry.Logger.Warning(ex, "[MobSync] frame exception contained; transient queues cleared for recovery");
+                }
+            }
+        }
+
+        private void OnFrameUpdateCore(double dt)
+        {
             if (!MultiplayerSettingsStorage.EnableMobsSync)
             {
                 lock (Sync)
@@ -425,6 +561,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             if (IsHost(net))
             {
+                // These recovery routines already existed in the working-sync source but were
+                // never connected to the frame loop. Run the one-shot player-target repair before
+                // processing/sending mob state so enemies cannot keep a destroyed remote GhostKing
+                // as their attack or nemesis target after a door, sublevel or boss-cell reload.
+                RunHostPlayerCombatStateRepairIfPending();
+
                 var consumeStart = RuntimeHitchWatch.Start();
                 RunHostIncomingFrameConsume(net);
                 var consumeMs = RuntimeHitchWatch.GetElapsedMilliseconds(consumeStart);
@@ -433,6 +575,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                 var flushStart = RuntimeHitchWatch.Start();
                 FlushHostDirtyMobQueue(net);
+                ScanHostBossPartDespawns(net);
+                FlushHostBossReliableKeyframes(net);
+                FlushHostActiveReliableKeyframes(net);
+                FlushHostAuthoritativeFullResync(net);
+                FlushHostDeathTombstoneResends(net);
                 var flushMs = RuntimeHitchWatch.GetElapsedMilliseconds(flushStart);
                 if (flushMs >= RuntimeHitchWatch.MobSyncFlushSlowThresholdMs)
                     RuntimeHitchWatch.LogSlow(modEntry.Logger, "MobsSynchronization.HostFlush", flushMs, BuildRuntimeQueueDetails());
@@ -444,6 +591,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             {
                 var consumeStart = RuntimeHitchWatch.Start();
                 RunClientIncomingFrameConsume(net);
+                FlushPendingClientAuthoritativeDeaths();
                 var consumeMs = RuntimeHitchWatch.GetElapsedMilliseconds(consumeStart);
                 if (consumeMs >= RuntimeHitchWatch.MobSyncConsumeSlowThresholdMs)
                     RuntimeHitchWatch.LogSlow(modEntry.Logger, "MobsSynchronization.ClientConsume", consumeMs, BuildRuntimeQueueDetails());
@@ -820,11 +968,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (TryIgnoreCommittedIdentityEntitiesPostCreate(self))
                 return;
 
-            var rebuildAccepted = RebuildMobArray(self);
-            if (rebuildAccepted)
-            {
-                try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
-            }
+            // Level disposal already clears the previous level's queues, and every mob packet is
+            // fenced by the committed level-generation token. Clearing here used to discard the
+            // first valid bootstrap chunks that arrived while a client was finishing level load.
+            RebuildMobArray(self);
 
             // Native entitiesPostCreate rewrites mob HP (difficulty, affixes, etc.) which overwrites
             // the multiplier we applied in registerEntity.  Re-apply it now that the mob is fully set up.
@@ -899,7 +1046,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             {
                 lock (Sync)
                 {
-                    RemoveTrackedMobLocked(mob);
+                    if (ShouldRetainMobSyncIdOnTemporaryUnregisterLocked(self, mob))
+                        DetachTrackedMobForTemporaryUnregisterLocked(mob);
+                    else
+                        RemoveTrackedMobLocked(mob);
                 }
             }
 
@@ -952,12 +1102,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 UpdateClientMobAiAuthority(self);
 
             if (isHost && isSyncMob)
-            {
+                TryMaintainHostBossSurvivorTarget(self);
+
+            if (isHost && isSyncMob)
                 TryApplyHostClientVisibilityInterest(self);
-                TryAssignHostAttackTarget(self);
-            }
 
             orig(self);
+
+            // Vanilla gets the first chance to update its behavior tree. Only afterward fill a
+            // genuinely missing immediate target; never unlock/wake/rewrite elite state here.
+            if (isHost && isSyncMob)
+                TryAssignHostAttackTarget(self);
 
         }
 
@@ -999,7 +1154,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (IsSyncMob(self))
             {
                 ObserveHostMobForDirtyQueue(self);
-                TryAssignHostAttackTarget(self);
+
+                // Conservative host-only watchdog from the working-sync source. It ignores
+                // bosses, sleeping/off-screen mobs and active skill phases, and only repairs an
+                // enemy after it has remained motionless with a real living player target.
+                TryRecoverHostStalledMob(self);
             }
         }
 
@@ -1008,6 +1167,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (ShouldSuppressClientBossDie(self))
             {
                 MarkSuppressedClientBossDie(self);
+                MarkSuppressedClientMobDie(self);
                 return;
             }
 
@@ -1015,20 +1175,27 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var dieSyncId = -1;
             var dieX = 0.0;
             var dieY = 0.0;
+            var dieType = string.Empty;
             NetNode? dieNet = null;
             var isClient = false;
+            var isBossDeathCandidate = false;
             if (self != null && suppressMobDieSendDepth <= 0)
             {
                 dieNet = GameMenu.NetRef;
                 isClient = IsClient(dieNet);
+                isBossDeathCandidate = BossSyncHelpers.IsBossMob(self);
 
-                // Client is not authoritative for mob death; wait for host die/hit confirmation.
-                if (isClient && IsSyncMob(self))
+                // Client is not authoritative for mob death; wait for host confirmation. The
+                // authoritative depth is set only while applying a host-confirmed death, allowing
+                // vanilla onDie to run exactly once for normal mobs, elites and bosses.
+                if (isClient && IsSyncMob(self) &&
+                    System.Threading.Volatile.Read(ref authoritativeClientMobDieDepth) <= 0)
                 {
+                    MarkSuppressedClientMobDie(self);
                     try
                     {
                         if (self.life <= 0)
-                            self.life = 1;
+                            self.life = GetClientAuthoritativeLifeFallback(self, 1);
                     }
                     catch
                     {
@@ -1045,6 +1212,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     shouldSendDie = true;
                     dieX = GetSyncX(self);
                     dieY = GetSyncY(self);
+                    dieType = BuildMobStateTypeSignature(self);
                 }
             }
 
@@ -1055,13 +1223,46 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             ClearSuppressedClientBossDie(self);
 
+            // Some multi-phase bosses route a depleted phase through onDie(), then rebuild the
+            // same encounter with positive life.  That is not a victory.  Keep its authoritative
+            // mapping and immediately publish the rebuilt phase instead of sending a death packet,
+            // removing tracking, or reviving players early.
+            if (shouldSendDie && isBossDeathCandidate)
+            {
+                var bossContinues = false;
+                try { bossContinues = !self.destroyed && self.life > 0; } catch { }
+                if (bossContinues)
+                {
+                    QueueHostMobDirty(self, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
+                    return;
+                }
+
+                // Some phase transitions destroy the depleted native object outright and rebuild
+                // the encounter behind a new one, so "!destroyed" alone misreads them as a real
+                // death. If a different living Level.boss carries the same stable identity, this
+                // is a hand-off: publish the rebuilt phase immediately instead of a death packet.
+                if (TryGetHostBossPhaseSuccessor(self, out var phaseSuccessor))
+                {
+                    QueueHostMobDirty(phaseSuccessor, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
+                    return;
+                }
+            }
+
             if (shouldSendDie && dieNet != null && dieNet.IsAlive && dieSyncId >= 0)
             {
                 if (TryGetCurrentLevelIdentityToken(out var identityToken))
                 {
-                    var update = new NetNode.MobEventUpdate(dieSyncId, dieX, dieY, 0, SingleEvent("die"), generation: identityToken);
+                    lock (Sync)
+                    {
+                        RememberHostDeathTombstoneLocked(self, dieSyncId, dieX, dieY, identityToken);
+                    }
+
+                    var update = new NetNode.MobEventUpdate(dieSyncId, dieX, dieY, 0, SingleEvent("die"), dieType, identityToken);
                     MobSyncTrace.LogSendMobEvents(MobSyncNetRoleForTrace(dieNet), SingleUpdate(update));
                     dieNet.SendMobEvents(SingleUpdate(update));
+                    // Redundant typed death packet: unlike the old untyped fallback, this can safely
+                    // recover a phase-rebuilt boss mapping if the MOBEVENT packet was missed.
+                    dieNet.SendMobDie(dieSyncId, dieX, dieY, identityToken, dieType);
                 }
             }
 
@@ -1130,8 +1331,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     return;
 
                 var isClient = IsClient(net);
-                var tookLifeDelta = self.life < preDamageLife;
-                var becameDead = self.life <= 0;
+                var suppressedClientLethal = isClient && WasClientMobDeathSuppressed(self);
+                var tookLifeDelta = self.life < preDamageLife || suppressedClientLethal;
+                var becameDead = self.life <= 0 || suppressedClientLethal;
                 bool shouldReport = false;
                 if (IsHost(net))
                 {
@@ -1158,7 +1360,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     mobSyncId = cachedMobSyncId;
                 }
 
-                var life = GetMobLifeOrFallback(self, 0);
+                // A locally lethal client hit temporarily restores the mob so the client does not
+                // run an unsanctioned death. Still report life=0 to the host; reporting the restored
+                // value (usually 1) was the source of elites becoming permanently unkillable.
+                var life = suppressedClientLethal ? 0 : GetMobLifeOrFallback(self, 0);
+                var damageHint = isClient && shouldReport
+                    ? EstimateClientAttackDamageHint(i, preDamageLife, life, suppressedClientLethal)
+                    : 0.0;
                 var x = GetSyncX(self);
                 var y = GetSyncY(self);
                 var mobType = BuildMobStateTypeSignature(self);
@@ -1186,7 +1394,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                             // propagate immediately when damage actually reduced life.
                             clientLastReportedMobLife[self] = life;
                             var maxLife = self.maxLife;
-                            if (life >= maxLife && life > 0)
+                            if (life >= maxLife && life > 0 && damageHint <= 0.0)
                                 return;
                         }
                         else
@@ -1195,7 +1403,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                             if (life >= lastLife)
                             {
                                 var lethalReport = shouldReport && life <= 0 && lastLife > 0 && preDamageLife > 0;
-                                if (!lethalReport)
+                                var authoritativeProbe = shouldReport && damageHint > 0.0;
+                                if (!lethalReport && !authoritativeProbe)
                                     return;
                             }
 
@@ -1203,7 +1412,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         }
                     }
 
-                    var clientHitEvent = $"hit|{life.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+                    var clientHitEvent = string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"hit|{life}|{damageHint:R}");
                     if (TryGetCurrentLevelIdentityToken(out var identityToken))
                     {
                         var clientUpdate = new NetNode.MobEventUpdate(mobSyncId, x, y, 0, SingleEvent(clientHitEvent), mobType, identityToken);
@@ -1215,12 +1426,80 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             finally
             {
                 TryRecoverClientSyncMobLifeAfterLocalDamage(self, preDamageLife);
+                TryRecoverSuppressedClientMobDie(self, preDamageLife);
                 TryRecoverSuppressedClientBossDie(self, preDamageLife);
             }
         }
 
         private static string MobSyncNetRoleForTrace(NetNode? net) =>
             net == null || !net.IsAlive ? "none" : (net.IsHost ? "host" : "client");
+
+        private static void MarkSuppressedClientMobDie(Mob? mob)
+        {
+            if (mob == null)
+                return;
+
+            lock (Sync)
+            {
+                clientPendingSuppressedMobDies.Add(mob);
+            }
+        }
+
+        private static bool WasClientMobDeathSuppressed(Mob? mob)
+        {
+            if (mob == null)
+                return false;
+
+            lock (Sync)
+            {
+                return clientPendingSuppressedMobDies.Contains(mob) ||
+                       clientPendingSuppressedBossDies.Contains(mob);
+            }
+        }
+
+        private static int GetClientAuthoritativeLifeFallback(Mob? mob, int fallbackLife)
+        {
+            var recovered = System.Math.Max(1, fallbackLife);
+            if (mob == null)
+                return recovered;
+
+            lock (Sync)
+            {
+                if (clientMobTargets.TryGetValue(mob, out var target) && target.Life > 0)
+                    recovered = System.Math.Max(recovered, target.Life);
+            }
+
+            return recovered;
+        }
+
+        private static void TryRecoverSuppressedClientMobDie(Mob? mob, int fallbackLife)
+        {
+            if (mob == null)
+                return;
+
+            bool hadSuppressedDie;
+            lock (Sync)
+            {
+                hadSuppressedDie = clientPendingSuppressedMobDies.Remove(mob);
+            }
+
+            if (!hadSuppressedDie)
+                return;
+
+            try
+            {
+                if (!mob.destroyed && mob.life <= 0)
+                    mob.life = GetClientAuthoritativeLifeFallback(mob, fallbackLife);
+            }
+            catch
+            {
+            }
+
+            // Restore the older native handoff after a locally suppressed lethal callback. The
+            // regular client authority update will relock the replica when no native attack/phase
+            // callback remains active.
+            TryUnlockClientMobAiAuthority(mob);
+        }
 
         private static bool ShouldSuppressClientBossDie(Mob? mob)
         {
@@ -1289,27 +1568,102 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
         }
 
-        private static void RunWithAuthoritativeClientBossDie(Mob? mob, Action action)
+        private static void RunWithAuthoritativeClientMobDie(Mob? mob, Action action)
         {
             if (action == null)
                 return;
 
             var net = GameMenu.NetRef;
-            if (!IsClient(net) || mob == null || !BossSyncHelpers.IsBossMob(mob))
+            if (!IsClient(net) || mob == null || !IsSyncMob(mob))
             {
                 action();
                 return;
             }
 
-            authoritativeClientBossDieDepth++;
+            var isBoss = BossSyncHelpers.IsBossMob(mob);
+            authoritativeClientMobDieDepth++;
+            if (isBoss)
+                authoritativeClientBossDieDepth++;
             try
             {
                 action();
             }
             finally
             {
-                authoritativeClientBossDieDepth--;
+                if (isBoss)
+                    authoritativeClientBossDieDepth--;
+                authoritativeClientMobDieDepth--;
             }
+        }
+
+        private static double EstimateClientAttackDamageHint(AttackData attack, int previousLife, int reportedLife, bool suppressedLethal)
+        {
+            var observedDelta = System.Math.Max(0, previousLife - reportedLife);
+            if (suppressedLethal && previousLife > 0)
+                observedDelta = System.Math.Max(observedDelta, previousLife);
+            if (observedDelta > 0)
+                return observedDelta;
+
+            if (attack == null)
+                return 0.0;
+
+            // Hashlink AttackData layouts vary by game/core version. Reflection keeps this source
+            // compatible while still recovering the common dmg/damage fields when local stale
+            // invulnerability prevented the client copy from losing HP.
+            var names = new[] { "dmg", "damage", "finalDamage", "baseDamage", "hitDamage" };
+            try
+            {
+                var type = attack.GetType();
+                const System.Reflection.BindingFlags flags =
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public |
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.IgnoreCase;
+
+                for (int i = 0; i < names.Length; i++)
+                {
+                    object? raw = null;
+                    try
+                    {
+                        var property = type.GetProperty(names[i], flags);
+                        if (property != null && property.GetIndexParameters().Length == 0)
+                            raw = property.GetValue(attack);
+                    }
+                    catch { }
+
+                    if (raw == null)
+                    {
+                        try
+                        {
+                            var field = type.GetField(names[i], flags);
+                            if (field != null)
+                                raw = field.GetValue(attack);
+                        }
+                        catch { }
+                    }
+
+                    if (raw == null)
+                        continue;
+
+                    try
+                    {
+                        var value = System.Convert.ToDouble(raw, System.Globalization.CultureInfo.InvariantCulture);
+                        if (double.IsFinite(value) && value > 0.0)
+                        {
+                            var safeUpper = System.Math.Max(1.0, previousLife * 8.0);
+                            return System.Math.Clamp(value, 1.0, safeUpper);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch
+            {
+            }
+
+            // A hit reached Mob.onDamage but produced no local HP delta. Send a minimal intent so
+            // the authoritative host can decide whether its copy is actually vulnerable.
+            return 1.0;
         }
 
         private static bool IsDamageFromLocalPlayer(AttackData attack)

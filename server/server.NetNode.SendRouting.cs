@@ -33,7 +33,31 @@ public sealed partial class NetNode
                trimmed.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase) ||
-               trimmed.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase);
+               trimmed.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("INTERELEVSTATE|", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDroppableTcpRealtimeLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        var trimmed = line.TrimStart();
+        if (trimmed.Length == 0)
+            return false;
+
+        if (IsPositionLine(trimmed))
+            return true;
+
+        // Only packets that are superseded by a newer frame may be dropped when TCP is
+        // congested. Full MOBSTATE bootstrap/resync chunks, HP, hits, deaths and control
+        // messages must remain reliable and ordered.
+        return trimmed.StartsWith("ANIM|", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("HEADANIM|", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("INTERELEVSTATE|", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsPositionLine(string line)
@@ -56,8 +80,16 @@ public sealed partial class NetNode
 
     private static EP2PSend ResolveSteamSendType(string line)
     {
-        if (line.StartsWith("MOBEVENT|", StringComparison.OrdinalIgnoreCase))
+        // Full mob tables are split into multiple chunks and form the authoritative bootstrap for
+        // a level. Sending those chunks unreliably can leave the client permanently missing a
+        // subset of enemies even though ordinary movement packets continue to arrive.
+        if (line.StartsWith("MOBEVENT|", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("MOBSTATE|", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase))
+        {
             return EP2PSend.k_EP2PSendReliable;
+        }
+
         return IsRealtimeSteamLine(line)
             ? EP2PSend.k_EP2PSendUnreliable
             : EP2PSend.k_EP2PSendReliable;
@@ -131,6 +163,11 @@ public sealed partial class NetNode
             var sendType = ResolveSteamSendType(line);
             var channel = SteamP2PChannelHostToClient;
             var bytes = Utf8ProtocolBytes(line);
+            if (bytes.Length > MaxProtocolLineChars)
+            {
+                _log.Warning("[NetNode] Rejected oversized Steam broadcast ({Length} bytes)", bytes.Length);
+                return;
+            }
             foreach (var client in steamSnapshot)
             {
                 _steamBridge.TrySend(client.SteamId.m_SteamID, sendType, channel, bytes, out _);
@@ -186,17 +223,41 @@ public sealed partial class NetNode
 
     private async Task SendLineToStreamSafe(NetworkStream? stream, SemaphoreSlim? sendLock, string line)
     {
-        if (stream == null || sendLock == null) return;
+        if (stream == null || sendLock == null || _disposed || string.IsNullOrEmpty(line))
+            return;
 
         var bytes = Utf8ProtocolBytes(line);
-        bool locked = false;
+        if (bytes.Length > MaxProtocolLineChars)
+        {
+            _log.Warning("[NetNode] Rejected oversized TCP protocol line ({Length} bytes)", bytes.Length);
+            return;
+        }
+
+        var realtime = IsDroppableTcpRealtimeLine(line);
+        var token = _cts?.Token ?? CancellationToken.None;
+        var locked = false;
         try
         {
-            await sendLock.WaitAsync().ConfigureAwait(false);
-            locked = true;
-            await stream.WriteAsync(bytes.AsMemory(0, bytes.Length), CancellationToken.None).ConfigureAwait(false);
-            await stream.FlushAsync().ConfigureAwait(false);
+            // Position and visual animation packets become obsolete immediately. If a previous TCP
+            // write is still in flight, drop only those stale visual packets instead of creating an
+            // unbounded chain of Tasks waiting on the send semaphore. Full mob snapshots, HP,
+            // control, death and hit lines remain reliable and ordered.
+            if (realtime)
+            {
+                locked = await sendLock.WaitAsync(0).ConfigureAwait(false);
+                if (!locked)
+                    return;
+            }
+            else
+            {
+                await sendLock.WaitAsync(token).ConfigureAwait(false);
+                locked = true;
+            }
+
+            await stream.WriteAsync(bytes.AsMemory(0, bytes.Length), token).ConfigureAwait(false);
+            await stream.FlushAsync(token).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
@@ -204,7 +265,10 @@ public sealed partial class NetNode
         }
         finally
         {
-            if (locked) sendLock.Release();
+            if (locked)
+            {
+                try { sendLock.Release(); } catch (ObjectDisposedException) { }
+            }
         }
     }
 
@@ -213,6 +277,11 @@ public sealed partial class NetNode
         if (_steamBridge == null)
             return Task.CompletedTask;
         var bytes = Utf8ProtocolBytes(line);
+        if (bytes.Length > MaxProtocolLineChars)
+        {
+            _log.Warning("[NetNode] Steam payload too large for {SteamId}: {PayloadSize} bytes", client.SteamId.m_SteamID, bytes.Length);
+            return Task.CompletedTask;
+        }
         var st = sendType ?? ResolveSteamSendType(line);
         if (!_steamBridge.TrySend(client.SteamId.m_SteamID, st, SteamP2PChannelHostToClient, bytes, out var err))
             _log.Warning("[NetNode] Steam send failed to {SteamId}: {Error}", client.SteamId.m_SteamID, err);
@@ -225,13 +294,13 @@ public sealed partial class NetNode
             return Task.CompletedTask;
 
         var bytes = Utf8ProtocolBytes(line);
-        if (bytes.Length > SteamMaxPacketSizeBytes)
+        if (bytes.Length > MaxProtocolLineChars || bytes.Length > SteamMaxPacketSizeBytes)
         {
             _log.Warning(
-                "[NetNode] Steam payload too large for {SteamId}: {PayloadSize} bytes (limit {Limit} bytes)",
+                "[NetNode] Steam payload too large for {SteamId}: {PayloadSize} bytes (protocol limit {Limit} bytes)",
                 steamId,
                 bytes.Length,
-                SteamMaxPacketSizeBytes);
+                MaxProtocolLineChars);
             return Task.CompletedTask;
         }
 

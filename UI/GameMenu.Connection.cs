@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
 using dc.pr;
 using dc.ui;
 using HaxeProxy.Runtime;
@@ -16,6 +17,8 @@ namespace DeadCellsMultiplayerMod
 {
     internal static partial class GameMenu
     {
+        private static bool _protocolMismatchPending;
+
         private static void ForceExitToMainMenu()
         {
             try
@@ -60,6 +63,8 @@ namespace DeadCellsMultiplayerMod
 
         private static void StopNetworkFromMenu()
         {
+            _steamJoinLobbyResolvePending = false;
+            Interlocked.Increment(ref _steamJoinResolveGeneration);
             ResetHostDisconnectCountdown();
             try
             {
@@ -69,6 +74,14 @@ namespace DeadCellsMultiplayerMod
             lock (Sync)
             {
                 _inActualRun = false;
+                _remoteSeed = null;
+                _remoteSeedSequence = 0;
+                _consumedRemoteSeedSequence = 0;
+                _remoteLaunchKind = string.Empty;
+                _seedArrived = false;
+                ClearStructuredLaunchFlagsLocked();
+                ClearPrecommittedHostRunSeedLocked();
+                Monitor.PulseAll(Sync);
             }
             ResetSteamState();
         }
@@ -76,6 +89,7 @@ namespace DeadCellsMultiplayerMod
         public static void NotifyRemoteConnected(NetRole role)
         {
             ResetHostDisconnectCountdown();
+            RunLaunchCoordinator.OnRemoteConnected(role);
             SendUsernameToRemote();
 
             if (role == NetRole.Host)
@@ -98,6 +112,7 @@ namespace DeadCellsMultiplayerMod
         {
             lock (Sync)
             {
+                _protocolMismatchPending = false;
                 _clientConnectAttempt = attempt;
                 _clientConnecting = true;
                 _waitingForHost = true;
@@ -131,8 +146,61 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
+        internal static void NotifyProtocolMismatch(
+            string remoteBuild,
+            int remoteProtocol,
+            string localBuild,
+            int localProtocol,
+            NetRole localRole)
+        {
+            var remoteLabel = string.IsNullOrWhiteSpace(remoteBuild) ? "unknown" : remoteBuild.Trim();
+            var detail = string.Create(
+                CultureInfo.InvariantCulture,
+                $"Other player: {remoteLabel} (protocol {remoteProtocol}). You: {localBuild} (protocol {localProtocol}).");
+
+            MultiplayerUI.PushSystemMessage(
+                "Co-op version mismatch. Both players need the exact same mod build.",
+                8.0,
+                1.5);
+            ConnectionUI.NotifyConnectionsChanged();
+
+            // Hosts stay in their lobby and simply reject the incompatible peer. A joining client
+            // gets a clear menu error instead of an unexplained generic disconnect.
+            if (localRole != NetRole.Client)
+                return;
+
+            lock (Sync)
+            {
+                _protocolMismatchPending = true;
+                _clientConnecting = false;
+                _waitingForHost = false;
+            }
+
+            EnqueueMainThreadCoalesced("ui:protocol-mismatch", () =>
+            {
+                var screen = GetTitleScreen();
+                if (screen == null)
+                    return;
+
+                screen.clearMenu();
+                AddInfoLine(screen, Localize("Co-op version mismatch"), 0xFF9090);
+                AddInfoLine(screen, detail, 0xE0E0E0);
+                AddInfoLine(
+                    screen,
+                    Localize("Install the exact same DeadCellsMultiplayerMod build on both computers."),
+                    0xE0E0E0);
+                AddMenuButton(screen, GetText.Instance.GetString("OK"), () =>
+                {
+                    screen.clearMenu();
+                    ShowJoinTransportMenu(screen);
+                }, Localize("Return to join menu"));
+                screen.ShouldAutoHideConnectionUI(false);
+            });
+        }
+
         public static void NotifyRemoteDisconnected(NetRole role)
         {
+            RunLaunchCoordinator.OnRemoteDisconnected(role);
             if (role == NetRole.Host)
             {
                 var disconnectedName = string.IsNullOrWhiteSpace(_remoteUsername) ? Localize("Guest") : _remoteUsername.Trim();
@@ -145,7 +213,27 @@ namespace DeadCellsMultiplayerMod
                 return;
             }
 
+            bool protocolMismatch;
+            lock (Sync)
+            {
+                protocolMismatch = _protocolMismatchPending;
+                _protocolMismatchPending = false;
+            }
+
             var wasInRun = _inActualRun;
+            // Unexpected disconnect used to clear only the menu's public NetRef. ModEntry still
+            // retained a client role/node and remote serializer/user state until another menu
+            // action happened, so hooks could continue behaving as a client after the host was
+            // already gone. Run the same centralized cleanup used by an explicit disconnect.
+            try
+            {
+                ModEntry.Instance?.StopNetworkFromMenu();
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Client disconnect cleanup failed: {Message}", ex.Message);
+            }
+
             SetRole(NetRole.None);
             NetRef = null;
             _waitingForHost = false;
@@ -153,8 +241,9 @@ namespace DeadCellsMultiplayerMod
             ResetSteamState();
             ClearNetworkCaches();
             _remoteUsername = "guest";
-            MultiplayerUI.PushSystemMessage(Localize("Host disconnected from server."));
-            if (wasInRun)
+            if (!protocolMismatch)
+                MultiplayerUI.PushSystemMessage(Localize("Host disconnected from server."));
+            if (wasInRun && !protocolMismatch)
                 StartHostDisconnectCountdown();
 
             EnqueueMainThreadCoalesced("ui:refresh-layout-after-disconnect", () => ConnectionUI.RefreshLayoutAfterDisconnect());
@@ -195,7 +284,16 @@ namespace DeadCellsMultiplayerMod
         private static void ClearNetworkCaches()
         {
             CacheLevelDescSync(null);
-            _seedArrived = false;
+            lock (Sync)
+            {
+                _remoteSeed = null;
+                _remoteSeedSequence = 0;
+                _consumedRemoteSeedSequence = 0;
+                _remoteLaunchKind = string.Empty;
+                _seedArrived = false;
+                ClearPrecommittedHostRunSeedLocked();
+                Monitor.PulseAll(Sync);
+            }
         }
 
         private static void ResetSteamState()
