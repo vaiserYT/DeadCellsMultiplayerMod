@@ -146,11 +146,13 @@ namespace DeadCellsMultiplayerMod
         }
 
         /// <summary>
-        /// Fully disposes remote render shells only for an actual boss-cell main-level reload.
-        /// Generic level disposal and sublevel/exit paths deliberately do not call this helper,
-        /// preserving the v0.8.68i Cavern Key, boss-cell-door and exit-teleporter lifecycle.
+        /// Removes every multiplayer-owned render process before native code begins replacing a
+        /// main level. Merely hiding or detaching the body sprite is insufficient: remote heads,
+        /// corpse entities, clones, and their parent processes can still be visited by
+        /// Boot.tryRender after their animation library has been torn down, producing
+        /// HashLink "Null access .groupName" in Game.loadMainLevel.
         /// </summary>
-        internal static void PrepareAndDisposeRemoteKingsForBossCellReload(string reason)
+        internal static void PrepareAndDisposeRemoteVisualsForMainLevelTransition(string reason)
         {
             PrepareRemoteKingsForLevelTransition(reason);
 
@@ -158,17 +160,27 @@ namespace DeadCellsMultiplayerMod
             if (instance == null)
                 return;
 
-            // Detaching an HSprite is not enough for main-level reloads such as boss-cell
-            // changes. The old GhostKing process can still be visited by Boot.tryRender while
-            // Game.loadMainLevel is replacing the display tree, causing Null access .groupName.
-            // Fully dispose the old remote shells before native level disposal/reload begins.
+            // Downed-player cinematics own separate HeroDeadCorpse processes. They must be retired
+            // in the same pre-native window as GhostKing, otherwise the body can outlive its old
+            // SpriteLib for one render frame during LevelTransition.loadNewLevel.
+            instance.DisposeDownedRenderShellsForLevelTransition(reason);
+
+            // Preserve remote identities and snapshots, but remove the old-level processes through
+            // Process.disposeImmediately. ReceiveGhostCoords recreates clean shells in the new level.
             for (var slot = 0; slot < clients.Length; slot++)
-                instance.DisposeClientSlot(slot, clearIdentity: false);
+                instance.DisposeClientSlotForSubLevelTransition(slot, clearIdentity: false);
 
             instance.DrainRemoteCombatQueuesAfterLevelChange();
             instance.Logger.Information(
-                "[NetMod][MainLevelRenderGuard] disposed remote shells reason={Reason}",
+                "[NetMod][MainLevelRenderGuard] hard-disposed multiplayer render shells reason={Reason}",
                 reason);
+        }
+
+        // Keep the existing call sites descriptive while routing them through the same complete
+        // main-level render teardown.
+        internal static void PrepareAndDisposeRemoteKingsForBossCellReload(string reason)
+        {
+            PrepareAndDisposeRemoteVisualsForMainLevelTransition(reason);
         }
 
         internal static void PrepareRemoteKingsForSubLevelTransition(string reason)

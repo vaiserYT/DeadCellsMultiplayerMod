@@ -14,7 +14,6 @@ namespace DeadCellsMultiplayerMod
 {
     internal static class SteamConnect
     {
-        private const int DeadCellsAppId = 588650;
         private const int WorkerTimeoutMs = 25000;
         private const int SteamCallTimeoutMs = 15000;
         private const int JoinWorkerRetryCount = 3;
@@ -773,10 +772,17 @@ namespace DeadCellsMultiplayerMod
             }
             catch (Exception ex)
             {
+                var error = ex.ToString();
+                if (ex is FileNotFoundException missingDependency &&
+                    !string.IsNullOrWhiteSpace(missingDependency.FileName))
+                {
+                    error = $"Steam transport unavailable: worker dependency missing ({missingDependency.FileName})";
+                }
+
                 response = new WorkerResponse
                 {
                     Success = false,
-                    Error = ex.ToString()
+                    Error = error
                 };
             }
             finally
@@ -795,22 +801,16 @@ namespace DeadCellsMultiplayerMod
             responseWritten = false;
             PrepareSteamNativePath();
 
-            if (SteamAPI.RestartAppIfNecessary(new AppId_t(DeadCellsAppId)))
-            {
-                return new WorkerResponse
-                {
-                    Success = false,
-                    Error = "Steam requested app restart"
-                };
-            }
-
+            // This worker is optional transport infrastructure, not a launcher or ownership
+            // validator. Never force a Steam restart; simply report Steam as unavailable and let
+            // the main multiplayer menu fall back to direct IP/LAN.
             if (!SteamAPI.Init())
             {
                 WriteSteamInitDiagnostics();
                 return new WorkerResponse
                 {
                     Success = false,
-                    Error = "Steam API init failed. Ensure Steam client is running and the game was launched from Steam."
+                    Error = "Steam API unavailable"
                 };
             }
 
@@ -1002,7 +1002,7 @@ namespace DeadCellsMultiplayerMod
 
                 try
                 {
-                    ModEntry.TryRunSteamCallbacksSerialized();
+                    PumpWorkerSteamCallbacks();
                 }
                 catch
                 {
@@ -1117,7 +1117,7 @@ namespace DeadCellsMultiplayerMod
                 {
                     try
                     {
-                        ModEntry.TryRunSteamCallbacksSerialized();
+                        PumpWorkerSteamCallbacks();
                     }
                     catch { }
                     Thread.Sleep(50);
@@ -1174,7 +1174,7 @@ namespace DeadCellsMultiplayerMod
 
                 try
                 {
-                    ModEntry.TryRunSteamCallbacksSerialized();
+                    PumpWorkerSteamCallbacks();
                 }
                 catch
                 {
@@ -1269,6 +1269,23 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
+        /// <summary>
+        /// Pumps callbacks inside the standalone Steam worker without touching ModEntry or
+        /// GameProxy. Referencing ModEntry from the worker forces the DCCM GameProxy assembly to
+        /// load in a process where it is intentionally unavailable.
+        /// </summary>
+        private static void PumpWorkerSteamCallbacks()
+        {
+            try
+            {
+                SteamAPI.RunCallbacks();
+            }
+            catch
+            {
+                // Worker callers already have bounded timeouts and will return a clean failure.
+            }
+        }
+
         private static bool TryWaitForCallResult<T>(
             SteamAPICall_t apiCall,
             out T data,
@@ -1303,7 +1320,7 @@ namespace DeadCellsMultiplayerMod
             var timeoutTicks = (long)(Stopwatch.Frequency * (SteamCallTimeoutMs / 1000.0));
             while (!completed && Stopwatch.GetTimestamp() - start < timeoutTicks)
             {
-                ModEntry.TryRunSteamCallbacksSerialized();
+                PumpWorkerSteamCallbacks();
                 Thread.Sleep(15);
             }
 

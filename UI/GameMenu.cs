@@ -1190,6 +1190,12 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowHostTransportMenu(TitleScreen screen)
         {
+            if (!ModEntry.IsSteamAvailable)
+            {
+                ShowLanConnectionMenu(screen, NetRole.Host);
+                return;
+            }
+
             _roomStatusMenuKind = 0;
             screen.clearMenu();
             AddInfoLine(screen, GetText.Instance.GetString("Host room"), 0xFFE48A);
@@ -1200,6 +1206,12 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowJoinTransportMenu(TitleScreen screen)
         {
+            if (!ModEntry.IsSteamAvailable)
+            {
+                ShowLanConnectionMenu(screen, NetRole.Client);
+                return;
+            }
+
             _roomStatusMenuKind = 0;
             screen.clearMenu();
             AddInfoLine(screen, GetText.Instance.GetString("Join room"), 0xFFE48A);
@@ -1345,6 +1357,15 @@ namespace DeadCellsMultiplayerMod
 
         private static void OpenSteamInviteOverlayFromMenu(TitleScreen screen)
         {
+            if (!ModEntry.IsSteamAvailable ||
+                !ModEntry.EnsureSteamApiForNetworking("Steam invite overlay"))
+            {
+                SwitchToLanTransport(NetRole.Host);
+                NotifySteamUnavailableFallback();
+                ShowLanConnectionMenu(screen, NetRole.Host);
+                return;
+            }
+
             if (_steamLobbyId == 0UL)
             {
                 AddInfoLine(screen, GetText.Instance.GetString("No Steam room yet."), 0xFF9090);
@@ -1420,8 +1441,19 @@ namespace DeadCellsMultiplayerMod
             var lobby = NetRef.HostLobbyResult;
             if (lobby == null || !lobby.Success)
             {
+                var error = lobby?.Error ?? "Lobby creation failed";
                 StopNetworkFromMenu();
-                _log?.Warning("[NetMod][SteamWorkerError] {Error}", lobby?.Error ?? "Lobby creation failed");
+                _log?.Warning("[NetMod][SteamWorkerError] {Error}", error);
+
+                if (IsSteamUnavailableError(error))
+                {
+                    ModEntry.MarkSteamUnavailable(error);
+                    SwitchToLanTransport(NetRole.Host);
+                    NotifySteamUnavailableFallback();
+                    showTransport();
+                    return;
+                }
+
                 showError(GetText.Instance.GetString("Steam host failed"),
                     GetText.Instance.GetString("Steam lobby creation failed. Check console logs."),
                     showTransport);
@@ -1447,6 +1479,14 @@ namespace DeadCellsMultiplayerMod
 
         private static void NativeStartSteamHost(TitleScreen screen)
         {
+            if (!TrySelectSteamTransportOrShowLan(
+                    screen,
+                    NetRole.Host,
+                    "Steam host selected in multiplayer menu"))
+            {
+                return;
+            }
+
             SharedStartSteamHost(
                 showError: (title, details, onOk) => ShowConnectionErrorPopup(screen, title, details, onOk),
                 showStatus: () => { ShowHostStatusMenu(screen); screen.ShouldAutoHideConnectionUI(true); },
@@ -1456,6 +1496,14 @@ namespace DeadCellsMultiplayerMod
 
         private static void NativeStartSteamJoin(TitleScreen screen)
         {
+            if (!TrySelectSteamTransportOrShowLan(
+                    screen,
+                    NetRole.Client,
+                    "Steam join selected in multiplayer menu"))
+            {
+                return;
+            }
+
             _steamJoinLobbyResolvePending = true;
             var joinGeneration = Interlocked.Increment(ref _steamJoinResolveGeneration);
             _waitingForHost = true;
@@ -1497,6 +1545,16 @@ namespace DeadCellsMultiplayerMod
             {
                 StopNetworkFromMenu();
                 _log?.Warning("[NetMod][SteamWorkerError] {Error}", join.Error);
+
+                if (IsSteamUnavailableError(join.Error))
+                {
+                    ModEntry.MarkSteamUnavailable(join.Error);
+                    SwitchToLanTransport(NetRole.Client);
+                    NotifySteamUnavailableFallback();
+                    showTransport();
+                    return;
+                }
+
                 showError(GetText.Instance.GetString("Steam join failed"),
                     GetText.Instance.GetString("Steam join failed. Check console logs."),
                     showTransport);
@@ -1550,6 +1608,14 @@ namespace DeadCellsMultiplayerMod
                 return;
             }
 
+            if (!TrySelectSteamTransportOrShowLan(
+                    screen,
+                    NetRole.Client,
+                    "Steam overlay/connect_lobby join request"))
+            {
+                return;
+            }
+
             _log?.Information("[NetMod][Steam] Overlay join starting: lobbyId={LobbyId} screen=ok", lobbyId);
 
             _menuSelection = NetRole.Client;
@@ -1597,9 +1663,68 @@ namespace DeadCellsMultiplayerMod
 
         private static bool _steamUnavailableNotified;
 
+        private static void SwitchToLanTransport(NetRole role)
+        {
+            _menuSelection = role;
+            _menuTransport = ConnectionTransport.Lan;
+            _steamLobbyActive = false;
+            _steamLobbyId = 0UL;
+            _steamLobbyCode = string.Empty;
+            _steamHostSteamId = 0UL;
+            _steamJoinLobbyResolvePending = false;
+            Interlocked.Increment(ref _steamJoinResolveGeneration);
+            _waitingForHost = role == NetRole.Client;
+            _clientConnecting = false;
+            ConnectionUI.NotifyConnectionsChanged();
+        }
+
+        private static void NotifySteamUnavailableFallback()
+        {
+            if (_steamUnavailableNotified)
+                return;
+
+            _steamUnavailableNotified = true;
+            _log?.Warning("[NetMod] Steam transport unavailable; using direct IP/LAN transport instead");
+            MultiplayerUI.PushSystemMessage(Localize("Steam unavailable - using direct IP/LAN instead."));
+        }
+
+        private static bool IsSteamUnavailableError(string? error)
+        {
+            if (string.IsNullOrWhiteSpace(error))
+                return false;
+
+            return error.IndexOf("Steam API unavailable", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("Steam API init failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("steam_api", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("Steam client", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("callback dispatcher is not initialized", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("worker dependency missing", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("GameProxy", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("FileNotFoundException", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   error.IndexOf("Could not load file or assembly", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool TrySelectSteamTransportOrShowLan(TitleScreen screen, NetRole role, string source)
+        {
+            _menuSelection = role;
+            _menuTransport = ConnectionTransport.Steam;
+
+            if (ModEntry.IsSteamAvailable &&
+                ModEntry.EnsureSteamApiForNetworking(source))
+            {
+                return true;
+            }
+
+            SwitchToLanTransport(role);
+            NotifySteamUnavailableFallback();
+            screen.ShouldAutoHideConnectionUI(false);
+            ShowLanConnectionMenu(screen, role);
+            return false;
+        }
+
         /// <summary>
         /// True only when the Steam transport is both selected AND usable. Without a working
-        /// Steam client the lobby path can never connect, so the menu quietly falls back to the
+        /// Steam client the lobby path can never connect, so the menu falls back to the
         /// direct IP/LAN transport instead of failing with an obscure lobby error.
         /// </summary>
         private static bool ShouldUseSteamTransport()
@@ -1607,16 +1732,12 @@ namespace DeadCellsMultiplayerMod
             if (_menuTransport != ConnectionTransport.Steam)
                 return false;
 
-            if (ModEntry.IsSteamAvailable)
+            if (ModEntry.IsSteamAvailable &&
+                ModEntry.EnsureSteamApiForNetworking("Steam transport selected in multiplayer menu"))
                 return true;
 
-            if (!_steamUnavailableNotified)
-            {
-                _steamUnavailableNotified = true;
-                _log?.Warning("[NetMod] Steam transport unavailable; using direct IP/LAN transport instead");
-                MultiplayerUI.PushSystemMessage(Localize("Steam unavailable - using direct IP/LAN instead."));
-            }
-
+            SwitchToLanTransport(_menuSelection);
+            NotifySteamUnavailableFallback();
             return false;
         }
 

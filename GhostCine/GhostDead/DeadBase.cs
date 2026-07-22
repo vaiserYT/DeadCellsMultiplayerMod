@@ -1102,6 +1102,11 @@ namespace DeadCellsMultiplayerMod
             if (corpse == null)
                 return;
 
+            if (ModEntry.TryDisposeRuntimeProcessImmediately(corpse))
+                return;
+
+            try { corpse.spr?.set_visible(false); } catch { }
+            try { corpse.spr?.parent?.removeChild(corpse.spr); } catch { }
             try
             {
                 if (!corpse.destroyed)
@@ -1120,6 +1125,11 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             RemoveFromHomunculusSkillEntityList(hom);
+            if (ModEntry.TryDisposeRuntimeProcessImmediately(hom))
+                return;
+
+            try { hom.spr?.set_visible(false); } catch { }
+            try { hom.spr?.parent?.removeChild(hom.spr); } catch { }
             try
             {
                 if (!hom.destroyed)

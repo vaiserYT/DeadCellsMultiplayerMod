@@ -871,16 +871,16 @@ namespace DeadCellsMultiplayerMod
             return null;
         }
 
-        private static bool TryDisposeRuntimeProcessImmediately(object? process)
+        internal static bool TryDisposeRuntimeProcessImmediately(object? process)
         {
             if (process == null)
                 return true;
 
+            // disposeImmediately must be the first destructive call. Calling destroy() first can
+            // clear an HSprite animation group while the process is still attached to the render
+            // tree, which lets Boot.tryRender hit Null access .groupName during loadMainLevel.
             try
             {
-                var destroy = FindRuntimeParameterlessMethod(process, "destroy");
-                try { destroy?.Invoke(process, null); } catch { }
-
                 var disposeImmediately =
                     FindRuntimeParameterlessMethod(process, "disposeImmediately");
                 if (disposeImmediately == null)
@@ -922,7 +922,9 @@ namespace DeadCellsMultiplayerMod
 
                 if (!TryDisposeRuntimeProcessImmediately(client))
                 {
-                    try { client.destroy(); } catch { }
+                    // Last-resort path for an unexpected runtime proxy. Detach every sprite before
+                    // destroy() so a deferred Process disposal cannot leave a null-group sprite in
+                    // the active render tree.
                     try
                     {
                         EnsureGhostKingRenderSafe(
@@ -931,6 +933,7 @@ namespace DeadCellsMultiplayerMod
                             detachForTransition: true);
                     }
                     catch { }
+                    try { client.destroy(); } catch { }
                 }
             }
             clientLastBodyAnims[slot] = null;
