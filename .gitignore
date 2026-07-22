@@ -1,0 +1,11 @@
+obj/
+bin/
+tools_tmp/
+__decomp_gp/
+logs/
+.vs/
+*.user
+*.suo
+last_error.txt
+log_*.log
+.cursorrules

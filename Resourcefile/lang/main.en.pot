@@ -1,0 +1,408 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"POT-Creation-Date: 2025-11-29 12:26+0800\n"
+"PO-Revision-Date: 2025-11-29 12:27+0800\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 3.4.2\n"
+"X-Poedit-Basepath: ../../../ModCore\n"
+"X-Poedit-SearchPath-0: .\n"
+
+#: ConnectionUI.cs:87
+msgid "DeadCellsMultiplayerMod"
+msgstr ""
+
+#: ConnectionUI.cs 278
+msgid "Lobby menu"
+msgstr ""
+
+#: ConnectionUI.cs
+msgid "Lobby code"
+msgstr ""
+
+#: GameMenu.MultiplayerSaveSlots.cs
+msgid "Save: Slot {0}"
+msgstr ""
+
+#: ConnectionUI.cs:301
+msgid "Players' list"
+msgstr ""
+
+#: ConnectionUI.cs:342
+msgid "connecting..."
+msgstr ""
+
+#: ConnectionUI.cs:344
+msgid "- "
+msgstr ""
+
+#: GameMenu.cs:472
+msgid "Play multiplayer"
+msgstr ""
+
+#: GameMenu.cs:472
+msgid "Host or join a multiplayer session"
+msgstr ""
+
+#: GameMenu.cs:485
+msgid "Host game"
+msgstr ""
+
+#: GameMenu.cs:485
+msgid "Join game"
+msgstr ""
+
+#: GameMenu.cs:485
+msgid "Back"
+msgstr ""
+
+#: GameMenu.cs:485
+msgid "Return to main menu"
+msgstr ""
+
+#: GameMenu.cs:485
+msgid "Create a multiplayer session"
+msgstr ""
+
+#: GameMenu.cs:485
+msgid "Connect to an existing host"
+msgstr ""
+
+#: GameMenu.cs:526
+msgid "Edit display name"
+msgstr ""
+
+#: GameMenu.cs:526
+msgid "Username: "
+msgstr ""
+
+#: GameMenu.cs:531
+msgid "Edit IP"
+msgstr ""
+
+#: GameMenu.cs:531
+msgid "IP: "
+msgstr ""
+
+#: GameMenu.cs:531
+msgid "Edit IP address"
+msgstr ""
+
+#: GameMenu.cs:541
+msgid "Edit port"
+msgstr ""
+
+#: GameMenu.cs:541
+msgid "Port: "
+msgstr ""
+
+#: GameMenu.cs:554
+msgid "Host"
+msgstr ""
+
+#: GameMenu.cs:554
+msgid "Start hosting"
+msgstr ""
+
+#: GameMenu.cs:554
+msgid "Join"
+msgstr ""
+
+#: GameMenu.cs:554
+msgid "Connect to host"
+msgstr ""
+
+#: GameMenu.cs:611
+msgid "Lan host"
+msgstr ""
+
+#: GameMenu.cs:627
+msgid "Steam host"
+msgstr ""
+
+#: GameMenu.cs:625
+msgid "Use direct IP/port hosting"
+msgstr ""
+
+#: GameMenu.cs:631
+msgid "Create Steam lobby and start immediately"
+msgstr ""
+
+#: GameMenu.cs:667
+msgid "Lan join"
+msgstr ""
+
+#: GameMenu.cs:675
+msgid "Steam join"
+msgstr ""
+
+#: GameMenu.cs:671
+msgid "Connect by IP/port"
+msgstr ""
+
+#: GameMenu.cs:677
+msgid "Connect by Steam lobby id/code from clipboard"
+msgstr ""
+
+#: GameMenu.cs:821
+msgid "Steam host failed"
+msgstr ""
+
+#: GameMenu.cs:822
+msgid "Could not start Steam host. Check console logs."
+msgstr ""
+
+#: GameMenu.cs:835
+msgid "Steam lobby creation failed. Check console logs."
+msgstr ""
+
+#: GameMenu.cs:960
+msgid "Steam join failed"
+msgstr ""
+
+#: GameMenu.cs:961
+msgid "Steam join failed. Check console logs."
+msgstr ""
+
+#: GameMenu.cs:975
+msgid "Steam lobby endpoint is invalid. Check console logs."
+msgstr ""
+
+#: GameMenu.cs:1019
+msgid "Return to previous menu"
+msgstr ""
+
+#: GameMenu.cs:1073
+msgid "Steam host id is missing. Check console logs."
+msgstr ""
+
+#: GameMenu.cs:637
+msgid "Play"
+msgstr ""
+
+#: GameMenu.cs:637
+msgid "Launch game"
+msgstr ""
+
+#: GameMenu.cs:637
+msgid "Back to host setup"
+msgstr ""
+
+#: GameMenu.cs:604
+msgid "Back to multiplayer menu"
+msgstr ""
+
+#: GameMenu.cs:666
+msgid "Disconnect"
+msgstr ""
+
+#: GameMenu.cs:666
+msgid "Disconnect and return to main menu"
+msgstr ""
+
+#: GameMenu.cs:680
+msgid "Can't find lobby"
+msgstr ""
+
+#: GameMenu.cs:680
+msgid "OK"
+msgstr ""
+
+#: GameMenu.cs:680
+msgid "Return to join menu"
+msgstr ""
+
+#: GameMenu.cs:1069
+msgid "Username"
+msgstr ""
+
+#: GameMenu.cs:1070
+msgid "IP address"
+msgstr ""
+
+#: GameMenu.cs:1077
+msgid "Port"
+msgstr ""
+
+#: GameMenu.cs:1115
+msgid "waiting for the host"
+msgstr ""
+
+#: GameMenu.cs:1117
+msgid "not connected"
+msgstr ""
+
+#: GameMenu.cs:1119
+msgid "waiting for client"
+msgstr ""
+
+#: GameMenu.cs:1121
+msgid "client connected"
+msgstr ""
+
+#: GameMenu.cs:1123
+msgid "connected to host"
+msgstr ""
+
+#: GameMenu.cs:1344
+msgid "Cancel"
+msgstr ""
+
+msgid "(Host)"
+msgstr ""
+
+msgid "(you)"
+msgstr ""
+
+msgid "{0} connected to the server."
+msgstr ""
+
+msgid "{0} disconnected from the server."
+msgstr ""
+
+msgid "Host disconnected from server."
+msgstr ""
+
+msgid "Back to menu in {0}..."
+msgstr ""
+
+msgid "{0} reached the exit to {1}"
+msgstr ""
+
+msgid "next area"
+msgstr ""
+
+msgid "Guest"
+msgstr ""
+
+msgid "Player {0}"
+msgstr ""
+
+msgid "{0} fell!"
+msgstr ""
+
+msgid "Hold R to restore"
+msgstr ""
+
+msgid "Hold to revive."
+msgstr ""
+
+msgid "Game Over"
+msgstr ""
+
+msgid "Choose multiplayer save slot"
+msgstr ""
+
+msgid "Copy your save in that slot"
+msgstr ""
+
+msgid "Choose original save to copy"
+msgstr ""
+
+msgid "Saved games"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Multiplayer settings"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Enable mobs sync"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Mobs interpolation quality"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Mobs HP multiplier"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Bosses HP multiplier"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Sync vertical position"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Mobs settings"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Debug"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Applies host vertical position to gravity mobs. Off: X-only for walkers; flying mobs still sync Y. On: can reduce desync but may snap ground mobs."
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: language"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: cinematics hooks"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: multiplayer UI"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: level init"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: mobs sync"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: minimap reveal"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: level exit sync"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: interaction sync"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module: connection UI"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Module"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Player immortal"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Use Explorer's Rune"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Mobs sync trace logging"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Start perk"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Previous perk"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Next perk"
+msgstr ""

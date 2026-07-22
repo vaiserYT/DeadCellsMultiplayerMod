@@ -1,0 +1,231 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"POT-Creation-Date: 2025-11-29 12:26+0800\n"
+"PO-Revision-Date: 2026-01-23 23:45+0800\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 3.8\n"
+"X-Poedit-Basepath: ../../../ModCore\n"
+"X-Poedit-SearchPath-0: .\n"
+
+#: Modules/Game.cs:87
+msgid "DeadCellsMultiplayerMod"
+msgstr ""
+
+#: ConnectionUI.cs 278
+msgid "Lobby menu"
+msgstr ""
+
+#: ConnectionUI.cs
+msgid "Lobby code"
+msgstr "Lobby code"
+
+#: GameMenu.MultiplayerSaveSlots.cs
+msgid "Save: Slot {0}"
+msgstr "Save: Slot {0}"
+
+msgid "{0} connected to the server."
+msgstr "{0} connected to the server."
+
+msgid "{0} disconnected from the server."
+msgstr "{0} disconnected from the server."
+
+msgid "Host disconnected from server."
+msgstr "Host disconnected from server."
+
+msgid "Back to menu in {0}..."
+msgstr "Back to menu in {0}..."
+
+msgid "{0} reached the exit to {1}"
+msgstr "{0} reached the exit to {1}"
+
+msgid "next area"
+msgstr "next area"
+
+msgid "Guest"
+msgstr "Guest"
+
+msgid "Player {0}"
+msgstr "Player {0}"
+
+msgid "{0} fell!"
+msgstr "{0} fell!"
+
+msgid "Hold R to restore"
+msgstr "Hold R to restore"
+
+msgid "Hold to revive."
+msgstr "Hold to revive."
+
+msgid "Game Over"
+msgstr "Game Over"
+
+#: GameMenu.cs (transport / Steam)
+msgid "Lan host"
+msgstr ""
+
+msgid "Steam host"
+msgstr ""
+
+msgid "Use direct IP/port hosting"
+msgstr ""
+
+msgid "Create Steam lobby and start immediately"
+msgstr ""
+
+msgid "Lan join"
+msgstr ""
+
+msgid "Steam join"
+msgstr ""
+
+msgid "Connect by IP/port"
+msgstr ""
+
+msgid "Connect by Steam lobby id/code from clipboard"
+msgstr ""
+
+msgid "Steam host failed"
+msgstr ""
+
+msgid "Could not start Steam host. Check console logs."
+msgstr ""
+
+msgid "Steam lobby creation failed. Check console logs."
+msgstr ""
+
+msgid "Steam join failed"
+msgstr ""
+
+msgid "Steam join failed. Check console logs."
+msgstr ""
+
+msgid "Steam lobby endpoint is invalid. Check console logs."
+msgstr ""
+
+msgid "Return to previous menu"
+msgstr ""
+
+msgid "Steam host id is missing. Check console logs."
+msgstr ""
+
+msgid "Back to multiplayer menu"
+msgstr ""
+
+#: GameMenu.MultiplayerSaveSlots.cs
+msgid "Choose multiplayer save slot"
+msgstr ""
+
+msgid "Copy your save in that slot"
+msgstr ""
+
+msgid "Choose original save to copy"
+msgstr ""
+
+msgid "Saved games"
+msgstr ""
+
+#: SettingsUI.cs
+msgid "Multiplayer settings"
+msgstr "Multiplayer settings"
+
+#: SettingsUI.cs
+msgid "Enable mobs sync"
+msgstr "Enable mobs sync"
+
+#: SettingsUI.cs
+msgid "Mobs interpolation quality"
+msgstr "Mobs interpolation quality"
+
+#: SettingsUI.cs
+msgid "Mobs HP multiplier"
+msgstr "Mobs HP multiplier"
+
+#: SettingsUI.cs
+msgid "Bosses HP multiplier"
+msgstr "Bosses HP multiplier"
+
+#: SettingsUI.cs
+msgid "Sync vertical position"
+msgstr "Sync vertical position"
+
+#: SettingsUI.cs
+msgid "Mobs settings"
+msgstr "Mobs settings"
+
+#: SettingsUI.cs
+msgid "Debug"
+msgstr "Debug"
+
+#: SettingsUI.cs
+msgid "Applies host vertical position to gravity mobs. Off: X-only for walkers; flying mobs still sync Y. On: can reduce desync but may snap ground mobs."
+msgstr "Applies host vertical position to gravity mobs. Off: X-only for walkers; flying mobs still sync Y. On: can reduce desync but may snap ground mobs."
+
+#: SettingsUI.cs
+msgid "Module: language"
+msgstr "Module: language"
+
+#: SettingsUI.cs
+msgid "Module: cinematics hooks"
+msgstr "Module: cinematics hooks"
+
+#: SettingsUI.cs
+msgid "Module: multiplayer UI"
+msgstr "Module: multiplayer UI"
+
+#: SettingsUI.cs
+msgid "Module: level init"
+msgstr "Module: level init"
+
+#: SettingsUI.cs
+msgid "Module: mobs sync"
+msgstr "Module: mobs sync"
+
+#: SettingsUI.cs
+msgid "Module: minimap reveal"
+msgstr "Module: minimap reveal"
+
+#: SettingsUI.cs
+msgid "Module: level exit sync"
+msgstr "Module: level exit sync"
+
+#: SettingsUI.cs
+msgid "Module: interaction sync"
+msgstr "Module: interaction sync"
+
+#: SettingsUI.cs
+msgid "Module: connection UI"
+msgstr "Module: connection UI"
+
+#: SettingsUI.cs
+msgid "Module"
+msgstr "Module"
+
+#: SettingsUI.cs
+msgid "Player immortal"
+msgstr "Player immortal"
+
+#: SettingsUI.cs
+msgid "Use Explorer's Rune"
+msgstr "Use Explorer's Rune"
+
+#: SettingsUI.cs
+msgid "Mobs sync trace logging"
+msgstr "Mobs sync trace logging"
+
+#: SettingsUI.cs
+msgid "Start perk"
+msgstr "Start perk"
+
+#: SettingsUI.cs
+msgid "Previous perk"
+msgstr "Previous perk"
+
+#: SettingsUI.cs
+msgid "Next perk"
+msgstr "Next perk"

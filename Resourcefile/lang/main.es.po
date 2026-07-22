@@ -1,0 +1,228 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"POT-Creation-Date: 2025-11-29 12:26+0800\n"
+"PO-Revision-Date: 2026-02-20 20:30+0700\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: es\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 3.8\n"
+
+#: Modules/Game.cs:87
+msgid "DeadCellsMultiplayerMod"
+msgstr "DeadCellsMultiplayerMod"
+
+#: ConnectionUI.cs 278
+msgid "Lobby menu"
+msgstr "Menú del lobby"
+
+#: ConnectionUI.cs
+msgid "Lobby code"
+msgstr "Código del lobby"
+
+#: GameMenu.MultiplayerSaveSlots.cs
+msgid "Save: Slot {0}"
+msgstr "Guardar: ranura {0}"
+
+msgid "{0} connected to the server."
+msgstr "{0} se conectó al servidor."
+
+msgid "{0} disconnected from the server."
+msgstr "{0} se desconectó del servidor."
+
+msgid "Host disconnected from server."
+msgstr "El anfitrión se desconectó del servidor."
+
+msgid "Back to menu in {0}..."
+msgstr "Volviendo al menú en {0}..."
+
+msgid "{0} reached the exit to {1}"
+msgstr "{0} alcanzó la salida hacia {1}"
+
+msgid "next area"
+msgstr "siguiente área"
+
+msgid "Guest"
+msgstr "Invitado"
+
+msgid "Player {0}"
+msgstr "Jugador {0}"
+
+msgid "{0} fell!"
+msgstr "¡{0} cayó!"
+
+msgid "Hold R to restore"
+msgstr "Mantén R para restaurar"
+
+msgid "Hold to revive."
+msgstr "Mantén para revivir."
+
+msgid "Game Over"
+msgstr "Fin del juego"
+
+#: GameMenu.cs (transport / Steam)
+msgid "Lan host"
+msgstr "Anfitrión LAN"
+
+msgid "Steam host"
+msgstr "Anfitrión Steam"
+
+msgid "Use direct IP/port hosting"
+msgstr "Usar alojamiento directo por IP/puerto"
+
+msgid "Create Steam lobby and start immediately"
+msgstr "Crear lobby de Steam y empezar de inmediato"
+
+msgid "Lan join"
+msgstr "Unirse por LAN"
+
+msgid "Steam join"
+msgstr "Unirse por Steam"
+
+msgid "Connect by IP/port"
+msgstr "Conectar por IP/puerto"
+
+msgid "Connect by Steam lobby id/code from clipboard"
+msgstr "Conectar con ID/código de lobby de Steam del portapapeles"
+
+msgid "Steam host failed"
+msgstr "Error de anfitrión Steam"
+
+msgid "Could not start Steam host. Check console logs."
+msgstr "No se pudo iniciar el anfitrión Steam. Revisa la consola."
+
+msgid "Steam lobby creation failed. Check console logs."
+msgstr "Falló la creación del lobby de Steam. Revisa la consola."
+
+msgid "Steam join failed"
+msgstr "Error al unirse por Steam"
+
+msgid "Steam join failed. Check console logs."
+msgstr "Error al unirse por Steam. Revisa la consola."
+
+msgid "Steam lobby endpoint is invalid. Check console logs."
+msgstr "El extremo del lobby de Steam no es válido. Revisa la consola."
+
+msgid "Return to previous menu"
+msgstr "Volver al menú anterior"
+
+msgid "Steam host id is missing. Check console logs."
+msgstr "Falta el ID de anfitrión de Steam. Revisa la consola."
+
+msgid "Back to multiplayer menu"
+msgstr "Volver al menú multijugador"
+
+msgid "Choose multiplayer save slot"
+msgstr "Elige ranura de guardado multijugador"
+
+msgid "Copy your save in that slot"
+msgstr "Copia tu partida en esa ranura"
+
+msgid "Choose original save to copy"
+msgstr "Elige la partida original a copiar"
+
+msgid "Saved games"
+msgstr "Partidas guardadas"
+
+#: SettingsUI.cs
+msgid "Multiplayer settings"
+msgstr "Configuración multijugador"
+
+#: SettingsUI.cs
+msgid "Enable mobs sync"
+msgstr "Activar sincronización de enemigos"
+
+#: SettingsUI.cs
+msgid "Mobs interpolation quality"
+msgstr "Calidad de interpolación de enemigos"
+
+#: SettingsUI.cs
+msgid "Mobs HP multiplier"
+msgstr "Multiplicador de PV de enemigos"
+
+#: SettingsUI.cs
+msgid "Bosses HP multiplier"
+msgstr "Multiplicador de PV de jefes"
+
+#: SettingsUI.cs
+msgid "Sync vertical position"
+msgstr "Sincronizar posición vertical"
+
+#: SettingsUI.cs
+msgid "Mobs settings"
+msgstr "Ajustes de enemigos"
+
+#: SettingsUI.cs
+msgid "Debug"
+msgstr "Depuración"
+
+#: SettingsUI.cs
+msgid "Applies host vertical position to gravity mobs. Off: X-only for walkers; flying mobs still sync Y. On: can reduce desync but may snap ground mobs."
+msgstr "Aplica la posición vertical del anfitrión a los enemigos con gravedad. Desactivado: solo X para los que caminan; los voladores siguen sincronizando Y. Activado: puede reducir el desfase pero provocar saltos en enemigos en el suelo."
+
+#: SettingsUI.cs
+msgid "Module: language"
+msgstr "Módulo: idioma"
+
+#: SettingsUI.cs
+msgid "Module: cinematics hooks"
+msgstr "Módulo: cinemáticas"
+
+#: SettingsUI.cs
+msgid "Module: multiplayer UI"
+msgstr "Módulo: UI multijugador"
+
+#: SettingsUI.cs
+msgid "Module: level init"
+msgstr "Módulo: inicio de nivel"
+
+#: SettingsUI.cs
+msgid "Module: mobs sync"
+msgstr "Módulo: sincronización de enemigos"
+
+#: SettingsUI.cs
+msgid "Module: minimap reveal"
+msgstr "Módulo: revelar minimapa"
+
+#: SettingsUI.cs
+msgid "Module: level exit sync"
+msgstr "Módulo: salida de nivel"
+
+#: SettingsUI.cs
+msgid "Module: interaction sync"
+msgstr "Módulo: interacciones"
+
+#: SettingsUI.cs
+msgid "Module: connection UI"
+msgstr "Módulo: UI de conexión"
+
+#: SettingsUI.cs
+msgid "Module"
+msgstr "Módulo"
+
+#: SettingsUI.cs
+msgid "Player immortal"
+msgstr "Jugador inmortal"
+
+#: SettingsUI.cs
+msgid "Use Explorer's Rune"
+msgstr "Usar la Runa del Explorador"
+
+#: SettingsUI.cs
+msgid "Mobs sync trace logging"
+msgstr "Registro de trazas de sincronización de enemigos"
+
+#: SettingsUI.cs
+msgid "Start perk"
+msgstr "Perk inicial"
+
+#: SettingsUI.cs
+msgid "Previous perk"
+msgstr "Perk anterior"
+
+#: SettingsUI.cs
+msgid "Next perk"
+msgstr "Perk siguiente"

@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <SupportedOSPlatformVersion>7.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatform>Windows</SupportedOSPlatform>
+    <NoWarn>$(NoWarn);CA1416;CS0414;CS9107</NoWarn>
+    <!-- don't change this version -->
+    <Version>0.8.91</Version>
+    <AssemblyVersion>0.8.91</AssemblyVersion>
+    <FileVersion>0.8.91</FileVersion>
+    <InformationalVersion>0.8.91-bossrush-precommit-seed-barrier</InformationalVersion>
+    <ModType>mod</ModType>
+    <ModMain>DeadCellsMultiplayerMod.ModEntry</ModMain>
+    
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Prefer32Bit>false</Prefer32Bit>
+    <AssemblyName>DeadCellsMultiplayerMod</AssemblyName>
+    <AutoInstallMod Condition="'$(Configuration)' == 'Debug'">true</AutoInstallMod>
+
+    <SteamworksNetHintPath Condition="'$(SteamworksNetHintPath)' == '' and '$(DCCM_MDK_ROOT)' != ''">$(DCCM_MDK_ROOT)\tools\Steamworks.NET.dll</SteamworksNetHintPath>
+
+    <SteamApi64HintPath Condition="'$(SteamApi64HintPath)' == '' and '$(DCCM_MDK_ROOT)' != ''">$(DCCM_MDK_ROOT)\..\native\win-x64\steam_api64.dll</SteamApi64HintPath>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="DeadCellsCoreModding.MDK" Version="1.0.1" />
+    <PackageReference Include="MonoMod.RuntimeDetour" Version="25.3.3" />
+    <Reference Include="Steamworks.NET">
+      <HintPath Condition="Exists('$(SteamworksNetHintPath)')">$(SteamworksNetHintPath)</HintPath>
+    </Reference>
+    <None Include="$(SteamApi64HintPath)" Condition="Exists('$(SteamApi64HintPath)')" Link="steam_api64.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>false</Visible>
+      <TargetPath>steam_api64.dll</TargetPath>
+    </None>
+  </ItemGroup>
+  <Target Name="CopySteamApi64" AfterTargets="CopyOutputFiles" Condition="Exists('$(SteamApi64HintPath)')">
+    <PropertyGroup>
+      <_ModOutputDir>$(OutputPath)output\$(AssemblyName)\</_ModOutputDir>
+    </PropertyGroup>
+    <Copy SourceFiles="$(SteamApi64HintPath)" DestinationFolder="$(_ModOutputDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <PropertyGroup>
+    <GenerateSinglePakFile>true</GenerateSinglePakFile>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackAssets Include="Resourcefile\**\*" RootInPak="DeadCellsMultiplayerModLang" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download DCCM MDK
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/dead-cells-core-modding/core/releases/latest" `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $asset = $release.assets | Where-Object { $_.name -eq "win-x64.zip" }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile dccm.zip
+          Expand-Archive -Path dccm.zip -DestinationPath dccm
+          $mdkRoot = "$env:GITHUB_WORKSPACE\dccm\core\mdk"
+          "DCCM_MDK_ROOT=$mdkRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          dotnet nuget add source "$mdkRoot\packages" --name dccm-local
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeadCellsMultiplayerMod
+          path: bin/Release/net10.0/output/DeadCellsMultiplayerMod/

@@ -1,0 +1,412 @@
+# 简体中文翻译文件
+msgid ""
+msgstr ""
+"Project-Id-Version: ChiuYi Mod\n"
+"POT-Creation-Date: 2025-11-29 12:26+0800\n"
+"PO-Revision-Date: 2026-01-24 02:50+0800\n"
+"Last-Translator: Your Name <your@email.com>\n"
+"Language-Team: Chinese\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 3.8\n"
+"X-Poedit-Basepath: ../../../ModCore\n"
+"X-Poedit-SearchPath-0: .\n"
+
+#: Modules/Game.cs:87
+msgid "DeadCellsMultiplayerMod"
+msgstr "DeadCells 多人游戏模组"
+
+#: ConnectionUI.cs:278
+msgid "Lobby menu"
+msgstr "联机菜单"
+
+#: ConnectionUI.cs
+msgid "Lobby code"
+msgstr "房间代码"
+
+#: GameMenu.MultiplayerSaveSlots.cs
+msgid "Save: Slot {0}"
+msgstr "存档：槽位 {0}"
+
+#: ConnectionUI.cs:301
+msgid "Players' list"
+msgstr "玩家列表"
+
+
+#: ConnectionUI.cs:344
+msgid "- "
+msgstr "- "
+
+#: GameMenu.cs:472
+msgid "Play multiplayer"
+msgstr "多人游戏"
+
+#: GameMenu.cs:472
+msgid "Host or join a multiplayer session"
+msgstr "创建或加入多人游戏会话"
+
+#: GameMenu.cs:485
+msgid "Host game"
+msgstr "创建游戏"
+
+#: GameMenu.cs:485
+msgid "Join game"
+msgstr "加入游戏"
+
+#: GameMenu.cs:485
+msgid "Back"
+msgstr "返回"
+
+#: GameMenu.cs:485
+msgid "Return to main menu"
+msgstr "返回主菜单"
+
+#: GameMenu.cs:485
+msgid "Create a multiplayer session"
+msgstr "创建多人游戏会话"
+
+#: GameMenu.cs:485
+msgid "Connect to an existing host"
+msgstr "连接到已有主机"
+
+#: GameMenu.cs:526
+msgid "Edit display name"
+msgstr "编辑显示名称"
+
+#: GameMenu.cs:526
+msgid "Username: "
+msgstr "用户名: "
+
+#: GameMenu.cs:531
+msgid "Edit IP"
+msgstr "编辑IP地址"
+
+#: GameMenu.cs:531
+msgid "IP: "
+msgstr "IP地址: "
+
+#: GameMenu.cs:531
+msgid "Edit IP address"
+msgstr "编辑IP地址"
+
+#: GameMenu.cs:541
+msgid "Edit port"
+msgstr "编辑端口"
+
+#: GameMenu.cs:541
+msgid "Port: "
+msgstr "端口: "
+
+
+#: GameMenu.cs:554
+msgid "Host"
+msgstr "创建"
+
+#: GameMenu.cs:554
+msgid "Start hosting"
+msgstr "开始创建游戏"
+
+#: GameMenu.cs:554
+msgid "Join"
+msgstr "加入"
+
+#: GameMenu.cs:554
+msgid "Connect to host"
+msgstr "连接到主机"
+
+#: GameMenu.cs:611
+msgid "Lan host"
+msgstr "局域网主机"
+
+#: GameMenu.cs:627
+msgid "Steam host"
+msgstr "Steam 主机"
+
+#: GameMenu.cs:625
+msgid "Use direct IP/port hosting"
+msgstr "使用 IP/端口直连创建房间"
+
+#: GameMenu.cs:631
+msgid "Create Steam lobby and start immediately"
+msgstr "创建 Steam 房间并立即开始"
+
+#: GameMenu.cs:667
+msgid "Lan join"
+msgstr "局域网加入"
+
+#: GameMenu.cs:675
+msgid "Steam join"
+msgstr "Steam 加入"
+
+#: GameMenu.cs:671
+msgid "Connect by IP/port"
+msgstr "通过 IP/端口连接"
+
+#: GameMenu.cs:677
+msgid "Connect by Steam lobby id/code from clipboard"
+msgstr "通过剪贴板中的 Steam 房间 ID/代码连接"
+
+#: GameMenu.cs:821
+msgid "Steam host failed"
+msgstr "Steam 主机失败"
+
+#: GameMenu.cs:822
+msgid "Could not start Steam host. Check console logs."
+msgstr "无法启动 Steam 主机。请查看控制台日志。"
+
+#: GameMenu.cs:835
+msgid "Steam lobby creation failed. Check console logs."
+msgstr "Steam 房间创建失败。请查看控制台日志。"
+
+#: GameMenu.cs:960
+msgid "Steam join failed"
+msgstr "Steam 加入失败"
+
+#: GameMenu.cs:961
+msgid "Steam join failed. Check console logs."
+msgstr "Steam 加入失败。请查看控制台日志。"
+
+#: GameMenu.cs:975
+msgid "Steam lobby endpoint is invalid. Check console logs."
+msgstr "Steam 房间端点无效。请查看控制台日志。"
+
+#: GameMenu.cs:1019
+msgid "Return to previous menu"
+msgstr "返回上一菜单"
+
+#: GameMenu.cs:1073
+msgid "Steam host id is missing. Check console logs."
+msgstr "缺少 Steam 主机 ID。请查看控制台日志。"
+
+#: GameMenu.cs:604
+msgid "Back to multiplayer menu"
+msgstr "返回多人游戏菜单"
+
+#: GameMenu.cs:637
+msgid "Play"
+msgstr "开始游戏"
+
+#: GameMenu.cs:637
+msgid "Launch game"
+msgstr "启动游戏"
+
+#: GameMenu.cs:637
+msgid "Back to host setup"
+msgstr "返回主机设置"
+
+#: GameMenu.cs:666
+msgid "Disconnect"
+msgstr "断开连接"
+
+#: GameMenu.cs:666
+msgid "Disconnect and return to main menu"
+msgstr "断开连接并返回主菜单"
+
+#: GameMenu.cs:680
+msgid "Can't find lobby"
+msgstr "未找到房间"
+
+#: GameMenu.cs:680
+msgid "OK"
+msgstr "确定"
+
+#: GameMenu.cs:680
+msgid "Return to join menu"
+msgstr "返回加入游戏菜单"
+
+#: GameMenu.cs:1069
+msgid "Username"
+msgstr "用户名"
+
+#: GameMenu.cs:1070
+msgid "IP address"
+msgstr "IP地址"
+
+#: GameMenu.cs:1077
+msgid "Port"
+msgstr "端口"
+
+#: GameMenu.cs:1899
+msgid "connecting..."
+msgstr "连接中..."
+
+#: GameMenu.cs:1115
+msgid "waiting for the host"
+msgstr "等待主机"
+
+#: GameMenu.cs:1117
+msgid "not connected"
+msgstr "未连接"
+
+#: GameMenu.cs:1119
+msgid "waiting for client"
+msgstr "等待客户端"
+
+#: GameMenu.cs:1121
+msgid "client connected"
+msgstr "客户端已连接"
+
+#: GameMenu.cs:1123
+msgid "connected to host"
+msgstr "已连接到主机"
+
+
+#: GameMenu.cs:1344
+msgid "Cancel"
+msgstr "取消"
+
+msgid "(Host)"
+msgstr ""
+
+msgid "(you)"
+msgstr ""
+
+msgid "{0} connected to the server."
+msgstr "{0} 已连接到服务器。"
+
+msgid "{0} disconnected from the server."
+msgstr "{0} 已断开与服务器的连接。"
+
+msgid "Host disconnected from server."
+msgstr "主机已与服务器断开连接。"
+
+msgid "Back to menu in {0}..."
+msgstr "将在 {0} 秒后返回菜单..."
+
+msgid "{0} reached the exit to {1}"
+msgstr "{0} 已到达通往 {1} 的出口"
+
+msgid "next area"
+msgstr "下一张地图"
+
+msgid "Guest"
+msgstr "访客"
+
+msgid "Player {0}"
+msgstr "玩家 {0}"
+
+msgid "{0} fell!"
+msgstr "{0} 倒下了！"
+
+msgid "Hold R to restore"
+msgstr "按住 R 进行救援"
+
+msgid "Hold to revive."
+msgstr "按住以复活。"
+
+msgid "Game Over"
+msgstr "游戏结束"
+
+msgid "Choose multiplayer save slot"
+msgstr "选择多人存档槽位"
+
+msgid "Copy your save in that slot"
+msgstr "将存档复制到该槽位"
+
+msgid "Choose original save to copy"
+msgstr "选择要复制的原始存档"
+
+msgid "Saved games"
+msgstr "已保存的游戏"
+
+#: SettingsUI.cs
+msgid "Multiplayer settings"
+msgstr "多人游戏设置"
+
+#: SettingsUI.cs
+msgid "Enable mobs sync"
+msgstr "启用怪物同步"
+
+#: SettingsUI.cs
+msgid "Mobs interpolation quality"
+msgstr "怪物插值质量"
+
+#: SettingsUI.cs
+msgid "Mobs HP multiplier"
+msgstr "小怪生命值倍率"
+
+#: SettingsUI.cs
+msgid "Bosses HP multiplier"
+msgstr "Boss 生命值倍率"
+
+#: SettingsUI.cs
+msgid "Sync vertical position"
+msgstr "同步垂直位置"
+
+#: SettingsUI.cs
+msgid "Mobs settings"
+msgstr "怪物设置"
+
+#: SettingsUI.cs
+msgid "Debug"
+msgstr "调试"
+
+#: SettingsUI.cs
+msgid "Applies host vertical position to gravity mobs. Off: X-only for walkers; flying mobs still sync Y. On: can reduce desync but may snap ground mobs."
+msgstr "将主机的垂直位置应用于受重力影响的怪物。关闭：步行怪仅同步 X；飞行怪仍会同步 Y。开启：可减少不同步，但可能使地面怪瞬移。"
+
+#: SettingsUI.cs
+msgid "Module: language"
+msgstr "模块：语言"
+
+#: SettingsUI.cs
+msgid "Module: cinematics hooks"
+msgstr "模块：剧情动画钩子"
+
+#: SettingsUI.cs
+msgid "Module: multiplayer UI"
+msgstr "模块：多人 UI"
+
+#: SettingsUI.cs
+msgid "Module: level init"
+msgstr "模块：关卡初始化"
+
+#: SettingsUI.cs
+msgid "Module: mobs sync"
+msgstr "模块：怪物同步"
+
+#: SettingsUI.cs
+msgid "Module: minimap reveal"
+msgstr "模块：地图全开"
+
+#: SettingsUI.cs
+msgid "Module: level exit sync"
+msgstr "模块：出口同步"
+
+#: SettingsUI.cs
+msgid "Module: interaction sync"
+msgstr "模块：交互同步"
+
+#: SettingsUI.cs
+msgid "Module: connection UI"
+msgstr "模块：连接 UI"
+
+#: SettingsUI.cs
+msgid "Module"
+msgstr "模块"
+
+#: SettingsUI.cs
+msgid "Player immortal"
+msgstr "玩家无敌"
+
+#: SettingsUI.cs
+msgid "Use Explorer's Rune"
+msgstr "使用探险家符文"
+
+#: SettingsUI.cs
+msgid "Mobs sync trace logging"
+msgstr "怪物同步跟踪日志"
+
+#: SettingsUI.cs
+msgid "Start perk"
+msgstr "起始变异"
+
+#: SettingsUI.cs
+msgid "Previous perk"
+msgstr "上一个变异"
+
+#: SettingsUI.cs
+msgid "Next perk"
+msgstr "下一个变异"
