@@ -1500,10 +1500,8 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             _remoteDownedCines.Remove(userId);
-            if (TryDisposeRuntimeProcessImmediately(cine))
-                return;
-
             try { cine.destroy(); } catch { }
+            try { cine.disposeImmediately(); } catch { }
         }
 
         private void DisposeAllRemoteDownedCines()
@@ -2185,30 +2183,8 @@ namespace DeadCellsMultiplayerMod
             if (cine == null)
                 return;
 
-            if (TryDisposeRuntimeProcessImmediately(cine))
-                return;
-
             try { cine.destroy(); } catch { }
-        }
-
-        private void DisposeDownedRenderShellsForLevelTransition(string reason)
-        {
-            var hadLocal = _localDeadCine != null;
-            var remoteCount = _remoteDownedCines.Count;
-
-            ResetReviveHold();
-            ClearReviveHints();
-            StopLocalDeadCine();
-            DisposeAllRemoteDownedCines();
-
-            if (hadLocal || remoteCount > 0)
-            {
-                Logger.Information(
-                    "[NetMod][DownedRenderGuard] disposed local={Local} remote={RemoteCount} reason={Reason}",
-                    hadLocal,
-                    remoteCount,
-                    reason);
-            }
+            try { cine.disposeImmediately(); } catch { }
         }
 
         private void ResetFakeDeathState(

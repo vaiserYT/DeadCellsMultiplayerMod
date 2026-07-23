@@ -12,7 +12,7 @@ namespace DeadCellsMultiplayerMod
         private static bool s_steamProcessExitHookInstalled;
         private static bool s_steamMainThreadPumpLogged;
 
-        private static bool TryParseConnectLobbyFromCommandLine()
+        private static void TryParseConnectLobbyFromCommandLine()
         {
             var args = Environment.GetCommandLineArgs();
             for (var i = 0; i < args.Length - 1; i++)
@@ -22,17 +22,14 @@ namespace DeadCellsMultiplayerMod
                 {
                     Instance?.Logger.Information("[NetMod][Steam] Launch parameter +connect_lobby detected lobbyId={LobbyId}", lobbyId);
                     GameMenu.EnqueueMainThreadCoalesced("steam:overlay-join", () => GameMenu.HandleSteamOverlayJoinRequest(lobbyId));
-                    return true;
+                    return;
                 }
             }
-            return false;
         }
 
         private static void TryDeferredSteamOverlayCallbackRegistration()
         {
-            if (!s_steamFeaturesRequested || s_steamUnavailable ||
-                !s_steamOverlayCallbackPending ||
-                (s_steamOverlayJoinCallback != null && s_steamRichPresenceJoinCallback != null))
+            if (!s_steamOverlayCallbackPending || (s_steamOverlayJoinCallback != null && s_steamRichPresenceJoinCallback != null))
                 return;
             if (s_steamOverlayCallbackRetryCount >= SteamOverlayCallbackMaxRetries)
             {
@@ -47,13 +44,18 @@ namespace DeadCellsMultiplayerMod
                 $"callback registration attempt {s_steamOverlayCallbackRetryCount}",
                 shouldLogFailure);
 
-            if (!initialized)
+            if (!initialized && s_steamUnavailable)
             {
-                // Never create Steamworks callbacks before SteamAPI.Init succeeds. On non-Steam
-                // runtimes Callback<T>.Create would leave a dispatcher that cannot be pumped.
-                if (s_steamUnavailable)
-                    s_steamOverlayCallbackPending = false;
+                // Positively known to be unusable — stop retrying. LAN/direct IP is unaffected.
+                s_steamOverlayCallbackPending = false;
                 return;
+            }
+
+            if (!initialized && shouldLogFailure)
+            {
+                Instance?.Logger.Debug(
+                    "[NetMod] Steam overlay: SteamAPI.Init()=false (attempt {Attempt}). Trying callback without Init (game may have Steam).",
+                    s_steamOverlayCallbackRetryCount);
             }
 
             try
@@ -159,9 +161,6 @@ namespace DeadCellsMultiplayerMod
 
         internal static bool TryRunSteamCallbacksSerialized()
         {
-            if (!s_steamFeaturesRequested || !s_steamApiReady || s_steamUnavailable)
-                return false;
-
             if (Volatile.Read(ref s_steamCallbackShutdown) != 0 ||
                 Environment.HasShutdownStarted ||
                 AppDomain.CurrentDomain.IsFinalizingForUnload())
@@ -192,11 +191,6 @@ namespace DeadCellsMultiplayerMod
         /// </summary>
         internal static void PumpSteamCallbacksForOverlay()
         {
-            // LAN/direct-IP sessions never initialize or pump Steam. This keeps GOG and other
-            // non-Steam runtimes completely independent from the Steam callback dispatcher.
-            if (!s_steamFeaturesRequested || s_steamUnavailable)
-                return;
-
             var callbacksStart = RuntimeHitchWatch.Start();
             TryRunSteamCallbacksSerialized();
             var callbacksMs = RuntimeHitchWatch.GetElapsedMilliseconds(callbacksStart);
@@ -229,24 +223,7 @@ namespace DeadCellsMultiplayerMod
 
         internal static bool EnsureSteamApiForNetworking(string source)
         {
-            return RequestSteamFeatures(source);
-        }
-
-        internal static bool RequestSteamFeatures(string source)
-        {
-            if (s_steamUnavailable)
-                return false;
-
-            s_steamFeaturesRequested = true;
-            s_steamOverlayCallbackPending = true;
-
-            if (TryEnsureSteamApiInitialized(source, logFailure: true))
-                return true;
-
-            // This was an explicit Steam request, not background probing. Fail once and cleanly
-            // leave LAN/direct IP available instead of repeatedly touching an unavailable API.
-            MarkSteamUnavailable($"SteamAPI.Init returned false ({source})");
-            return false;
+            return TryEnsureSteamApiInitialized(source, logFailure: true);
         }
 
         internal static T RunSteamNetworkingSerialized<T>(Func<T> action)
@@ -284,7 +261,6 @@ namespace DeadCellsMultiplayerMod
                         return true;
                     if (SteamAPI.Init())
                     {
-                        s_steamFeaturesRequested = true;
                         s_steamApiReady = true;
                         Instance?.Logger.Information("[NetMod][Steam] SteamAPI.Init succeeded ({Source})", source);
                         return true;
@@ -352,8 +328,7 @@ namespace DeadCellsMultiplayerMod
         /// </summary>
         private static void StartSteamCallbackPumpTimer()
         {
-            if (!s_steamApiReady || s_steamUnavailable ||
-                Volatile.Read(ref s_steamCallbackShutdown) != 0)
+            if (Volatile.Read(ref s_steamCallbackShutdown) != 0)
                 return;
 
             EnsureSteamProcessExitHook();

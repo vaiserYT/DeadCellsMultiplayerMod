@@ -225,12 +225,7 @@ public class LevelExitSync :
     {
         var localLevel = ModEntry.me?._level;
         if (localLevel != null && ReferenceEquals(localLevel, self))
-        {
-            // Fallback for scripted/cinematic level changes that bypass the coordinated exit hook.
-            // This is intentionally idempotent: normal exits already perform the teardown before
-            // native activation, while late callers simply find no remaining render shells.
-            ModEntry.PrepareAndDisposeRemoteVisualsForMainLevelTransition("level-onDispose-current");
-        }
+            ModEntry.PrepareRemoteKingsForLevelTransition("level-onDispose-current");
 
         if (ReferenceEquals(_exitCandidatesLevel, self))
         {
@@ -311,9 +306,9 @@ public class LevelExitSync :
 
         UpdateLocalPlayerState(net!, forceSend: true);
         if (!wasReadyHere)
-            PushReachedExitMessage(net.id, target, net!);
+            PushReachedExitMessage(net!.id, target, net!);
 
-        if (AreAllPlayersReadyForDoor(_localDoorKey, net))
+        if (AreAllPlayersReadyForDoor(_localDoorKey, net!))
         {
             ApplyLocalTimerPause(false);
             TriggerExitTransition(target, localHero, origActivate);
@@ -466,7 +461,7 @@ public class LevelExitSync :
             ModEntry.ApplyLocalDownedExitPenaltyIfNeeded();
 
         _transitionDoorKey = BuildDoorKey(target.cx, target.cy);
-        ModEntry.PrepareAndDisposeRemoteVisualsForMainLevelTransition(
+        ModEntry.PrepareRemoteKingsForLevelTransition(
             string.Create(
                 CultureInfo.InvariantCulture,
                 $"exit-activate:{target.GetType().Name}:{_transitionDoorKey}"));

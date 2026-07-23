@@ -874,13 +874,6 @@ namespace DeadCellsMultiplayerMod
             if (corpse == null)
                 return;
 
-            if (ModEntry.TryDisposeRuntimeProcessImmediately(corpse))
-                return;
-
-            // Runtime fallback: detach the visual before deferred destruction so render cannot
-            // observe a corpse whose SpriteLib/group has already been invalidated.
-            try { corpse.spr?.set_visible(false); } catch { }
-            try { corpse.spr?.parent?.removeChild(corpse.spr); } catch { }
             try
             {
                 if (!corpse.destroyed)
@@ -902,11 +895,6 @@ namespace DeadCellsMultiplayerMod
             if (hom == null)
                 return;
 
-            if (ModEntry.TryDisposeRuntimeProcessImmediately(hom))
-                return;
-
-            try { hom.spr?.set_visible(false); } catch { }
-            try { hom.spr?.parent?.removeChild(hom.spr); } catch { }
             try
             {
                 if (!hom.destroyed)

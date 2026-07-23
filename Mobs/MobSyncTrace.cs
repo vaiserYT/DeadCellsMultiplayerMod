@@ -472,6 +472,28 @@ internal static class MobSyncTrace
             reason ?? string.Empty);
     }
 
+    private static long s_lastNetworkDrainBurstLogTick;
+
+    /// <summary>
+    /// Logs when the reliable protocol queue backed up enough to trigger burst draining — the
+    /// condition that, before the adaptive pump, stalled the receive loop and froze client
+    /// enemies over a real network. Rate-limited to once per second so a sustained busy room
+    /// does not spam the log.
+    /// </summary>
+    public static void LogNetworkDrainBurst(int backlog, int budget)
+    {
+        var now = Environment.TickCount64;
+        var last = System.Threading.Interlocked.Read(ref s_lastNetworkDrainBurstLogTick);
+        if (last != 0 && now - last < 1000)
+            return;
+        System.Threading.Interlocked.Exchange(ref s_lastNetworkDrainBurstLogTick, now);
+
+        Log.Information(
+            "[MobSync] network drain burst backlog={Backlog} budget={Budget}",
+            backlog,
+            budget);
+    }
+
     public static void LogIncomingMappingMismatch(
         string context,
         int syncId,

@@ -63,9 +63,6 @@ namespace DeadCellsMultiplayerMod
         private static int s_steamOverlayCallbackRetryCount;
         private static bool s_steamApiReady;
         private static bool s_steamUnavailable;
-        // Steam is an optional transport. Do not touch Steamworks during normal startup or LAN play.
-        // It is requested lazily only when the user selects Steam or launches with +connect_lobby.
-        private static bool s_steamFeaturesRequested;
 
         /// <summary>
         /// False only once we have POSITIVE evidence Steam cannot work here (native load failure,
@@ -82,7 +79,6 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             s_steamUnavailable = true;
-            s_steamOverlayCallbackPending = false;
             Instance?.Logger.Information(
                 "[NetMod][Steam] Steam features disabled ({Reason}). Direct IP/LAN hosting stays fully available.",
                 reason);
@@ -426,7 +422,7 @@ namespace DeadCellsMultiplayerMod
         {
             _ready = true;
             GameMenu.SetRole(NetRole.None);
-            s_steamOverlayCallbackPending = false;
+            s_steamOverlayCallbackPending = true;
             s_steamOverlayCallbackRetryCount = 0;
             _debugPerkAppliedHero = null;
             _debugPerkAppliedId = string.Empty;
@@ -436,8 +432,8 @@ namespace DeadCellsMultiplayerMod
             _debugExplorerRevealAppliedSignature = string.Empty;
             _nextDebugExplorerRevealRetryTick = 0;
             _debugExplorerRevealAllCount = 0;
-            if (TryParseConnectLobbyFromCommandLine())
-                RequestSteamFeatures("+connect_lobby launch parameter");
+            TryEnsureSteamApiInitialized("OnGameEndInit", logFailure: true);
+            TryParseConnectLobbyFromCommandLine();
         }
         public override void Initialize()
         {
@@ -486,7 +482,7 @@ namespace DeadCellsMultiplayerMod
             _ = new CoopAdvancedHardening(this);
 
             GameMenu.Initialize(Logger);
-            s_steamOverlayCallbackPending = false;
+            s_steamOverlayCallbackPending = true;
             s_steamOverlayCallbackRetryCount = 0;
             EventSystem.BroadcastEvent<IOnAdvancedModuleInitializing, ModEntry>(this);
 
@@ -523,7 +519,6 @@ namespace DeadCellsMultiplayerMod
             entry.Logger.Information("[NetMod][BossRushLoad] mode=host-door-precommit-structured-seed-barrier");
             entry.Logger.Information("[NetMod][CurseGuard] mode=fake-death-revive-dive-safe");
             entry.Logger.Information("[NetMod][VanillaTransitions] mode=working-v0.8.68-typed-activateSubLevel-stack");
-            entry.Logger.Information("[NetMod][MainLevelRenderGuard] mode=pre-native-hard-dispose-ghost-head-corpse");
             entry.Logger.Information("[NetMod][Spectate] mode=automatic-while-downed-local-on-revive");
             entry.Logger.Information("[NetMod][ReviveAnchor] mode=confirmed-history-always-recover-no-levelmap");
             entry.Logger.Information("[NetMod][ElevatorSync] mode=v0.8.38-legacy-onstep-pulse-no-position-correction");
@@ -533,7 +528,7 @@ namespace DeadCellsMultiplayerMod
             entry.Logger.Information("[NetMod][MobTeleportSync] mode=safe-above-floor-landing");
             entry.Logger.Information("[NetMod][MobGrounding] mode=upward-only-safe-landing-jump-phase");
             entry.Logger.Information("[NetMod][MobSyncStack] mode=exact-uploaded-v0.8.68-working-stack");
-            entry.Logger.Information("[NetMod][SteamCallbacks] mode=lazy-on-demand-main-thread-only");
+            entry.Logger.Information("[NetMod][SteamCallbacks] mode=main-thread-only-no-timer");
             Hook_Game.init += Hook_gameinit;
             Hook_Hero.wakeup += hook_hero_wakeup;
             Hook_Hero.onLevelChanged += hook_level_changed;
