@@ -7,7 +7,7 @@ namespace DeadCellsMultiplayerMod;
 internal static class BuildInfo
 {
     public const string Version = "0.8.91";
-    public const string SourceMarker = "v0.8.91-online-enemy-drain-fix";
+    public const string SourceMarker = "v0.8.91-steam-worker-gameproxy-fix";
     // Protocol 17: authoritative Boss Rush launch descriptor (extended generation fields),
     // RUNQUEUED client-queued gate, and removal of the client local-seed fallback. Peers on
     // protocol 16 interpret the launch handshake differently, so cross-version pairing is rejected.

@@ -1002,7 +1002,7 @@ namespace DeadCellsMultiplayerMod
 
                 try
                 {
-                    ModEntry.TryRunSteamCallbacksSerialized();
+                    RunWorkerSteamCallbacks();
                 }
                 catch
                 {
@@ -1117,7 +1117,7 @@ namespace DeadCellsMultiplayerMod
                 {
                     try
                     {
-                        ModEntry.TryRunSteamCallbacksSerialized();
+                        RunWorkerSteamCallbacks();
                     }
                     catch { }
                     Thread.Sleep(50);
@@ -1174,7 +1174,7 @@ namespace DeadCellsMultiplayerMod
 
                 try
                 {
-                    ModEntry.TryRunSteamCallbacksSerialized();
+                    RunWorkerSteamCallbacks();
                 }
                 catch
                 {
@@ -1269,6 +1269,35 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
+        private static readonly object s_workerSteamCallbackLock = new();
+
+        /// <summary>
+        /// Worker-PROCESS Steam callback pump. The Steam worker runs in a separate process that
+        /// initializes its own SteamAPI and has NO Haxe runtime — GameProxy is never generated or
+        /// loaded there. Calling ModEntry.TryRunSteamCallbacksSerialized() from the worker forced
+        /// the JIT to load ModEntry's dependency graph, which references GameProxy, and threw
+        /// FileNotFoundException('GameProxy') on every join. Pumping SteamAPI directly here keeps
+        /// the worker self-contained and touches nothing from the main mod assembly.
+        /// </summary>
+        private static void RunWorkerSteamCallbacks()
+        {
+            if (!Monitor.TryEnter(s_workerSteamCallbackLock))
+                return;
+            try
+            {
+                SteamAPI.RunCallbacks();
+            }
+            catch
+            {
+                // A failed pump must never abort the worker request; the timeout path handles a
+                // call result that never completes.
+            }
+            finally
+            {
+                Monitor.Exit(s_workerSteamCallbackLock);
+            }
+        }
+
         private static bool TryWaitForCallResult<T>(
             SteamAPICall_t apiCall,
             out T data,
@@ -1303,7 +1332,7 @@ namespace DeadCellsMultiplayerMod
             var timeoutTicks = (long)(Stopwatch.Frequency * (SteamCallTimeoutMs / 1000.0));
             while (!completed && Stopwatch.GetTimestamp() - start < timeoutTicks)
             {
-                ModEntry.TryRunSteamCallbacksSerialized();
+                RunWorkerSteamCallbacks();
                 Thread.Sleep(15);
             }
 
