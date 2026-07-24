@@ -82,6 +82,9 @@ public sealed partial class NetNode
             _cachedHostHeroSkin = null;
             _cachedHostHeroHeadSkin = null;
             _cachedHostLevelGraphPayload = null;
+            _cachedHostCustomGameDataPayload = null;
+            _cachedHostCoopId = null;
+            _cachedHostHasContinueSave = false;
             _cachedHostMobsHpMult = null;
             _cachedHostBossesHpMult = null;
         }

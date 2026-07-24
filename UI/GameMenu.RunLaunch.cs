@@ -216,7 +216,25 @@ internal static partial class GameMenu
                             _initialHostLaunchPendingSequence = 0;
                     }
 
-                    screen.startNewGame(custom: false);
+                    bool custom;
+                    bool streamEnabled;
+                    lock (Sync)
+                    {
+                        custom = _pendingLaunchCustom;
+                        streamEnabled = _pendingLaunchStreamEnabled;
+                    }
+
+                    SetAuthoritativePendingNewGameLaunch(custom, streamEnabled);
+                    if (custom && !EnsureCustomModeScreenUser(screen))
+                    {
+                        CancelPrecommittedHostRunSeed("custom_mode_user_unready");
+                        CancelHostStructuredLaunch(descriptor.Sequence, "custom_mode_user_unready");
+                        MultiplayerUI.PushSystemMessage(Localize("Custom Mode could not prepare the save user."));
+                        ShowHostStatusMenu(screen);
+                        return;
+                    }
+
+                    screen.startNewGame(custom);
                 }
                 catch (Exception ex)
                 {

@@ -215,6 +215,20 @@ public sealed partial class NetNode
         message = payload;
     }
 
+    private static void ParseCoopStatePayload(string payload, out string coopId, out bool hasContinueSave)
+    {
+        coopId = string.Empty;
+        hasContinueSave = false;
+        if (string.IsNullOrWhiteSpace(payload))
+            return;
+
+        var parts = payload.Split(new[] { '|' }, 2);
+        coopId = SanitizeProtocolToken(parts[0], 128);
+        if (parts.Length >= 2)
+            hasContinueSave = string.Equals(parts[1], "1", StringComparison.Ordinal) ||
+                              string.Equals(parts[1], "true", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static List<MobStateSnapshot> ParseMobStatesPayload(string payload)
     {
         var states = new List<MobStateSnapshot>();

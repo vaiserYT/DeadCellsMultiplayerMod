@@ -38,6 +38,9 @@ namespace DeadCellsMultiplayerMod
         static public bool _mode;
 
         static public LaunchMode _launch = default!;
+        private static readonly object _sameRunRestartSync = new();
+        private static bool _sameRunRestartPending;
+        private static int _sameRunRestartSeed;
         private static readonly object _bossRuneLock = new();
         private static int? _remoteBossRune;
         private static int? _hostBossRune;
@@ -143,19 +146,55 @@ namespace DeadCellsMultiplayerMod
         bool mode,
         LaunchMode gdata)
         {
-            isCustom = false;
-            mode = false;
-            Seed = lvl;
+            var sameRunRestart = TryPeekSameRunRestartSeed(out var restartSeed);
+            var effectiveStreamEnabled = isCustom;
+            var effectiveCustomMode = mode;
+            var effectiveLaunch = gdata;
+            if (gdata is LaunchMode.NewGame newGame)
+            {
+                if (sameRunRestart)
+                {
+                    effectiveCustomMode = ResolveCurrentRunIsCustom();
+                    effectiveStreamEnabled = ResolveCurrentRunStreamEnabled();
+                    effectiveLaunch = new LaunchMode.NewGame(effectiveCustomMode, effectiveStreamEnabled);
+                }
+                else if (GameMenu.TryGetAuthoritativePendingNewGameLaunch(out var selectedCustom, out var selectedStreamEnabled))
+                {
+                    effectiveCustomMode = selectedCustom;
+                    effectiveStreamEnabled = selectedStreamEnabled;
+                    effectiveLaunch = new LaunchMode.NewGame(selectedCustom, selectedStreamEnabled);
+                }
+                else
+                {
+                    // Keep Normal Mode multiplayer runs deterministic unless Custom Mode
+                    // explicitly authored a pending launch.
+                    effectiveCustomMode = false;
+                    effectiveStreamEnabled = false;
+                }
+            }
+
+            isCustom = effectiveStreamEnabled;
+            mode = effectiveCustomMode;
+            gdata = effectiveLaunch;
+
+            Seed = sameRunRestart ? restartSeed : lvl;
             ModEntry.me = null!;
             ModEntry.ResetClientSlots();
             ModEntry.kingInitialized = false;
             ModEntry._ghost = null!;
+            ModEntry.ResetHeroCosmeticSendCache();
+            ClearPendingBossRuneReloadState();
+            _lastHeroSkinSyncNet = null;
+            _lastHeroSkinSyncPayload = null;
+            _lastHeroHeadSkinSyncNet = null;
+            _lastHeroHeadSkinSyncPayload = null;
             var net = GameMenu.NetRef;
             var launchKind = GetLaunchKind(gdata);
             var nativeBossRushLaunch = IsBossRushLaunchKind(launchKind);
-            var expectedBossRushLaunch = nativeBossRushLaunch ||
-                                         (net?.IsHost == true && GameMenu.HasPrecommittedHostBossRushLaunch()) ||
-                                         (net != null && !net.IsHost && GameMenu.HasPendingRemoteBossRushLaunch());
+            var expectedBossRushLaunch = !sameRunRestart &&
+                                         (nativeBossRushLaunch ||
+                                          (net?.IsHost == true && GameMenu.HasPrecommittedHostBossRushLaunch()) ||
+                                          (net != null && !net.IsHost && GameMenu.HasPendingRemoteBossRushLaunch()));
             if (expectedBossRushLaunch && !nativeBossRushLaunch)
             {
                 // Some generated bindings expose the Boss Rush launch variant with a runtime name
@@ -163,7 +202,7 @@ namespace DeadCellsMultiplayerMod
                 // stronger signal than the local type name, so normalize the wire identity here.
                 launchKind = "dc.LaunchMode+BossRush";
             }
-            var shouldSynchronizeSeed = gdata is LaunchMode.NewGame || expectedBossRushLaunch;
+            var shouldSynchronizeSeed = !sameRunRestart && (gdata is LaunchMode.NewGame || expectedBossRushLaunch);
             if (net == null || !net.IsAlive)
                 RestoreOriginalUserState(self, true);
 
@@ -171,7 +210,11 @@ namespace DeadCellsMultiplayerMod
             {
                 var reusedPrecommittedSeed = false;
                 var seedSequence = 0;
-                if (shouldSynchronizeSeed &&
+                if (sameRunRestart)
+                {
+                    Seed = restartSeed;
+                }
+                else if (shouldSynchronizeSeed &&
                     GameMenu.TryConsumePrecommittedHostRunSeed(launchKind, out var precommittedSeed, out var precommittedSequence))
                 {
                     Seed = precommittedSeed;
@@ -210,7 +253,11 @@ namespace DeadCellsMultiplayerMod
             }
             else if (net != null)
             {
-                if (shouldSynchronizeSeed &&
+                if (sameRunRestart)
+                {
+                    Seed = restartSeed;
+                }
+                else if (shouldSynchronizeSeed &&
                     GameMenu.TryConsumeNextRemoteRunSeed(out var remoteSeed, out var remoteSequence, out var remoteLaunchKind))
                 {
                     Seed = remoteSeed;
@@ -291,7 +338,29 @@ namespace DeadCellsMultiplayerMod
             self.pickDeathItem();
             SendHeroSkin(self, net);
             SendHeroHeadSkin(self, net);
-            orig(self, lvl, isTwitch, isCustom, mode, gdata);
+            if (mode)
+            {
+                // Custom Mode GameData ctor calls CustomGameData.checkIntegrity(user) which
+                // immediately touches user.itemMeta. Main.getGame loads User via Save.tryLoad,
+                // so TitleScreen prep alone is not enough on the client auto-start path.
+                if (!GameMenu.PrepareUserForCustomModeLaunch(self))
+                {
+                    _log?.Warning(
+                        "[NetMod] Custom Mode newGame: User.itemMeta could not be prepared (role={Role})",
+                        net?.IsHost == true ? "host" : "client");
+                }
+            }
+
+            try
+            {
+                orig(self, lvl, isTwitch, isCustom, mode, gdata);
+            }
+            finally
+            {
+                GameMenu.ClearAuthoritativePendingNewGameLaunch();
+                if (sameRunRestart)
+                    ClearSameRunRestart();
+            }
 
         }
 
@@ -304,6 +373,12 @@ namespace DeadCellsMultiplayerMod
             // unconsumed nested seed; that restart is now suppressed for Boss Rush kinds in
             // GameMenu.ReceiveHostRunSeed, so sharing the seed is safe. Challenge rooms, daily
             // modes and other nested launches stay local.
+            lock (_sameRunRestartSync)
+            {
+                if (_sameRunRestartPending)
+                    return false;
+            }
+
             return launch is LaunchMode.NewGame || IsBossRushLaunch(launch);
         }
 
@@ -344,6 +419,92 @@ namespace DeadCellsMultiplayerMod
         }
 
         public static void MarkProgressPayloadDirty() { }
+
+        internal static void BeginSameRunRestart(int seed)
+        {
+            lock (_sameRunRestartSync)
+            {
+                _sameRunRestartPending = true;
+                _sameRunRestartSeed = seed;
+            }
+        }
+
+        private static bool TryPeekSameRunRestartSeed(out int seed)
+        {
+            lock (_sameRunRestartSync)
+            {
+                if (_sameRunRestartPending)
+                {
+                    seed = _sameRunRestartSeed;
+                    return true;
+                }
+            }
+
+            seed = 0;
+            return false;
+        }
+
+        private static void ClearSameRunRestart()
+        {
+            lock (_sameRunRestartSync)
+            {
+                _sameRunRestartPending = false;
+                _sameRunRestartSeed = 0;
+            }
+        }
+
+        internal static void CancelSameRunRestart()
+        {
+            ClearSameRunRestart();
+        }
+
+        internal static bool ResolveCurrentRunIsCustom()
+        {
+            try
+            {
+                var currentCustomGame = dc.pr.Game.Class.ME?.data?.cgData;
+                if (currentCustomGame != null)
+                    return true;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var mainGameData = dc.Main.Class.ME?.user?.mainGameData;
+                if (mainGameData != null)
+                    return mainGameData.isCustom;
+            }
+            catch
+            {
+            }
+
+            return _isCustom;
+        }
+
+        internal static bool ResolveCurrentRunStreamEnabled()
+        {
+            try
+            {
+                var game = dc.pr.Game.Class.ME;
+                if (game?.data != null)
+                    return game.data._twitchMode;
+            }
+            catch
+            {
+            }
+
+            if (_launch is LaunchMode.NewGame storedNewGame)
+                return storedNewGame.Param1;
+
+            return false;
+        }
+
+        internal static LaunchMode BuildSameRunRestartLaunchMode()
+        {
+            return new LaunchMode.NewGame(ResolveCurrentRunIsCustom(), ResolveCurrentRunStreamEnabled());
+        }
 
         private static string? GetCurrentProgressPayload(User user)
         {
@@ -884,6 +1045,31 @@ namespace DeadCellsMultiplayerMod
 
             bossRune = 0;
             return false;
+        }
+
+        internal static bool HasRemoteBossRune()
+        {
+            lock (_bossRuneLock)
+            {
+                return _remoteBossRune.HasValue;
+            }
+        }
+
+        internal static void SendCurrentHeroCosmetics(User? user, NetNode? net, bool force = false)
+        {
+            if (user == null || net == null || !net.IsAlive)
+                return;
+
+            if (force)
+            {
+                _lastHeroSkinSyncNet = null;
+                _lastHeroSkinSyncPayload = null;
+                _lastHeroHeadSkinSyncNet = null;
+                _lastHeroHeadSkinSyncPayload = null;
+            }
+
+            SendHeroSkin(user, net);
+            SendHeroHeadSkin(user, net);
         }
 
         public static void SaveOrigHpMultipliers()
