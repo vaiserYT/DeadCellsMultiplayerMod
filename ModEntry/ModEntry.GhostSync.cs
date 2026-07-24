@@ -354,8 +354,9 @@ namespace DeadCellsMultiplayerMod
             if (_netRole == NetRole.None) return;
             if (_net == null || me == null) return;
             int dir = me.dir;
-            if (me.spr.x == last_x && me.spr.y == last_y && lastDir == dir) return;
 
+            // Always send X/Y/dir. Skipping unchanged frames let peer GhostKing physics drift
+            // the remote Y while the local player stood still (no correction packets).
             _net.TickSend(me.spr.x, me.spr.y, dir);
             last_x = me.spr.x;
             last_y = me.spr.y;
@@ -592,13 +593,14 @@ namespace DeadCellsMultiplayerMod
                             wasUsingDownedOffset ? "snapshot-transition" : "snapshot-grace");
                     }
 
-                    if (rLastX[index] != drawX || rLastY[index] != drawY)
-                    {
-                        client.setPosPixel(drawX, drawY);
-                        rLastX[index] = drawX;
-                        rLastY[index] = drawY;
+                    // Always re-apply remote Y (and X). GhostKing physics can drift between
+                    // snapshots; skipping unchanged coords left peers floating/sinking.
+                    var posChanged = rLastX[index] != drawX || rLastY[index] != drawY;
+                    client.setPosPixel(drawX, drawY);
+                    rLastX[index] = drawX;
+                    rLastY[index] = drawY;
+                    if (posChanged)
                         headDirty = true;
-                    }
 
                     if (clientLastDirs[index] != remote.Dir)
                     {
@@ -1128,9 +1130,19 @@ namespace DeadCellsMultiplayerMod
                     var client = clients[index];
                     if (client?.kingWeaponsManager == null) continue;
                     if (attack.Action == RemoteAttackAction.Interrupt)
+                    {
                         client.kingWeaponsManager.queueInterrupt(attack.Slot);
+                    }
                     else
+                    {
                         client.kingWeaponsManager.queueAttack(attack.Slot);
+                    }
+
+                    // Remote ATK changes GhostKing.spr outside the ANIM path. Drop the body-anim
+                    // cache so a standing re-idle is not treated as a no-op.
+                    clientLastBodyAnims[index] = null;
+                    clientLastBodyAnimQueues[index] = null;
+                    clientLastBodyAnimGs[index] = null;
 
                     queuedAttacks++;
                     LogGhostRuntimeStepIfSlow(

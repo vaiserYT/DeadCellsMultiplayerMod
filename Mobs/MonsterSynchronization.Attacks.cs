@@ -2588,6 +2588,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || attackerUserId <= 0 || currentLife <= 0)
                 return;
 
+            // Threat refresh can interruptSkills mid-charge when aTarget is invalid, stranding the
+            // host mob with no attack/move until a full reset. Skip while a skill is in flight.
+            if (HasLocalQueuedOrChargingSkill(mob))
+                return;
+
             var attacker = ResolveHostPlayerCombatEntity(attackerUserId);
             if (attacker == null || !IsPreservablePlayerCombatTargetForMob(mob, attacker))
                 return;

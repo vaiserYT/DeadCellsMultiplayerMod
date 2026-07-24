@@ -31,6 +31,7 @@ namespace DeadCellsMultiplayerMod.Ghost
         private bool _shieldActive;
         private long _lastShieldReleaseTimestamp;
         private string _activeKindId = string.Empty;
+        private bool _meleeSwingActive;
         private readonly HashSet<string> _quarantinedKinds = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _visualOnlyNoticeKinds = new(StringComparer.OrdinalIgnoreCase);
 
@@ -100,6 +101,7 @@ namespace DeadCellsMultiplayerMod.Ghost
                 _shieldActive = false;
                 _shieldLastPulseTicks = 0;
                 _lastShieldReleaseTimestamp = 0;
+                _meleeSwingActive = false;
                 ClearShieldAffects();
 
                 // Do not construct an idle detached weapon merely because the remote player equipped it.
@@ -223,6 +225,7 @@ namespace DeadCellsMultiplayerMod.Ghost
                 KingWeaponSupport.SyncSource(activeWeapon);
                 activeWeapon.prepare(getWeaponAttackSpeed(activeWeapon));
                 pendingAttacks--;
+                _meleeSwingActive = true;
             }
 
             if(pendingAttacks > 1)
@@ -252,6 +255,19 @@ namespace DeadCellsMultiplayerMod.Ghost
                     try { activeWeapon.fixedUpdate(); } catch { }
                     try { activeWeapon.postUpdate(); } catch { }
                 }
+
+                _meleeSwingActive = false;
+                RestoreRemoteIdlePose();
+            }
+            else if(_meleeSwingActive &&
+                     !activeWeapon.destroyed &&
+                     !activeWeapon.isCharging() &&
+                     activeWeapon.isReady())
+            {
+                // Melee/ranged ATK uses stopOnLastFrame; without a locomotion ANIM change the
+                // ghost stays frozen on the last attack frame while the player stands still.
+                _meleeSwingActive = false;
+                RestoreRemoteIdlePose();
             }
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
@@ -294,6 +310,7 @@ namespace DeadCellsMultiplayerMod.Ghost
             _shieldActive = false;
             _shieldLastPulseTicks = 0;
             _lastShieldReleaseTimestamp = 0;
+            _meleeSwingActive = false;
             _quarantinedKinds.Clear();
             _visualOnlyNoticeKinds.Clear();
         }
@@ -431,13 +448,18 @@ namespace DeadCellsMultiplayerMod.Ghost
             _shieldLastPulseTicks = 0;
             _lastShieldReleaseTimestamp = now;
             ClearShieldAffects();
-            try { king.spr?._animManager?.play("idle".AsHaxeString(), null, null)?.loop(null); } catch { }
+            RestoreRemoteIdlePose();
             LogKingWeaponsStepIfSlow(
                 "KingWeaponsManager.ReleaseShield",
                 hitchStart,
                 string.Create(
                     System.Globalization.CultureInfo.InvariantCulture,
                     $"weapon={weapon?.GetType().Name ?? "null"}"));
+        }
+
+        private void RestoreRemoteIdlePose()
+        {
+            try { king.spr?._animManager?.play("idle".AsHaxeString(), null, null)?.loop(null); } catch { }
         }
 
         private static void LogKingWeaponsStepIfSlow(string key, long stepStart, string? details)

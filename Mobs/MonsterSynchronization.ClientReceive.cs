@@ -181,27 +181,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 }
             }
 
-            foreach (var affectId in desired)
-            {
-                if (previousOwned.Contains(affectId))
-                    continue;
-
-                var alreadyPresent = false;
-                try { alreadyPresent = mob.hasAffect(affectId); } catch { }
-
-                // Never claim/remove an affect that already existed on the authoritative host.
-                if (alreadyPresent)
-                    continue;
-
-                try
-                {
-                    mob.setAffectS(affectId, AuthoritativeAffectPresenceSeconds, HaxeProxy.Runtime.Ref<double>.Null, null);
-                    nextOwned.Add(affectId);
-                }
-                catch
-                {
-                }
-            }
+            // Do not create new host affects from client presence reports. Client combat prediction
+            // previously called setAffectS(..., 99999) here and permanently froze mobs after hits
+            // during charge/attack (both peers). Host already applies damage via MOBHIT.
 
             lock (Sync)
             {
@@ -2134,9 +2116,20 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var appliedLife = update.TargetLife;
                 if (update.ReplaySpecialHit)
                 {
-                    TryWakeMobForForcedSimulation(mob);
-                    TryReplayIncomingSpecialHitReaction(mob, update.DamageHint);
-                    appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);
+                    // Mid-charge/attack special-hit replay interrupts skills and can leave the
+                    // authoritative mob AI-locked with no clean unlock. Prefer HP-only apply while
+                    // a skill is queued/charging; vanilla will finish or recover on the host.
+                    if (isHost && HasLocalQueuedOrChargingSkill(mob))
+                    {
+                        ApplyAuthoritativeLifeState(mob, update.TargetLife, update.TargetMaxLife);
+                        appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);
+                    }
+                    else
+                    {
+                        TryWakeMobForForcedSimulation(mob);
+                        TryReplayIncomingSpecialHitReaction(mob, update.DamageHint);
+                        appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);
+                    }
                 }
                 else if (update.ForceDie)
                 {
