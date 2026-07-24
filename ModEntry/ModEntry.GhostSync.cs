@@ -342,6 +342,13 @@ namespace DeadCellsMultiplayerMod
         double last_x, last_y;
         int lastDir;
 
+        private void ResetLocalHeroPositionSendCache()
+        {
+            last_x = 0;
+            last_y = 0;
+            lastDir = 0;
+        }
+
         private void SendHeroCoords()
         {
             if (_netRole == NetRole.None) return;
@@ -690,8 +697,6 @@ namespace DeadCellsMultiplayerMod
                 return true;
 
             // After revive, allow a short marker-settle window and force the existing shell visible.
-            // Without this, the stale environmental-death marker can immediately dispose the player
-            // again until a sublevel transition rebuilds all remote entities.
             if (IsRemoteReviveVisibilityGraceActive(remote.Id))
                 return true;
 
@@ -702,27 +707,9 @@ namespace DeadCellsMultiplayerMod
                 return false;
             }
 
-            if (!remote.HasRoom ||
-                !remote.RoomId.HasValue ||
-                remote.RoomId.Value < 0 ||
-                string.IsNullOrWhiteSpace(remote.RoomLevelId))
-            {
-                return true;
-            }
-
-            if (!TryGetCurrentVisibilityContext(out var localContextLevelId, out var localBranchToken))
-            {
-                localContextLevelId = localLevelId;
-                localBranchToken = _localLastDoorMarkerToken >= 0 ? _localLastDoorMarkerToken : 0;
-            }
-
-            var remoteContextLevelId = remote.RoomLevelId.Trim();
-            if (!string.Equals(remoteContextLevelId, localContextLevelId, StringComparison.Ordinal))
-                return false;
-
-            if (remote.RoomId.Value != localBranchToken)
-                return false;
-
+            // Room marker replication is noisy around Continue/LoadSave and level bootstrap and can
+            // briefly diverge even when both players share the same map. Prefer level-only
+            // visibility so a fresh GhostKing can spawn after continue instead of being disposed.
             return true;
         }
 
@@ -806,8 +793,27 @@ namespace DeadCellsMultiplayerMod
             if (_ghost == null || me == null || me._level == null)
                 return null;
 
-            var created = _ghost.CreateGhostKing(me._level);
+            GhostKing created;
+            try
+            {
+                created = _ghost.CreateGhostKing(me._level);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning(
+                    "[NetMod] Failed to create remote GhostKing slot={Slot} remoteId={RemoteId}: {Message}",
+                    slot,
+                    clientIds[slot],
+                    ex.Message);
+                return null;
+            }
+
             clients[slot] = created;
+            Logger.Information(
+                "[NetMod] Created remote GhostKing slot={Slot} remoteId={RemoteId} level={LevelId}",
+                slot,
+                clientIds[slot],
+                me._level.map?.id?.ToString() ?? "?");
 
             var knownSkin = clientSkins[slot];
             if (!string.IsNullOrWhiteSpace(knownSkin))
@@ -1511,6 +1517,69 @@ namespace DeadCellsMultiplayerMod
             {
                 // Cosmetic ghost cleanup must never affect the run.
             }
+        }
+
+        private void DisposeCoopGhostRuntime()
+        {
+            try
+            {
+                ResetFakeDeathState(unlockLocalHero: false, sendNetworkUpState: false);
+            }
+            catch
+            {
+            }
+
+            for (int i = 0; i < clients.Length; i++)
+            {
+                try
+                {
+                    DisposeClientSlot(i, clearIdentity: true);
+                }
+                catch
+                {
+                }
+            }
+
+            var ghost = _ghost;
+            _ghost = null!;
+            _ghostOwnerHero = null;
+            _ghostOwnerGame = null;
+            _ghostBootstrapNet = null;
+            _ = ghost;
+        }
+
+        internal void DisposeCoopGhostRuntimeForWorldTeardown(dc.pr.Game? disposingGame = null)
+        {
+            _ = disposingGame;
+            DisposeCoopGhostRuntime();
+        }
+
+        internal void HandleNetworkDisconnectGhostCleanup(NetRole role)
+        {
+            if (role == NetRole.Host)
+            {
+                var activeRemoteIds = new HashSet<int>();
+                try { _net?.CopyRemoteUserIdsTo(activeRemoteIds, includePrimary: true); } catch { }
+
+                for (int i = 0; i < clientIds.Length; i++)
+                {
+                    var remoteId = clientIds[i];
+                    if (remoteId <= 0 || activeRemoteIds.Contains(remoteId))
+                        continue;
+
+                    try
+                    {
+                        DisposeClientSlot(i, clearIdentity: true);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                return;
+            }
+
+            DisposeCoopGhostRuntime();
         }
 
         private static void ApplyRemoteWeaponAmmo(InventItem item, int? ammo)

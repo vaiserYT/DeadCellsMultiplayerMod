@@ -184,6 +184,25 @@ public sealed partial class NetNode
         }
     }
 
+    /// <summary>
+    /// After Continue/LoadSave the session stays alive, but cached peer level/room markers still
+    /// describe the previous world. Clear them so ghost visibility uses fresh LEVEL/ROOM packets
+    /// instead of disposing the new GhostKing as "wrong room/level".
+    /// </summary>
+    public void ClearRemoteRoomMarkers()
+    {
+        lock (_sync)
+        {
+            foreach (var state in _remotes.Values)
+            {
+                state.LevelId = null;
+                state.RoomLevelId = null;
+                state.RoomId = null;
+                state.HasRoom = false;
+            }
+        }
+    }
+
     public bool TryConsumeMobStates(out List<MobStateSnapshot> snapshot)
     {
         lock (_sync)
@@ -440,6 +459,21 @@ public sealed partial class NetNode
             }
 
             return snapshot.Count > 0;
+        }
+    }
+
+    public bool TryGetRemoteReady(int userId, out bool ready)
+    {
+        lock (_sync)
+        {
+            if (userId > 0 && _remotes.TryGetValue(userId, out var state) && state.HasRemote)
+            {
+                ready = state.Ready;
+                return true;
+            }
+
+            ready = false;
+            return false;
         }
     }
 

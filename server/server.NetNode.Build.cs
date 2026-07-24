@@ -8,6 +8,21 @@ public sealed partial class NetNode
         return $"{tag}|{id}|{payload}\n";
     }
 
+    private static string BuildReadyLine(int id, bool ready)
+    {
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"READY|{id}|{(ready ? 1 : 0)}\n");
+    }
+
+    private static string BuildCoopStateLine(int id, string? coopId, bool hasContinueSave)
+    {
+        var safeCoopId = SanitizeProtocolToken(coopId, 128);
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"COOPID|{id}|{safeCoopId}|{(hasContinueSave ? 1 : 0)}\n");
+    }
+
     private static string BuildAnimLine(int id, string animName, int? queue, bool? gFlag)
     {
         var queuePart = queue.HasValue ? queue.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
@@ -76,6 +91,17 @@ public sealed partial class NetNode
             safe = safe[..maxLength];
 
         return safe;
+    }
+
+    private static string SanitizeProtocolToken(string? value, int maxLength)
+    {
+        var safe = (value ?? string.Empty)
+            .Replace("|", string.Empty, StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal)
+            .Trim();
+
+        return safe.Length > maxLength ? safe[..maxLength] : safe;
     }
 
     private bool TryBuildLocalHpLine(out string line)

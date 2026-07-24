@@ -206,6 +206,8 @@ public sealed partial class NetNode
                 continue;
             var line = BuildTaggedLine("USER", state.Id, username);
             await SendLineToSteamClientSafe(connection, line).ConfigureAwait(false);
+            await SendLineToSteamClientSafe(connection, BuildReadyLine(state.Id, state.Ready)).ConfigureAwait(false);
+            await SendLineToSteamClientSafe(connection, BuildCoopStateLine(state.Id, state.CoopId, state.HasContinueSave)).ConfigureAwait(false);
 
             if (!string.IsNullOrWhiteSpace(state.Skin))
             {

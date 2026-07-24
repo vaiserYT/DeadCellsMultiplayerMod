@@ -266,6 +266,22 @@ public sealed partial class NetNode
             return true;
         }
 
+        if (line.StartsWith("RESTART|", StringComparison.Ordinal))
+        {
+            var payload = line["RESTART|".Length..];
+            if (int.TryParse(payload, NumberStyles.Integer, CultureInfo.InvariantCulture, out var restartSeed))
+            {
+                lock (_sync) _hasRemote = true;
+                GameMenu.ReceiveHostRunRestart(restartSeed);
+            }
+            else
+            {
+                _log.Warning("[NetNode] Malformed RESTART line: \"{line}\"");
+            }
+
+            return true;
+        }
+
         if (line.StartsWith("HXSYNC|", StringComparison.Ordinal))
         {
             var payload = line["HXSYNC|".Length..];
@@ -327,6 +343,99 @@ public sealed partial class NetNode
                 if (_role == NetRole.Host && senderId.HasValue)
                     forwardLine = BuildTaggedLine("USER", effectiveId.Value, username);
             }
+            return true;
+        }
+
+        if (line.StartsWith("READY|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["READY|".Length..];
+            var parts = payload.Split('|');
+            if (parts.Length >= 2 &&
+                int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedReadyId))
+            {
+                var effectiveId = forceSenderId ? senderId : parsedReadyId;
+                if (effectiveId.HasValue)
+                {
+                    var ready = string.Equals(parts[1], "1", StringComparison.Ordinal);
+                    lock (_sync)
+                    {
+                        var state = GetOrCreateRemoteLocked(effectiveId.Value);
+                        state.Ready = ready;
+                        state.HasRemote = true;
+                        _hasRemote = true;
+                        if (_primaryRemoteId == 0)
+                            _primaryRemoteId = effectiveId.Value;
+                    }
+
+                    GameMenu.ReceiveRemoteReady(effectiveId.Value, ready);
+
+                    if (_role == NetRole.Host && senderId.HasValue)
+                        forwardLine = BuildReadyLine(effectiveId.Value, ready);
+                }
+            }
+
+            return true;
+        }
+
+        if (line.StartsWith("COOPID|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["COOPID|".Length..];
+            var effectiveId = ResolvePayloadId(payload, senderId, out var coopPayload);
+            if (forceSenderId)
+                effectiveId = senderId;
+
+            ParseCoopStatePayload(coopPayload, out var coopId, out var hasContinueSave);
+            if (effectiveId.HasValue)
+            {
+                lock (_sync)
+                {
+                    var state = GetOrCreateRemoteLocked(effectiveId.Value);
+                    state.CoopId = coopId;
+                    state.HasContinueSave = hasContinueSave;
+                    state.HasRemote = true;
+                    _hasRemote = true;
+                    if (_primaryRemoteId == 0)
+                        _primaryRemoteId = effectiveId.Value;
+                }
+
+                GameMenu.ReceiveRemoteCoopState(effectiveId.Value, coopId, hasContinueSave);
+
+                if (_role == NetRole.Host && senderId.HasValue)
+                    forwardLine = BuildCoopStateLine(effectiveId.Value, coopId, hasContinueSave);
+            }
+
+            return true;
+        }
+
+        if (line.StartsWith("LAUNCHMODE|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["LAUNCHMODE|".Length..];
+            var parts = payload.Split('|');
+            if (parts.Length >= 6 &&
+                int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var actionValue))
+            {
+                var custom = string.Equals(parts[1], "1", StringComparison.Ordinal);
+                var streamEnabled = string.Equals(parts[2], "1", StringComparison.Ordinal);
+                var newCoopWorldPrepared = string.Equals(parts[3], "1", StringComparison.Ordinal);
+                var coopId = SanitizeProtocolToken(parts[4], 128);
+                var hostHasContinueSave = string.Equals(parts[5], "1", StringComparison.Ordinal);
+
+                lock (_sync)
+                    _hasRemote = true;
+
+                GameMenu.ReceiveLaunchMode(
+                    actionValue,
+                    custom,
+                    streamEnabled,
+                    newCoopWorldPrepared,
+                    coopId,
+                    hostHasContinueSave);
+            }
+            else
+            {
+                _log.Warning("[NetNode] Malformed LAUNCHMODE line: \"{line}\"", line);
+            }
+
             return true;
         }
 
@@ -509,6 +618,14 @@ public sealed partial class NetNode
             var payload = line["GEN|".Length..];
             lock (_sync) _hasRemote = true;
             GameMenu.ReceiveGeneratePayload(payload);
+            return true;
+        }
+
+        if (line.StartsWith("CGDATA|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["CGDATA|".Length..];
+            lock (_sync) _hasRemote = true;
+            GameMenu.ReceiveCustomGameData(payload);
             return true;
         }
 

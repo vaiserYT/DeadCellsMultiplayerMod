@@ -190,6 +190,16 @@ public sealed partial class NetNode
         _log.Information("[NetNode] Sent run seed seq={Sequence} seed={Seed} launch={LaunchKind}", sequence, seed, safeLaunchKind);
     }
 
+    public void SendRunRestart(int seed)
+    {
+        if (!HasAnyConnection())
+            return;
+
+        var line = string.Create(CultureInfo.InvariantCulture, $"RESTART|{seed}\n");
+        _ = SendLineSafe(line);
+        _log.Information("[NetNode] Sent same-run restart seed {Seed}", seed);
+    }
+
     public void SendSerializerSync(int seq, int uid)
     {
         if (_role != NetRole.Host)
@@ -237,6 +247,62 @@ public sealed partial class NetNode
         var idPart = ID > 0 ? $"{ID}|" : string.Empty;
         SendRaw("USER|" + idPart + safe);
         _log.Information("[NetNode] Sent username {Username}", safe);
+    }
+
+    public void SendReady(bool ready)
+    {
+        if (ID <= 0)
+            return;
+
+        if (!HasAnyConnection())
+            return;
+
+        _ = SendLineSafe(BuildReadyLine(ID, ready));
+    }
+
+    public void SendCoopState(string? coopId, bool hasContinueSave)
+    {
+        var safeCoopId = SanitizeProtocolToken(coopId, 128);
+        if (_role == NetRole.Host)
+        {
+            lock (_hostCacheSync)
+            {
+                _cachedHostCoopId = safeCoopId;
+                _cachedHostHasContinueSave = hasContinueSave;
+            }
+        }
+
+        if (!HasAnyConnection())
+            return;
+
+        var line = ID > 0
+            ? BuildCoopStateLine(ID, safeCoopId, hasContinueSave)
+            : $"COOPID|{safeCoopId}|{(hasContinueSave ? 1 : 0)}\n";
+        _ = SendLineSafe(line);
+        _log.Information(
+            "[NetNode] Sent coop id state hasId={HasId} hasContinue={HasContinue}",
+            !string.IsNullOrWhiteSpace(safeCoopId),
+            hasContinueSave);
+    }
+
+    public void SendLaunchMode(
+        int action,
+        bool custom,
+        bool streamEnabled,
+        bool newCoopWorldPrepared,
+        string? coopId,
+        bool hostHasContinueSave)
+    {
+        if (_role != NetRole.Host)
+            return;
+        if (!HasAnyConnection())
+            return;
+
+        var safeCoopId = SanitizeProtocolToken(coopId, 128);
+        var line = string.Create(
+            CultureInfo.InvariantCulture,
+            $"LAUNCHMODE|{action}|{(custom ? 1 : 0)}|{(streamEnabled ? 1 : 0)}|{(newCoopWorldPrepared ? 1 : 0)}|{safeCoopId}|{(hostHasContinueSave ? 1 : 0)}\n");
+        _ = SendLineSafe(line);
     }
 
     public void SendBossRune(int bossRune)
@@ -367,6 +433,26 @@ public sealed partial class NetNode
 
         SendRaw("GEN|" + json);
         _log.Information("[NetNode] Sent Generate payload ({Length} bytes)", json.Length);
+    }
+
+    public void SendCustomGameData(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return;
+
+        if (!HasAnyConnection())
+        {
+            _log.Information("[NetNode] Skip sending customGameData: no connected client");
+            return;
+        }
+
+        var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json));
+        lock (_hostCacheSync)
+            _cachedHostCustomGameDataPayload = encoded;
+
+        // Base64 keeps the payload on a single protocol line (game JSON is indented).
+        SendRaw("CGDATA|" + encoded);
+        _log.Information("[NetNode] Sent customGameData ({Length} chars, {Encoded} encoded)", json.Length, encoded.Length);
     }
 
 

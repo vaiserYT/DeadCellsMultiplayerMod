@@ -133,6 +133,9 @@ public sealed partial class NetNode
                     string? cachedLevelDescPayload;
                     string? cachedLevelSeedPayload;
                     string? cachedLevelGraphPayload;
+                    string? cachedCustomGameDataPayload;
+                    string? cachedCoopId;
+                    bool cachedHasContinueSave;
                     double? cachedMobsHpMult;
                     double? cachedBossesHpMult;
                     lock (_hostCacheSync)
@@ -149,6 +152,9 @@ public sealed partial class NetNode
                         cachedLevelDescPayload = _cachedHostLevelDescPayload;
                         cachedLevelSeedPayload = _cachedHostLevelSeedPayload;
                         cachedLevelGraphPayload = _cachedHostLevelGraphPayload;
+                        cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
+                        cachedCoopId = _cachedHostCoopId;
+                        cachedHasContinueSave = _cachedHostHasContinueSave;
                         cachedMobsHpMult = _cachedHostMobsHpMult;
                         cachedBossesHpMult = _cachedHostBossesHpMult;
                     }
@@ -158,6 +164,12 @@ public sealed partial class NetNode
 
                     if (cachedBossRune.HasValue)
                         await SendLineToClientSafe(connection, $"BOSSRUNE|{cachedBossRune.Value}\n").ConfigureAwait(false);
+
+                    if (cachedCoopId != null)
+                        await SendLineToClientSafe(connection, BuildCoopStateLine(1, cachedCoopId, cachedHasContinueSave)).ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(cachedCustomGameDataPayload))
+                        await SendLineToClientSafe(connection, $"CGDATA|{cachedCustomGameDataPayload}\n").ConfigureAwait(false);
 
                     if (!string.IsNullOrWhiteSpace(cachedRunCommitPayload))
                         await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.CommitTag}|{cachedRunCommitPayload}\n").ConfigureAwait(false);
@@ -421,6 +433,8 @@ public sealed partial class NetNode
                 continue;
             var line = BuildTaggedLine("USER", state.Id, username);
             await SendLineToClientSafe(connection, line).ConfigureAwait(false);
+            await SendLineToClientSafe(connection, BuildReadyLine(state.Id, state.Ready)).ConfigureAwait(false);
+            await SendLineToClientSafe(connection, BuildCoopStateLine(state.Id, state.CoopId, state.HasContinueSave)).ConfigureAwait(false);
         }
     }
 }

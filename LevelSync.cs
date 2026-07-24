@@ -246,6 +246,17 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        internal static bool HasPendingRemoteLevelGraph(string? levelId)
+        {
+            if (string.IsNullOrWhiteSpace(levelId))
+                return false;
+
+            lock (_levelGraphLock)
+            {
+                return _remoteLevelGraphs.ContainsKey(levelId);
+            }
+        }
+
         private static void TryScheduleBossRuneReloadForLevel(string levelId)
         {
             if (string.IsNullOrWhiteSpace(levelId))

@@ -49,6 +49,16 @@ public class Levelinit : ModBase, IEventReceiver, IOnAdvancedModuleInitializing
     private void Levelinit_EntitiesPostCreate(Hook_Level.orig_entitiesPostCreate orig, Level self)
     {
         orig(self);
+        try
+        {
+            var purged = GhostHero.PurgeGhostKingsFromLevel(self);
+            if (purged > 0)
+                ModEntry.Instance?.Logger.Information("[NetMod] Purged {Count} GhostKing(s) after level create", purged);
+        }
+        catch (Exception ex)
+        {
+            ModEntry.Instance?.Logger.Warning("[NetMod] GhostKing purge after level create failed: {Message}", ex.Message);
+        }
     }
 
     private void Levelinit_OnDispose(Hook_Level.orig_onDispose orig, Level self)

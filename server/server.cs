@@ -104,6 +104,9 @@ public sealed partial class NetNode : IDisposable
         public int BonusLife;
         public int Recover;
         public string? Username;
+        public bool Ready;
+        public string? CoopId;
+        public bool HasContinueSave;
         public string? Skin;
         public string? Head;
 
@@ -702,6 +705,9 @@ public sealed partial class NetNode : IDisposable
     private string? _cachedHostHeroSkin;
     private string? _cachedHostHeroHeadSkin;
     private string? _cachedHostLevelGraphPayload;
+    private string? _cachedHostCustomGameDataPayload;
+    private string? _cachedHostCoopId;
+    private bool _cachedHostHasContinueSave;
     private double? _cachedHostMobsHpMult;
     private double? _cachedHostBossesHpMult;
 
