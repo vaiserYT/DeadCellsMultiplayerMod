@@ -32,7 +32,6 @@ public sealed partial class NetNode
                trimmed.StartsWith("MOBSTATE|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase) ||
-               trimmed.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("INTERELEVSTATE|", StringComparison.OrdinalIgnoreCase);
     }
@@ -55,7 +54,6 @@ public sealed partial class NetNode
         return trimmed.StartsWith("ANIM|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("HEADANIM|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase) ||
-               trimmed.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("INTERELEVSTATE|", StringComparison.OrdinalIgnoreCase);
     }

@@ -331,12 +331,6 @@ namespace DeadCellsMultiplayerMod
         private const double BossHeroTeleportEchoSuppressSeconds = 1.5;
         private int _suppressBossCineSendDepth;
         private long _suppressBossTriggerNetSendUntilTick;
-        private bool _clientBossVictoryRecoveryPending;
-        private long _clientBossVictoryRecoveryStartedTick;
-        private string? _clientBossVictoryRecoveryLevelId;
-        private const double ClientBossVictoryNoCineGraceSeconds = 2.0;
-        private const double ClientBossVictoryUnknownCineReleaseSeconds = 8.0;
-        private const double ClientBossVictoryRecoveryMaxSeconds = 12.0;
 
 
         void IOnAfterLoadingCDB.OnAfterLoadingCDB(dc._Data_ cdb)
@@ -517,8 +511,6 @@ namespace DeadCellsMultiplayerMod
                 BuildInfo.Version);
             entry.Logger.Information("[NetMod][FlintGuard] mode=local-vanilla-no-remote-runtime-preflight-powered-feedback-scan");
             entry.Logger.Information("[NetMod][BossCells] mode=working-v0.8.68-selector-reload-and-render-guard");
-            entry.Logger.Information("[NetMod][BossSafety] mode=legacy-native-death-no-custom-encounter-victory");
-            entry.Logger.Information("[NetMod][BossIntro] mode=legacy-native-trigger-no-ready-barrier");
             entry.Logger.Information("[NetMod][BossRushLoad] mode=host-door-precommit-structured-seed-barrier");
             entry.Logger.Information("[NetMod][CurseGuard] mode=fake-death-revive-dive-safe");
             entry.Logger.Information("[NetMod][VanillaTransitions] mode=working-v0.8.68-typed-activateSubLevel-stack");

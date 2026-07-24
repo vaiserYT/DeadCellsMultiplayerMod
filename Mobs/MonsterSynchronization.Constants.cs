@@ -85,7 +85,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private const double ClientJumpVelocityEpsilon = 0.03;
         private const double ClientJumpVelocityMaxRawMagnitude = 4.0;
         private const double ClientAiAuthorityLockDurationSeconds = 99999.0;
-        private const double HostBossIntroReadyBarrierLockSeconds = 0.5;
         /// <summary>Boss replicas converge much more tightly than ordinary grounded mobs.</summary>
         private const double ClientBossHardSnapDistancePx = 24.0 * 3.0;
         private const double ClientBossMinimumInterpolationAlpha = 0.82;

@@ -63,32 +63,6 @@ internal static class MobWireCodec
         return sb.ToString();
     }
 
-    public static string BuildMobChargesLine(IReadOnlyList<NetNode.MobChargeSnapshot> charges)
-    {
-        var sb = MobLineBuilder.Value!;
-        sb.Clear();
-        sb.Append("MOBCHARGE|");
-        if (charges != null)
-        {
-            for (int i = 0; i < charges.Count; i++)
-            {
-                if (i > 0)
-                    sb.Append(EntrySep);
-
-                var c = charges[i];
-                AppendInvariant(sb, c.Index);
-                sb.Append(',');
-                AppendInvariant(sb, c.Generation);
-                sb.Append(',');
-                sb.Append(c.SkillId ?? string.Empty);
-                sb.Append(',');
-                AppendInvariant(sb, c.Ratio);
-            }
-        }
-        sb.Append('\n');
-        return sb.ToString();
-    }
-
     public static string BuildMobAttackLine(NetNode.MobAttack attack)
     {
         string encodedSkill;

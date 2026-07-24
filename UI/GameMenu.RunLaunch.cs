@@ -9,16 +9,8 @@ namespace DeadCellsMultiplayerMod;
 
 internal static partial class GameMenu
 {
-    private const int InitialLaunchAckWaitMs = 2600;
-    private const int InitialLaunchAckRetryWaitMs = 1800;
-    // Protocol 17: after granting execute, the host waits (on a worker) for the client's RUNQUEUED
-    // confirmation before it starts its own native loader, so both consume the same seed/config.
-    private const int InitialLaunchQueuedWaitMs = 4000;
-    private const int InitialLaunchQueuedRetryWaitMs = 3000;
-
     private static bool _structuredLaunchCommitArrived;
     private static int _structuredLaunchExecuteSequence;
-    private static int _initialHostLaunchPendingSequence;
 
     private static void InitializeRunLaunchHandshake(ILogger logger)
     {
@@ -31,7 +23,6 @@ internal static partial class GameMenu
     {
         _structuredLaunchCommitArrived = false;
         _structuredLaunchExecuteSequence = 0;
-        _initialHostLaunchPendingSequence = 0;
     }
 
     private static RunLaunchDescriptor BuildHostRunLaunchDescriptor(
@@ -77,208 +68,6 @@ internal static partial class GameMenu
         {
             return 0;
         }
-    }
-
-    private static bool TryBeginInitialHostLaunch(
-        TitleScreen screen,
-        RunLaunchDescriptor descriptor,
-        out string error)
-    {
-        var net = NetRef;
-        if (net == null || !net.IsAlive || !net.IsHost)
-        {
-            error = "host network is not available";
-            return false;
-        }
-
-        lock (Sync)
-        {
-            if (_initialHostLaunchPendingSequence > 0)
-            {
-                error = $"launch sequence {_initialHostLaunchPendingSequence} is already waiting for the client";
-                return false;
-            }
-
-            _initialHostLaunchPendingSequence = descriptor.Sequence;
-        }
-
-        net.SendRunLaunchCommit(descriptor, flush: true);
-
-        // Steam P2P packet polling happens from the game/update side. Waiting synchronously in the
-        // Start button callback prevents the host from polling the client's RUNACK, so the old
-        // barrier could always time out and make the button appear to do nothing. Wait on a worker
-        // and return control to Dead Cells immediately; all game/UI work is queued back to the main
-        // thread after the acknowledgement arrives.
-        if (!net.HasRemote)
-        {
-            QueueInitialHostLaunchExecution(screen, descriptor);
-            error = string.Empty;
-            return true;
-        }
-
-        _ = Task.Run(() =>
-        {
-            var acknowledged = RunLaunchCoordinator.WaitForHostAck(
-                descriptor,
-                InitialLaunchAckWaitMs,
-                out var ackError);
-
-            if (!acknowledged)
-            {
-                // One reliable resend covers a packet queued at the exact handshake/menu boundary.
-                net.SendRunLaunchCommit(descriptor, flush: true);
-                acknowledged = RunLaunchCoordinator.WaitForHostAck(
-                    descriptor,
-                    InitialLaunchAckRetryWaitMs,
-                    out ackError);
-            }
-
-            if (!acknowledged)
-            {
-                QueueInitialHostLaunchFailure(screen, descriptor.Sequence, ackError);
-                return;
-            }
-
-            // Grant execute now so the client can queue the identical native launch. This worker never
-            // touches Dead Cells objects; it only sends control packets and waits on Monitor, so the
-            // game main thread keeps polling and processing the client's RUNQUEUED.
-            RunLaunchExecute execute;
-            try
-            {
-                execute = RunLaunchCoordinator.MarkHostExecute(descriptor);
-            }
-            catch (Exception ex)
-            {
-                QueueInitialHostLaunchFailure(screen, descriptor.Sequence, "host execute failed: " + ex.Message);
-                return;
-            }
-
-            net.SendRunLaunchExecute(execute, flush: true);
-
-            // Host starts only after the client confirms it queued the same launch (required order).
-            var queued = RunLaunchCoordinator.WaitForClientQueued(
-                descriptor,
-                InitialLaunchQueuedWaitMs,
-                out var queuedError);
-            if (!queued)
-            {
-                net.SendRunLaunchExecute(execute, flush: true);
-                queued = RunLaunchCoordinator.WaitForClientQueued(
-                    descriptor,
-                    InitialLaunchQueuedRetryWaitMs,
-                    out queuedError);
-            }
-
-            if (queued)
-                QueueInitialHostLaunchExecution(screen, descriptor);
-            else
-                QueueInitialHostLaunchFailure(screen, descriptor.Sequence, queuedError);
-        });
-
-        error = string.Empty;
-        return true;
-    }
-
-    private static void QueueInitialHostLaunchExecution(
-        TitleScreen screen,
-        RunLaunchDescriptor descriptor)
-    {
-        EnqueueCriticalMainThreadCoalesced(
-            $"game:initial-run-launch:{descriptor.Sequence}",
-            () =>
-            {
-                lock (Sync)
-                {
-                    if (_initialHostLaunchPendingSequence != descriptor.Sequence)
-                        return;
-                }
-
-                var net = NetRef;
-                var current = RunLaunchCoordinator.GetCurrentHostDescriptor();
-                if (net == null || !net.IsAlive || !net.IsHost ||
-                    current == null || !current.HasSameIdentity(descriptor))
-                {
-                    QueueInitialHostLaunchFailure(
-                        screen,
-                        descriptor.Sequence,
-                        "host launch state changed before execution");
-                    return;
-                }
-
-                try
-                {
-                    var execute = RunLaunchCoordinator.MarkHostExecute(descriptor);
-                    net.SendRunLaunchExecute(execute, flush: true);
-
-                    lock (Sync)
-                    {
-                        if (_initialHostLaunchPendingSequence == descriptor.Sequence)
-                            _initialHostLaunchPendingSequence = 0;
-                    }
-
-                    bool custom;
-                    bool streamEnabled;
-                    lock (Sync)
-                    {
-                        custom = _pendingLaunchCustom;
-                        streamEnabled = _pendingLaunchStreamEnabled;
-                    }
-
-                    SetAuthoritativePendingNewGameLaunch(custom, streamEnabled);
-                    if (custom && !EnsureCustomModeScreenUser(screen))
-                    {
-                        CancelPrecommittedHostRunSeed("custom_mode_user_unready");
-                        CancelHostStructuredLaunch(descriptor.Sequence, "custom_mode_user_unready");
-                        MultiplayerUI.PushSystemMessage(Localize("Custom Mode could not prepare the save user."));
-                        ShowHostStatusMenu(screen);
-                        return;
-                    }
-
-                    screen.startNewGame(custom);
-                }
-                catch (Exception ex)
-                {
-                    lock (Sync)
-                    {
-                        if (_initialHostLaunchPendingSequence == descriptor.Sequence)
-                            _initialHostLaunchPendingSequence = 0;
-                    }
-
-                    CancelPrecommittedHostRunSeed("native_startNewGame_failed");
-                    CancelHostStructuredLaunch(descriptor.Sequence, "native_startNewGame_failed_after_consume");
-                    _log?.Warning("[NetMod] Failed to start host run: {Message}", ex.Message);
-                    MultiplayerUI.PushSystemMessage(Localize("Dead Cells could not start the co-op run."));
-                }
-            });
-    }
-
-    private static void QueueInitialHostLaunchFailure(
-        TitleScreen screen,
-        int sequence,
-        string reason)
-    {
-        EnqueueCriticalMainThreadCoalesced(
-            $"game:initial-run-launch-failed:{sequence}",
-            () =>
-            {
-                lock (Sync)
-                {
-                    if (_initialHostLaunchPendingSequence != sequence)
-                        return;
-                    _initialHostLaunchPendingSequence = 0;
-                }
-
-                CancelPrecommittedHostRunSeed("initial_ack_barrier_failed");
-                _log?.Warning(
-                    "[NetMod][RunLaunch] Initial launch aborted seq={Sequence}: {Error}",
-                    sequence,
-                    reason);
-                MultiplayerUI.PushSystemMessage(
-                    Localize("Friend did not acknowledge the run start. Both players must use the same build."),
-                    7.0,
-                    1.0);
-                ShowHostStatusMenu(screen);
-            });
     }
 
     internal static RunLaunchDescriptor CommitHostRunLaunchFromHook(
@@ -380,6 +169,7 @@ internal static partial class GameMenu
                 _pendingAutoStart = false;
                 _autoStartTriggered = false;
             }
+            SignalClientLaunchProgressLocked();
             Monitor.PulseAll(Sync);
         }
     }
@@ -422,7 +212,7 @@ internal static partial class GameMenu
                 if (_inActualRun)
                     scheduleInRunReconcile = execute.Sequence > _consumedRemoteSeedSequence;
                 else
-                    _pendingAutoStart = true;
+                    SignalClientLaunchProgressLocked();
             }
             Monitor.PulseAll(Sync);
         }
