@@ -36,11 +36,6 @@ public readonly struct InterElevatorEvent
         Sequence = sequence;
         LevelId = levelId ?? string.Empty;
     }
-
-    public InterElevatorEvent(double x, double y)
-        : this(0, x, y, 0, string.Empty)
-    {
-    }
 }
 
 public readonly struct InterElevatorStateEvent
@@ -91,22 +86,19 @@ public readonly struct InterPressurePlateEvent
         Sequence = sequence;
         LevelId = levelId ?? string.Empty;
     }
-
-    public InterPressurePlateEvent(double x, double y)
-        : this(0, x, y, 0, string.Empty)
-    {
-    }
 }
 
 public readonly struct InterTreasureChestEvent
 {
     public readonly double X;
     public readonly double Y;
+    public readonly string LevelId;
 
-    public InterTreasureChestEvent(double x, double y)
+    public InterTreasureChestEvent(double x, double y, string levelId = "")
     {
         X = x;
         Y = y;
+        LevelId = levelId ?? string.Empty;
     }
 }
 
@@ -114,11 +106,13 @@ public readonly struct InterVineLadderEvent
 {
     public readonly double X;
     public readonly double Y;
+    public readonly string LevelId;
 
-    public InterVineLadderEvent(double x, double y)
+    public InterVineLadderEvent(double x, double y, string levelId = "")
     {
         X = x;
         Y = y;
+        LevelId = levelId ?? string.Empty;
     }
 }
 
@@ -126,11 +120,13 @@ public readonly struct InterTeleportEvent
 {
     public readonly double X;
     public readonly double Y;
+    public readonly string LevelId;
 
-    public InterTeleportEvent(double x, double y)
+    public InterTeleportEvent(double x, double y, string levelId = "")
     {
         X = x;
         Y = y;
+        LevelId = levelId ?? string.Empty;
     }
 }
 
@@ -154,11 +150,13 @@ public readonly struct InterBreakableGroundEvent
 {
     public readonly double X;
     public readonly double Y;
+    public readonly string LevelId;
 
-    public InterBreakableGroundEvent(double x, double y)
+    public InterBreakableGroundEvent(double x, double y, string levelId = "")
     {
         X = x;
         Y = y;
+        LevelId = levelId ?? string.Empty;
     }
 }
 
@@ -167,12 +165,14 @@ public readonly struct InterBossRuneUpdateCellsEvent
     public readonly double X;
     public readonly double Y;
     public readonly bool Add;
+    public readonly string LevelId;
 
-    public InterBossRuneUpdateCellsEvent(double x, double y, bool add)
+    public InterBossRuneUpdateCellsEvent(double x, double y, bool add, string levelId = "")
     {
         X = x;
         Y = y;
         Add = add;
+        LevelId = levelId ?? string.Empty;
     }
 }
 
@@ -181,11 +181,13 @@ public readonly struct InterPortalEvent
     public readonly double X;
     public readonly double Y;
     public readonly string Action;
+    public readonly string LevelId;
 
-    public InterPortalEvent(double x, double y, string action)
+    public InterPortalEvent(double x, double y, string action, string levelId = "")
     {
         X = x;
         Y = y;
         Action = action ?? string.Empty;
+        LevelId = levelId ?? string.Empty;
     }
 }

@@ -1,5 +1,4 @@
-using System.Runtime.InteropServices;
-using System.Collections.Concurrent;
+﻿using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Reflection;
 using dc.pr;
@@ -27,32 +26,6 @@ namespace DeadCellsMultiplayerMod
         private static string _pendingClientRestartReason = string.Empty;
         private const int MaxSeed = 999_999;
         public static NetNode? NetRef { get; set; }
-        private readonly struct MainThreadWorkItem
-        {
-            public readonly Action? Action;
-            public readonly string? CoalesceKey;
-
-            public MainThreadWorkItem(Action action)
-            {
-                Action = action;
-                CoalesceKey = null;
-            }
-
-            public MainThreadWorkItem(string coalesceKey)
-            {
-                Action = null;
-                CoalesceKey = coalesceKey;
-            }
-        }
-
-        private static readonly ConcurrentQueue<MainThreadWorkItem> _mainThreadQueue = new();
-        private static readonly ConcurrentDictionary<MethodInfo, string> _mainThreadActionLabelCache = new();
-        private static readonly object MainThreadCoalesceSync = new();
-        private static readonly Dictionary<string, Action> _coalescedMainThreadActions = new(StringComparer.Ordinal);
-        private static readonly HashSet<string> _pendingCoalescedMainThreadKeys = new(StringComparer.Ordinal);
-        private static int _mainThreadQueueDepth;
-        private const int MainThreadQueueMaxActionsPerPump = 64;
-        private const double MainThreadQueueBudgetMs = 4.0;
 
         private static bool _menuHooksAttached;
         private static bool _addMenuHookRegistered;
@@ -66,18 +39,13 @@ namespace DeadCellsMultiplayerMod
             Steam
         }
         private static ConnectionTransport _menuTransport = ConnectionTransport.Lan;
-        private static bool _steamLobbyActive;
         private static ulong _steamLobbyId;
         private static string _steamLobbyCode = string.Empty;
         private static ulong _steamHostSteamId;
         private static bool _steamJoinLobbyResolvePending;
         private static ulong? _pendingOverlayJoinLobbyId;
-        private static bool _waitingForHost;
         internal const int ClientConnectMaxAttempts = 3;
-        private static int _clientConnectAttempt;
-        private static bool _clientConnecting;
         private static bool _pendingAutoStart;
-        private static bool _levelDescArrived;
         private static bool _autoStartTriggered;
         private static bool _continueLaunchInProgress;
         private static DateTime _continueLaunchStartedAt = DateTime.MinValue;
@@ -183,15 +151,12 @@ namespace DeadCellsMultiplayerMod
                 _remoteSeed = null;
                 _pendingClientRestartSeed = null;
                 _pendingClientRestartReason = string.Empty;
-                _levelDescArrived = false;
                 _pendingAutoStart = false;
                 _autoStartTriggered = false;
                 _continueLaunchInProgress = false;
                 _continueLaunchStartedAt = DateTime.MinValue;
                 _genArrived = false;
                 _seedArrived = false;
-                _clientConnectAttempt = 0;
-                _clientConnecting = false;
                 _deathRestartCooldownUntil = DateTime.MinValue;
                 _cachedLevelDescSync = null;
                 _hostDisconnectCountdownActive = false;
@@ -202,7 +167,6 @@ namespace DeadCellsMultiplayerMod
                 _hostDisconnectSaveRetryAt = DateTime.MinValue;
                 _hostDisconnectSaveDeadline = DateTime.MinValue;
                 _menuTransport = ConnectionTransport.Lan;
-                _steamLobbyActive = false;
                 _steamLobbyId = 0;
                 _steamLobbyCode = string.Empty;
                 _steamHostSteamId = 0UL;
@@ -217,174 +181,11 @@ namespace DeadCellsMultiplayerMod
                 ResetLobbyReadyStateLocked();
                 InvalidateGeneratePayloadCacheLocked();
                 ResetRunLaunchCompatStateLocked();
-                _mainThreadQueueDepth = _mainThreadQueue.Count;
-                lock (MainThreadCoalesceSync)
-                {
-                    _coalescedMainThreadActions.Clear();
-                    _pendingCoalescedMainThreadKeys.Clear();
-                }
+                ResetMainThreadQueuesLocked();
+                ResetClientLaunchSessionLocked();
             }
 
             InitializeMenuUiHooks();
-        }
-
-        internal static void EnqueueMainThread(Action action)
-        {
-            if (action == null) return;
-            _mainThreadQueue.Enqueue(new MainThreadWorkItem(action));
-            Interlocked.Increment(ref _mainThreadQueueDepth);
-        }
-
-        internal static void EnqueueMainThreadCoalesced(string coalesceKey, Action action)
-        {
-            if (action == null)
-                return;
-
-            if (string.IsNullOrWhiteSpace(coalesceKey))
-            {
-                EnqueueMainThread(action);
-                return;
-            }
-
-            var shouldEnqueue = false;
-            lock (MainThreadCoalesceSync)
-            {
-                _coalescedMainThreadActions[coalesceKey] = action;
-                if (_pendingCoalescedMainThreadKeys.Add(coalesceKey))
-                    shouldEnqueue = true;
-            }
-
-            if (!shouldEnqueue)
-                return;
-
-            _mainThreadQueue.Enqueue(new MainThreadWorkItem(coalesceKey));
-            Interlocked.Increment(ref _mainThreadQueueDepth);
-        }
-
-        internal static void ProcessMainThreadQueue()
-        {
-            var hitchStart = RuntimeHitchWatch.Start();
-            var perfEnabled = RuntimeHitchWatch.Enabled;
-            var startDepth = Volatile.Read(ref _mainThreadQueueDepth);
-            var processed = 0;
-            var slowActions = 0;
-            var maxActionMs = 0.0;
-            var maxActionLabel = string.Empty;
-            var actionsStart = RuntimeHitchWatch.Start();
-
-            // Critical + reliable network protocol work must drain even when the UI queue is busy.
-            processed += DrainCriticalAndNetworkMainThreadQueues(MainThreadQueueMaxActionsPerPump);
-
-            while (_mainThreadQueue.TryDequeue(out var workItem))
-            {
-                Interlocked.Decrement(ref _mainThreadQueueDepth);
-                Action? action = workItem.Action;
-                var actionLabel = workItem.CoalesceKey;
-                if (actionLabel != null)
-                {
-                    lock (MainThreadCoalesceSync)
-                    {
-                        _pendingCoalescedMainThreadKeys.Remove(actionLabel);
-                        _coalescedMainThreadActions.TryGetValue(actionLabel, out action);
-                        _coalescedMainThreadActions.Remove(actionLabel);
-                    }
-                }
-
-                if (action == null)
-                    continue;
-
-                processed++;
-                var actionStart = perfEnabled ? RuntimeHitchWatch.Start() : 0;
-                try
-                {
-                    action();
-                }
-                catch (Exception ex)
-                {
-                    _log?.Warning("[NetMod] Main thread task failed: {Message}", ex.Message);
-                }
-                finally
-                {
-                    if (perfEnabled)
-                    {
-                        var actionMs = RuntimeHitchWatch.GetElapsedMilliseconds(actionStart);
-                        if (actionMs > maxActionMs)
-                        {
-                            actionLabel ??= DescribeMainThreadAction(action);
-                            maxActionMs = actionMs;
-                            maxActionLabel = actionLabel;
-                        }
-
-                        if (actionMs >= RuntimeHitchWatch.MainThreadQueueActionSlowThresholdMs)
-                        {
-                            slowActions++;
-                            actionLabel ??= DescribeMainThreadAction(action);
-                            RuntimeHitchWatch.LogSlow(
-                                _log,
-                                $"GameMenu.MainThreadQueueAction:{actionLabel}",
-                                actionMs,
-                                string.Create(
-                                    CultureInfo.InvariantCulture,
-                                    $"action={actionLabel} processed={processed} startDepth={startDepth}"));
-                        }
-                    }
-                }
-
-                if (processed >= MainThreadQueueMaxActionsPerPump)
-                    break;
-                if (RuntimeHitchWatch.GetElapsedMilliseconds(actionsStart) >= MainThreadQueueBudgetMs)
-                    break;
-            }
-            var actionsMs = RuntimeHitchWatch.GetElapsedMilliseconds(actionsStart);
-
-            var remainingDepth = Volatile.Read(ref _mainThreadQueueDepth);
-            var observedDepth = System.Math.Max(startDepth, remainingDepth);
-            if (perfEnabled && observedDepth >= RuntimeHitchWatch.MainThreadQueueDepthThreshold)
-            {
-                RuntimeHitchWatch.LogCount(
-                    _log,
-                    "GameMenu.MainThreadQueueDepth",
-                    observedDepth,
-                    RuntimeHitchWatch.MainThreadQueueDepthThreshold,
-                    string.Create(CultureInfo.InvariantCulture, $"processed={processed} remaining={remainingDepth}"));
-            }
-
-            if (actionsMs >= RuntimeHitchWatch.MainThreadQueueActionsSlowThresholdMs)
-            {
-                RuntimeHitchWatch.LogSlow(
-                    _log,
-                    "GameMenu.ExecuteMainThreadActions",
-                    actionsMs,
-                    string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"processed={processed} slowActions={slowActions} maxAction={maxActionLabel} maxMs={maxActionMs:0.00} remaining={remainingDepth}"));
-            }
-
-            var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-            if (hitchMs >= RuntimeHitchWatch.MainThreadQueueSlowThresholdMs)
-            {
-                RuntimeHitchWatch.LogSlow(
-                    _log,
-                    "GameMenu.ProcessMainThreadQueue",
-                    hitchMs,
-                    string.Create(CultureInfo.InvariantCulture, $"processed={processed} startDepth={startDepth} remaining={remainingDepth}"));
-            }
-        }
-
-        private static string DescribeMainThreadAction(Action? action)
-        {
-            if (action == null)
-                return "null";
-
-            var method = action.Method;
-            return _mainThreadActionLabelCache.GetOrAdd(method, static m =>
-            {
-                var declaringType = m.DeclaringType?.FullName;
-                if (!string.IsNullOrWhiteSpace(declaringType))
-                    return $"{declaringType}.{m.Name}";
-
-                return m.Name;
-            });
         }
 
         public static void MarkInRun()
@@ -394,6 +195,7 @@ namespace DeadCellsMultiplayerMod
                 _inActualRun = true;
                 _continueLaunchInProgress = false;
                 _continueLaunchStartedAt = DateTime.MinValue;
+                MarkClientLaunchInRunLocked();
             }
             ClearClientRestartPending();
         }
@@ -462,45 +264,6 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        public static void ReceiveHostRunSeed(int seed)
-        {
-            int? previousSeed = null;
-            lock (Sync)
-            {
-                previousSeed = _remoteSeed;
-                _remoteSeed = seed;
-                if (_role == NetRole.Client)
-                {
-                    var firstSeedForClient = !previousSeed.HasValue;
-                    var seedChanged = previousSeed.HasValue && previousSeed.Value != seed;
-                    if (_pendingClientRestartSeed.HasValue)
-                    {
-                        _pendingClientRestartSeed = seed;
-                        _pendingClientRestartReason = "host_restart";
-                        _pendingAutoStart = false;
-                        _autoStartTriggered = false;
-                    }
-                    else if (_inActualRun)
-                    {
-                        if (firstSeedForClient || seedChanged)
-                        {
-                            _inActualRun = false;
-                            _pendingAutoStart = false;
-                            _autoStartTriggered = false;
-                            _pendingClientRestartSeed = seed;
-                            _pendingClientRestartReason = "host_restart";
-                        }
-                    }
-                    else
-                    {
-                        _seedArrived = true;
-                        _pendingAutoStart = true;
-                    }
-                }
-            }
-            _log?.Information("[NetMod] Client received host seed {Seed}", seed);
-        }
-
         public static void ReceiveHostRunRestart(int seed)
         {
             lock (Sync)
@@ -525,7 +288,7 @@ namespace DeadCellsMultiplayerMod
                     }
                     else
                     {
-                        _pendingAutoStart = true;
+                        SignalClientLaunchProgressLocked();
                     }
                 }
             }
@@ -645,8 +408,8 @@ namespace DeadCellsMultiplayerMod
                     lock (Sync)
                     {
                         _seedArrived = true;
-                        _pendingAutoStart = true;
                         _autoStartTriggered = false;
+                        SignalClientLaunchProgressLocked();
                     }
                     return;
                 }
@@ -803,13 +566,13 @@ namespace DeadCellsMultiplayerMod
             {
                 if (_role == NetRole.Client &&
                     !_inActualRun &&
-                    !_pendingClientRestartSeed.HasValue &&
-                    _pendingAutoStart &&
-                    IsPendingLaunchReadyForAutoStartLocked() &&
-                    !_autoStartTriggered)
+                    !_pendingClientRestartSeed.HasValue)
                 {
-                    _autoStartTriggered = true;
-                    shouldStart = true;
+                    // Re-arm when late prereqs (LGRAPH / BOSSRUNE) arrive after seed/exec.
+                    // Arming is sole-writer via Reevaluate; claim still requires full readiness.
+                    ReevaluateClientLaunchArmLocked();
+                    if (TryClaimClientAutoStartLocked())
+                        shouldStart = true;
                 }
             }
 
@@ -839,8 +602,7 @@ namespace DeadCellsMultiplayerMod
                         {
                             lock (Sync)
                             {
-                                _autoStartTriggered = false;
-                                _pendingAutoStart = true;
+                                ReleaseClientAutoStartClaimLocked();
                             }
                             _autoStartRetryAt = DateTime.UtcNow.AddMilliseconds(250);
                             return;
@@ -861,8 +623,7 @@ namespace DeadCellsMultiplayerMod
                     _log?.Warning("[NetMod] Auto-start blocked by config lock: {Message}", ioEx.Message);
                     lock (Sync)
                     {
-                        _autoStartTriggered = false;
-                        _pendingAutoStart = true;
+                        ReleaseClientAutoStartClaimLocked();
                     }
                     _autoStartRetryAt = DateTime.UtcNow.AddSeconds(1.5);
                 }
@@ -871,8 +632,7 @@ namespace DeadCellsMultiplayerMod
                     _log?.Warning("[NetMod] Failed to auto-start new game: {Message}", ex.Message);
                     lock (Sync)
                     {
-                        _autoStartTriggered = false;
-                        _pendingAutoStart = true;
+                        ReleaseClientAutoStartClaimLocked();
                     }
                 }
             }
@@ -880,8 +640,7 @@ namespace DeadCellsMultiplayerMod
             {
                 lock (Sync)
                 {
-                    _autoStartTriggered = false;
-                    _pendingAutoStart = true;
+                    ReleaseClientAutoStartClaimLocked();
                 }
             }
         }
@@ -891,10 +650,7 @@ namespace DeadCellsMultiplayerMod
             lock (Sync)
             {
                 if (_role == NetRole.Client && !_inActualRun)
-                {
-                    _levelDescArrived = true;
-                    _pendingAutoStart = true;
-                }
+                    SignalClientLaunchProgressLocked();
             }
         }
 
@@ -1037,8 +793,6 @@ namespace DeadCellsMultiplayerMod
         {
             _menuSelection = role;
             _menuTransport = ConnectionTransport.Lan;
-            if (role == NetRole.Client)
-                _waitingForHost = true;
 
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
@@ -1138,7 +892,6 @@ namespace DeadCellsMultiplayerMod
         {
             _menuSelection = NetRole.Host;
             _menuTransport = ConnectionTransport.Steam;
-            _steamLobbyActive = false;
             _steamLobbyId = 0;
             _steamLobbyCode = string.Empty;
             _steamHostSteamId = 0UL;
@@ -1173,7 +926,6 @@ namespace DeadCellsMultiplayerMod
             if (!string.IsNullOrWhiteSpace(lobby.PersonaName))
                 ApplySteamPersonaUsername(lobby.PersonaName);
 
-            _steamLobbyActive = true;
             _steamLobbyId = lobby.LobbyId;
             _steamLobbyCode = SteamConnect.BuildLobbyCodeFromLobbyId(_steamLobbyId);
             ConnectionUI.NotifyConnectionsChanged();
@@ -1193,7 +945,6 @@ namespace DeadCellsMultiplayerMod
         {
             _menuSelection = NetRole.Client;
             _menuTransport = ConnectionTransport.Steam;
-            _steamLobbyActive = false;
             _steamLobbyId = 0;
             _steamLobbyCode = string.Empty;
             _steamHostSteamId = 0UL;
@@ -1222,7 +973,6 @@ namespace DeadCellsMultiplayerMod
 
             _menuSelection = NetRole.Client;
             _menuTransport = ConnectionTransport.Steam;
-            _steamLobbyActive = false;
             _steamLobbyId = 0;
             _steamLobbyCode = string.Empty;
             _steamHostSteamId = 0UL;
@@ -1387,7 +1137,6 @@ namespace DeadCellsMultiplayerMod
                         ModEntry.Instance.StartSteamHostFromMenu(_mpPort);
                     else
                         ModEntry.Instance.StartHostFromMenu(_mpIp, _mpPort);
-                    _waitingForHost = false;
                     SetAuthoritativePendingNewGameLaunch(custom: false, streamEnabled);
                     RememberPendingLaunch(PendingLaunchAction.NewGame, custom: false, streamEnabled, sendToRemote: true);
                     TryLaunchNewGame(screen, custom: false, streamEnabled);
@@ -1407,13 +1156,6 @@ namespace DeadCellsMultiplayerMod
                                 () => ShowJoinTransportMenu(screen));
                             return;
                         }
-                    }
-
-                    lock (Sync)
-                    {
-                        _clientConnectAttempt = 0;
-                        _clientConnecting = true;
-                        _waitingForHost = true;
                     }
 
                     if (_menuTransport == ConnectionTransport.Steam)
@@ -1441,7 +1183,6 @@ namespace DeadCellsMultiplayerMod
                 if (NetRef != null && NetRef.IsAlive && NetRef.IsHost)
                 {
                     PrepareLobbyForNewNetworkSession();
-                    _waitingForHost = false;
                     return;
                 }
 
@@ -1456,21 +1197,11 @@ namespace DeadCellsMultiplayerMod
                     ModEntry.Instance.StartHostFromMenu(hostIp, _mpPort);
                 }
 
-                _waitingForHost = false;
             }
             catch (Exception ex)
             {
                 _log?.Warning("[NetMod] Host start failed: {Message}", ex.Message);
             }
-        }
-
-        private static void StartHostRun(TitleScreen screen)
-        {
-            var streamEnabled = TryGetStreamEnabled(screen);
-            StartHostServerOnly();
-            SetAuthoritativePendingNewGameLaunch(custom: false, streamEnabled);
-            RememberPendingLaunch(PendingLaunchAction.NewGame, custom: false, streamEnabled, sendToRemote: true);
-            TryLaunchNewGame(screen, custom: false, streamEnabled);
         }
 
         // private static void GameDisposeHook(Hook_Game.orig_onDispose orig, Game self)
@@ -1510,7 +1241,6 @@ namespace DeadCellsMultiplayerMod
 
             SetRole(NetRole.None);
             NetRef = null;
-            _waitingForHost = false;
             ResetClientConnectState();
             ResetLobbyReadyState();
             _menuSelection = NetRole.None;

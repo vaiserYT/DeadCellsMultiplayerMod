@@ -12,14 +12,12 @@ public sealed partial class NetNode
     // the correct failure mode for state/move snapshots.
     private const int PendingMobStateLimit = 8192;
     private const int PendingMobMoveLimit = 8192;
-    private const int PendingMobChargeLimit = 2048;
     private const int PendingMobHitLimit = 2048;
     private const int PendingMobDieLimit = 2048;
     private const int PendingMobAttackLimit = 2048;
     private const int PendingMobDrawLimit = 4096;
     private const int PendingNetworkLineLimit = 1024;
     private const int PendingAttackLimit = 1024;
-    private const int PendingChatLimit = 256;
     private const int PendingControlStateLimit = 256;
     private const int PendingInteractionLimit = 512;
     private const int PendingBossCineLimit = 64;
@@ -301,16 +299,18 @@ public sealed partial class NetNode
         if (line.StartsWith("BOSSRUNE_UPDATE_CELLS|", StringComparison.OrdinalIgnoreCase))
         {
             var payload = line["BOSSRUNE_UPDATE_CELLS|".Length..].Trim();
-            var parts = payload.Split('|');
-            if (parts.Length >= 3 &&
-                double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) &&
-                double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y) &&
-                int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var addInt))
+            if (TryParseInterBossRuneUpdateCellsPayload(payload, out var ev))
             {
                 lock (_sync)
                 {
-                    AddBoundedLocked(_pendingBossRuneUpdateCells, new InterBossRuneUpdateCellsEvent(x, y, addInt != 0), PendingInteractionLimit);
+                    AddBoundedLocked(_pendingBossRuneUpdateCells, ev, PendingInteractionLimit);
                     _hasRemote = true;
+                }
+
+                if (_role == NetRole.Host && senderId.HasValue)
+                {
+                    forwardLine =
+                        $"BOSSRUNE_UPDATE_CELLS|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{(ev.Add ? 1 : 0)}|{ev.LevelId}\n";
                 }
             }
             return true;
@@ -438,37 +438,6 @@ public sealed partial class NetNode
 
             return true;
         }
-
-        if (line.StartsWith("CHAT|", StringComparison.OrdinalIgnoreCase))
-        {
-            var payload = line["CHAT|".Length..];
-            ParseChatPayload(payload, out var parsedId, out var message);
-            var effectiveId = parsedId ?? senderId;
-            if (forceSenderId)
-                effectiveId = senderId;
-
-            message = SanitizeChatMessage(message);
-            if (effectiveId.HasValue && !string.IsNullOrWhiteSpace(message))
-            {
-                string? username;
-                lock (_sync)
-                {
-                    var state = GetOrCreateRemoteLocked(effectiveId.Value);
-                    state.HasRemote = true;
-                    _hasRemote = true;
-                    if (_primaryRemoteId == 0)
-                        _primaryRemoteId = effectiveId.Value;
-                    username = state.Username;
-                    AddBoundedLocked(_pendingChatMessages, new RemoteChatMessage(effectiveId.Value, username, message), PendingChatLimit);
-                }
-
-                if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = BuildChatLine(effectiveId.Value, message);
-            }
-
-            return true;
-        }
-
 
         if (line.StartsWith("LOBBYSTATE|", StringComparison.OrdinalIgnoreCase))
         {
@@ -870,6 +839,23 @@ public sealed partial class NetNode
             return true;
         }
 
+        if (line.StartsWith("MOBREG|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role == NetRole.Host)
+                return true;
+
+            var payload = line["MOBREG|".Length..];
+            if (TryParseMobRegistryPayload(payload, out var parsedRegistry) && parsedRegistry.Count > 0)
+            {
+                lock (_sync)
+                {
+                    AppendBoundedLocked(_pendingMobRegistry, parsedRegistry, PendingMobStateLimit);
+                    _hasRemote = true;
+                }
+            }
+            return true;
+        }
+
         if (line.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase))
         {
             if (_role != NetRole.Host)
@@ -881,24 +867,6 @@ public sealed partial class NetNode
                     if (parsedMoves.Count > 0)
                     {
                         AppendBoundedLocked(_pendingMobMoves, parsedMoves, PendingMobMoveLimit);
-                        _hasRemote = true;
-                    }
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_role != NetRole.Host)
-            {
-                var payload = line["MOBCHARGE|".Length..];
-                var parsedCharges = ParseMobChargesPayload(payload);
-                lock (_sync)
-                {
-                    if (parsedCharges.Count > 0)
-                    {
-                        AppendBoundedLocked(_pendingMobCharges, parsedCharges, PendingMobChargeLimit);
                         _hasRemote = true;
                     }
                 }
@@ -939,25 +907,6 @@ public sealed partial class NetNode
                     _hasRemote = true;
                 }
 
-            }
-            return true;
-        }
-
-        if (line.StartsWith("BOSSVICTORY|", StringComparison.OrdinalIgnoreCase))
-        {
-            // Victory and reward revival are host-authoritative. Silently consume a spoofed
-            // client packet on the host, but never enqueue or forward it.
-            if (_role == NetRole.Host)
-                return true;
-
-            var payload = line["BOSSVICTORY|".Length..];
-            if (TryParseBossVictoryPayload(payload, out var state))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(_pendingBossVictories, state, PendingControlStateLimit);
-                    _hasRemote = true;
-                }
             }
             return true;
         }
@@ -1055,54 +1004,6 @@ public sealed partial class NetNode
             return true;
         }
 
-        if (line.StartsWith("BOSSINTROEND|", StringComparison.OrdinalIgnoreCase))
-        {
-            // Intro completion is host-authoritative for the same reason as intro start. A client
-            // cannot release or advance another peer's arena presentation.
-            if (_role == NetRole.Host)
-                return true;
-
-            var payload = line["BOSSINTROEND|".Length..]
-                .Replace("\r", string.Empty, StringComparison.Ordinal)
-                .Replace("\n", string.Empty, StringComparison.Ordinal)
-                .Trim();
-            if (!string.IsNullOrWhiteSpace(payload))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(_pendingBossIntroEnds, payload, PendingBossCineLimit);
-                    _hasRemote = true;
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("BOSSINTROREADY|", StringComparison.OrdinalIgnoreCase))
-        {
-            // Readiness travels client-to-host only, and the sender id always comes from the
-            // authenticated TCP/Steam connection. Never relay it back to clients.
-            if (_role != NetRole.Host || !senderId.HasValue ||
-                !IsHostClientHandshakeComplete(senderId.Value))
-                return true;
-
-            var payload = line["BOSSINTROREADY|".Length..]
-                .Replace("\r", string.Empty, StringComparison.Ordinal)
-                .Replace("\n", string.Empty, StringComparison.Ordinal)
-                .Trim();
-            if (!string.IsNullOrWhiteSpace(payload))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(
-                        _pendingBossIntroReadyStates,
-                        new BossIntroReadyState(senderId.Value, payload),
-                        PendingBossCineLimit);
-                    _hasRemote = true;
-                }
-            }
-            return true;
-        }
-
         if (line.StartsWith("INTERDOOR|", StringComparison.OrdinalIgnoreCase))
         {
             var payload = line["INTERDOOR|".Length..];
@@ -1189,7 +1090,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERCHEST|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERCHEST|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1206,7 +1107,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERVINELADDER|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERVINELADDER|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1223,7 +1124,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERTELEPORT|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERTELEPORT|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1258,7 +1159,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERBREAK|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERBREAK|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1275,7 +1176,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERPORTAL|{ev.Action}|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERPORTAL|{ev.Action}|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }

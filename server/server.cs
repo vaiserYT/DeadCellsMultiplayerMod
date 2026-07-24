@@ -251,20 +251,6 @@ public sealed partial class NetNode : IDisposable
         }
     }
 
-    public readonly struct RemoteChatMessage
-    {
-        public readonly int Id;
-        public readonly string? Username;
-        public readonly string Message;
-
-        public RemoteChatMessage(int id, string? username, string message)
-        {
-            Id = id;
-            Username = username;
-            Message = message ?? string.Empty;
-        }
-    }
-
     public readonly struct MobStateSnapshot
     {
         public readonly int Index;
@@ -325,22 +311,6 @@ public sealed partial class NetNode : IDisposable
         }
     }
 
-    public readonly struct MobChargeSnapshot
-    {
-        public readonly int Index;
-        public readonly int Generation;
-        public readonly string SkillId;
-        public readonly double Ratio;
-
-        public MobChargeSnapshot(int index, string skillId, double ratio, int generation = 0)
-        {
-            Index = index;
-            Generation = generation;
-            SkillId = skillId ?? string.Empty;
-            Ratio = ratio;
-        }
-    }
-
     public readonly struct MobHit
     {
         public readonly int UserId;
@@ -389,36 +359,23 @@ public sealed partial class NetNode : IDisposable
     }
 
     /// <summary>
-    /// Host-authoritative confirmation that the current boss encounter is over.  This is
-    /// deliberately separate from MOBDIE: multipart and phase-replacing bosses can destroy one
-    /// mob wrapper without completing the encounter.
+    /// Host-authored spawn table entry. NetId is host-owned identity; Type+X+Y are bind hints for clients.
     /// </summary>
-    public readonly struct BossVictoryState
+    public readonly struct MobRegistryEntry
     {
+        public readonly int NetId;
         public readonly int Generation;
-        public readonly int EncounterId;
+        public readonly string Type;
+        public readonly double X;
+        public readonly double Y;
 
-        public BossVictoryState(int generation, int encounterId)
+        public MobRegistryEntry(int netId, int generation, string type, double x, double y)
         {
+            NetId = netId;
             Generation = generation;
-            EncounterId = encounterId;
-        }
-    }
-
-    /// <summary>
-    /// Client acknowledgement that its native boss introduction reached the real combat handoff.
-    /// The host derives <see cref="UserId"/> from the authenticated connection rather than trusting
-    /// any id supplied by the peer.
-    /// </summary>
-    public readonly struct BossIntroReadyState
-    {
-        public readonly int UserId;
-        public readonly string Payload;
-
-        public BossIntroReadyState(int userId, string payload)
-        {
-            UserId = userId;
-            Payload = payload ?? string.Empty;
+            Type = type ?? string.Empty;
+            X = x;
+            Y = y;
         }
     }
 
@@ -639,21 +596,17 @@ public sealed partial class NetNode : IDisposable
     private readonly Dictionary<ulong, int> _steamClientIdsBySteam = new();
     private readonly Dictionary<int, RemoteState> _remotes = new();
     private List<RemoteAttack> _pendingAttacks = new();
-    private List<RemoteChatMessage> _pendingChatMessages = new();
     private List<MobStateSnapshot> _pendingMobStates = new();
     private List<MobMoveSnapshot> _pendingMobMoves = new();
-    private List<MobChargeSnapshot> _pendingMobCharges = new();
     private List<MobHit> _pendingMobHits = new();
     private List<MobDie> _pendingMobDies = new();
-    private List<BossVictoryState> _pendingBossVictories = new();
     private List<MobAttack> _pendingMobAttacks = new();
     private List<MobDraw> _pendingMobDraws = new();
+    private List<MobRegistryEntry> _pendingMobRegistry = new();
     private List<ExitReadyState> _pendingExitReadyStates = new();
     private List<PlayerDownState> _pendingPlayerDownStates = new();
     private List<PlayerReviveRequest> _pendingPlayerReviveRequests = new();
     private List<string> _pendingBossCineLevelIds = new();
-    private List<string> _pendingBossIntroEnds = new();
-    private List<BossIntroReadyState> _pendingBossIntroReadyStates = new();
     private List<BossHeroTeleportEvent> _pendingBossHeroTeleports = new();
     private List<InterDoorEvent> _pendingInterDoorEvents = new();
     private List<InterElevatorEvent> _pendingInterElevatorEvents = new();

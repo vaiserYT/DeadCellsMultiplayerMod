@@ -196,25 +196,6 @@ public sealed partial class NetNode
             recover = parsedRecover;
     }
 
-    private static void ParseChatPayload(string payload, out int? parsedId, out string message)
-    {
-        parsedId = null;
-        message = string.Empty;
-        if (string.IsNullOrWhiteSpace(payload))
-            return;
-
-        var parts = payload.Split(new[] { '|' }, 2);
-        if (parts.Length == 2 &&
-            int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var idValue))
-        {
-            parsedId = idValue;
-            message = parts[1];
-            return;
-        }
-
-        message = payload;
-    }
-
     private static void ParseCoopStatePayload(string payload, out string coopId, out bool hasContinueSave)
     {
         coopId = string.Empty;
@@ -227,6 +208,55 @@ public sealed partial class NetNode
         if (parts.Length >= 2)
             hasContinueSave = string.Equals(parts[1], "1", StringComparison.Ordinal) ||
                               string.Equals(parts[1], "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// MOBREG payload: generation|netId,escapedType,x,y;...
+    /// </summary>
+    private static bool TryParseMobRegistryPayload(string payload, out List<MobRegistryEntry> entries)
+    {
+        entries = new List<MobRegistryEntry>();
+        if (string.IsNullOrWhiteSpace(payload))
+            return false;
+
+        var genSep = payload.IndexOf('|');
+        if (genSep <= 0)
+            return false;
+
+        if (!int.TryParse(payload.AsSpan(0, genSep), NumberStyles.Integer, CultureInfo.InvariantCulture, out var generation))
+            return false;
+
+        var table = payload[(genSep + 1)..];
+        if (string.IsNullOrWhiteSpace(table))
+            return true;
+
+        var chunks = table.Split(';', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < chunks.Length; i++)
+        {
+            var parts = chunks[i].Split(',');
+            if (parts.Length < 4)
+                continue;
+            if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var netId))
+                continue;
+            if (!double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var x))
+                continue;
+            if (!double.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+                continue;
+
+            string type;
+            try
+            {
+                type = Uri.UnescapeDataString(parts[1] ?? string.Empty);
+            }
+            catch
+            {
+                type = parts[1] ?? string.Empty;
+            }
+
+            entries.Add(new MobRegistryEntry(netId, generation, type, x, y));
+        }
+
+        return true;
     }
 
     private static List<MobStateSnapshot> ParseMobStatesPayload(string payload)
@@ -303,40 +333,6 @@ public sealed partial class NetNode
         }
 
         return moves;
-    }
-
-    private static List<MobChargeSnapshot> ParseMobChargesPayload(string payload)
-    {
-        var charges = new List<MobChargeSnapshot>();
-        if (string.IsNullOrWhiteSpace(payload))
-            return charges;
-
-        var entries = payload.Split(';', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var entry in entries)
-        {
-            var parts = entry.Split(',');
-            if (parts.Length < 3)
-                continue;
-
-            if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
-                continue;
-            var generation = 0;
-            var valueOffset = 1;
-            if (parts.Length > 3 &&
-                int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedGeneration))
-            {
-                generation = parsedGeneration;
-                valueOffset = 2;
-            }
-
-            var skillId = parts.Length > valueOffset ? parts[valueOffset] : string.Empty;
-            if (!double.TryParse(parts.Length > valueOffset + 1 ? parts[valueOffset + 1] : "0", NumberStyles.Float, CultureInfo.InvariantCulture, out var ratio))
-                ratio = 0;
-
-            charges.Add(new MobChargeSnapshot(index, skillId, ratio, generation));
-        }
-
-        return charges;
     }
 
     private static bool TryParseMobHitPayload(string payload, int? senderId, bool forceSenderId, out MobHit hit)
@@ -421,30 +417,6 @@ public sealed partial class NetNode
         }
 
         die = new MobDie(parsedUserId, mobIndex, x, y, generation, type);
-        return true;
-    }
-
-    private static bool TryParseBossVictoryPayload(string payload, out BossVictoryState state)
-    {
-        state = default;
-        if (string.IsNullOrWhiteSpace(payload))
-            return false;
-
-        var parts = payload.Split('|');
-        if (parts.Length != 2)
-            return false;
-        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var generation) ||
-            generation <= 0)
-        {
-            return false;
-        }
-        if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var encounterId) ||
-            encounterId <= 0)
-        {
-            return false;
-        }
-
-        state = new BossVictoryState(generation, encounterId);
         return true;
     }
 
@@ -994,7 +966,8 @@ public sealed partial class NetNode
         if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
             return false;
 
-        ev = new InterTreasureChestEvent(x, y);
+        var levelId = parts.Length >= 3 ? (parts[2] ?? string.Empty) : string.Empty;
+        ev = new InterTreasureChestEvent(x, y, levelId);
         return true;
     }
 
@@ -1013,7 +986,8 @@ public sealed partial class NetNode
         if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
             return false;
 
-        ev = new InterVineLadderEvent(x, y);
+        var levelId = parts.Length >= 3 ? (parts[2] ?? string.Empty) : string.Empty;
+        ev = new InterVineLadderEvent(x, y, levelId);
         return true;
     }
 
@@ -1032,7 +1006,8 @@ public sealed partial class NetNode
         if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
             return false;
 
-        ev = new InterTeleportEvent(x, y);
+        var levelId = parts.Length >= 3 ? (parts[2] ?? string.Empty) : string.Empty;
+        ev = new InterTeleportEvent(x, y, levelId);
         return true;
     }
 
@@ -1080,7 +1055,8 @@ public sealed partial class NetNode
         if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
             return false;
 
-        ev = new InterBreakableGroundEvent(x, y);
+        var levelId = parts.Length >= 3 ? (parts[2] ?? string.Empty) : string.Empty;
+        ev = new InterBreakableGroundEvent(x, y, levelId);
         return true;
     }
 
@@ -1103,7 +1079,30 @@ public sealed partial class NetNode
         if (!double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
             return false;
 
-        ev = new InterPortalEvent(x, y, action);
+        var levelId = parts.Length >= 4 ? (parts[3] ?? string.Empty) : string.Empty;
+        ev = new InterPortalEvent(x, y, action, levelId);
+        return true;
+    }
+
+    private static bool TryParseInterBossRuneUpdateCellsPayload(string payload, out InterBossRuneUpdateCellsEvent ev)
+    {
+        ev = default;
+        if (string.IsNullOrWhiteSpace(payload))
+            return false;
+
+        var parts = payload.Split('|');
+        if (parts.Length < 3)
+            return false;
+
+        if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x))
+            return false;
+        if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+            return false;
+        if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var addInt))
+            return false;
+
+        var levelId = parts.Length >= 4 ? (parts[3] ?? string.Empty) : string.Empty;
+        ev = new InterBossRuneUpdateCellsEvent(x, y, addInt != 0, levelId);
         return true;
     }
 

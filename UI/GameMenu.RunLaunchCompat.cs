@@ -1,7 +1,4 @@
-using System.Collections.Concurrent;
-using System.Globalization;
-using System.Threading;
-using System.Threading.Channels;
+﻿using System.Globalization;
 using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 using DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI;
 using DeadCellsMultiplayerMod.PortableCore;
@@ -10,8 +7,7 @@ using ModCore.Modules;
 namespace DeadCellsMultiplayerMod;
 
 /// <summary>
-/// Restores features-continue RunLaunch / main-thread network APIs on top of the
-/// checked-out <c>dev</c> GameMenu lobby/UI base.
+/// Sequenced seed / precommit / protocol-mismatch helpers for run launch.
 /// </summary>
 internal static partial class GameMenu
 {
@@ -23,23 +19,6 @@ internal static partial class GameMenu
     private const int RemoteRunSeedWaitMs = 2000;
     private const int RunSeedTransitionGraceMs = 2000;
 
-    private static readonly Channel<Action> _networkMainThreadQueue = Channel.CreateBounded<Action>(
-        new BoundedChannelOptions(2048)
-        {
-            SingleReader = true,
-            SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait,
-            AllowSynchronousContinuations = false
-        });
-
-    private static readonly object CriticalMainThreadCoalesceSync = new();
-    private static readonly Dictionary<string, Action> _criticalCoalescedActions = new(StringComparer.Ordinal);
-    private static readonly ConcurrentQueue<string> _criticalCoalescedKeys = new();
-    private const int MainThreadQueueMaxPendingCritical = 64;
-    private const int MainThreadQueueBurstActionsPerPump = 768;
-    private const int MainThreadQueueBurstBacklogThreshold = 96;
-    private static long _lastMainThreadCoalescedDropLogTicks;
-
     private static long _clientRestartPendingUntilTicks;
     private const int ClientRestartPendingTtlMs = 12000;
 
@@ -50,7 +29,6 @@ internal static partial class GameMenu
     private const int PrecommittedHostSeedTtlMs = 300000;
 
     private static DateTime _lastRoomStatusAutoRefresh = DateTime.MinValue;
-    private static bool _protocolMismatchPending;
 
     private static void ResetRunLaunchCompatStateLocked()
     {
@@ -61,117 +39,6 @@ internal static partial class GameMenu
         ClearStructuredLaunchFlagsLocked();
         ClearPrecommittedHostRunSeedLocked();
         _clientRestartPendingUntilTicks = 0;
-        _protocolMismatchPending = false;
-        while (_networkMainThreadQueue.Reader.TryRead(out _)) { }
-        while (_criticalCoalescedKeys.TryDequeue(out _)) { }
-        lock (CriticalMainThreadCoalesceSync)
-            _criticalCoalescedActions.Clear();
-    }
-
-    internal static ValueTask EnqueueNetworkMainThreadAsync(Action action, CancellationToken cancellationToken)
-    {
-        if (action == null)
-            return ValueTask.CompletedTask;
-
-        return _networkMainThreadQueue.Writer.WriteAsync(action, cancellationToken);
-    }
-
-    internal static void ClearPendingNetworkMainThreadActions()
-    {
-        while (_networkMainThreadQueue.Reader.TryRead(out _)) { }
-    }
-
-    internal static void EnqueueCriticalMainThreadCoalesced(string coalesceKey, Action action)
-    {
-        if (action == null || string.IsNullOrWhiteSpace(coalesceKey))
-            return;
-
-        bool isNewKey;
-        lock (CriticalMainThreadCoalesceSync)
-        {
-            isNewKey = !_criticalCoalescedActions.ContainsKey(coalesceKey);
-            if (isNewKey && _criticalCoalescedActions.Count >= MainThreadQueueMaxPendingCritical)
-            {
-                LogCriticalMainThreadCoalescedDropRateLimited(coalesceKey);
-                return;
-            }
-
-            _criticalCoalescedActions[coalesceKey] = action;
-        }
-
-        if (isNewKey)
-            _criticalCoalescedKeys.Enqueue(coalesceKey);
-    }
-
-    private static void LogCriticalMainThreadCoalescedDropRateLimited(string key)
-    {
-        var now = System.Diagnostics.Stopwatch.GetTimestamp();
-        var minTicks = System.Diagnostics.Stopwatch.Frequency * 5L;
-        var previous = Interlocked.Read(ref _lastMainThreadCoalescedDropLogTicks);
-        if (previous != 0 && now - previous < minTicks)
-            return;
-        if (Interlocked.CompareExchange(ref _lastMainThreadCoalescedDropLogTicks, now, previous) != previous)
-            return;
-
-        _log?.Warning(
-            "[NetMod] Rejected critical coalesced main-thread work because its queue is full (key={Key})",
-            key);
-    }
-
-    /// <summary>
-    /// Drain critical coalesced work first, then reliable network protocol actions.
-    /// Called from <see cref="ProcessMainThreadQueue"/> so receive-loop back-pressure stays healthy.
-    /// </summary>
-    private static int DrainCriticalAndNetworkMainThreadQueues(int budget)
-    {
-        if (budget <= 0)
-            return 0;
-
-        var processed = 0;
-        var networkBacklog = 0;
-        if (_networkMainThreadQueue.Reader.CanCount)
-            networkBacklog = _networkMainThreadQueue.Reader.Count;
-
-        var effectiveBudget = networkBacklog >= MainThreadQueueBurstBacklogThreshold
-            ? Math.Max(budget, MainThreadQueueBurstActionsPerPump)
-            : budget;
-
-        while (processed < effectiveBudget)
-        {
-            Action? action = null;
-
-            if (_criticalCoalescedKeys.TryDequeue(out var criticalKey))
-            {
-                lock (CriticalMainThreadCoalesceSync)
-                {
-                    _criticalCoalescedActions.TryGetValue(criticalKey, out action);
-                    _criticalCoalescedActions.Remove(criticalKey);
-                }
-            }
-            else if (_networkMainThreadQueue.Reader.TryRead(out var networkAction))
-            {
-                action = networkAction;
-            }
-            else
-            {
-                break;
-            }
-
-            if (action == null)
-                continue;
-
-            processed++;
-            try
-            {
-                action();
-            }
-            catch (Exception ex)
-            {
-                _log?.Warning("[NetMod] Main thread task failed: {Message}", ex.Message);
-            }
-        }
-
-        return processed;
     }
 
     internal static void MarkClientRestartPending()
@@ -207,41 +74,6 @@ internal static partial class GameMenu
             launchKind ?? string.Empty,
             reason);
         return sequence;
-    }
-
-    internal static bool PrecommitInitialHostRunSeed(out int seed, out int sequence, out RunLaunchDescriptor? descriptor)
-    {
-        seed = 0;
-        sequence = 0;
-        descriptor = null;
-
-        var net = NetRef;
-        if (net == null || !net.IsAlive || !net.IsHost)
-            return false;
-
-        const string launchKind = "dc.LaunchMode+NewGame";
-
-        seed = ForceGenerateServerSeed("title.startNewGame_precommit");
-        sequence = RegisterHostRunSeed(seed, launchKind, "title.startNewGame_precommit");
-
-        lock (Sync)
-        {
-            _precommittedHostSeed = seed;
-            _precommittedHostSeedSequence = sequence;
-            _precommittedHostLaunchKind = launchKind;
-            _precommittedHostSeedExpiresAtTicks = Environment.TickCount64 + PrecommittedHostSeedTtlMs;
-        }
-
-        descriptor = BuildHostRunLaunchDescriptor(seed, sequence, launchKind);
-        net.SendRunLaunchCommit(descriptor, flush: true);
-        net.SendSeed(sequence, seed, launchKind);
-        net.SendControlAndFlush($"SEED|{sequence}|{seed}|{launchKind}", 500);
-        _log?.Information(
-            "[NetMod] Precommitted initial host run seq={Sequence} seed={Seed} launch={LaunchKind}",
-            sequence,
-            seed,
-            launchKind);
-        return true;
     }
 
     internal static bool PrecommitHostBossRushRunSeed(
@@ -444,8 +276,7 @@ internal static partial class GameMenu
     }
 
     /// <summary>
-    /// Protocol 17 seed receive path used by the text NetNode. Keeps the legacy 1-arg
-    /// <see cref="ReceiveHostRunSeed(int)"/> for older same-run restart flows.
+    /// Protocol seed receive path used by the text NetNode (SEED|seq|seed|kind).
     /// </summary>
     public static void ReceiveHostRunSeed(int sequence, int seed, string launchKind)
     {
@@ -478,8 +309,7 @@ internal static partial class GameMenu
                 else
                 {
                     _seedArrived = true;
-                    if (!isBossRushSeed && CanAutoStartStructuredClientLaunchLocked())
-                        _pendingAutoStart = true;
+                    SignalClientLaunchProgressLocked();
                 }
             }
 
@@ -595,13 +425,6 @@ internal static partial class GameMenu
 
         if (localRole != NetRole.Client)
             return;
-
-        lock (Sync)
-        {
-            _protocolMismatchPending = true;
-            _clientConnecting = false;
-            _waitingForHost = false;
-        }
 
         EnqueueMainThreadCoalesced("ui:protocol-mismatch", () =>
         {

@@ -72,27 +72,6 @@ public sealed partial class NetNode
         return $"HP|{id}|{life}|{maxLife}|{lif}|{bonusLife}|{recover}\n";
     }
 
-    private static string BuildChatLine(int id, string message)
-    {
-        var safe = SanitizeChatMessage(message);
-        return $"CHAT|{id}|{safe}\n";
-    }
-
-    private static string SanitizeChatMessage(string? message)
-    {
-        var safe = (message ?? string.Empty)
-            .Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal)
-            .Replace("|", "/", StringComparison.Ordinal)
-            .Trim();
-
-        const int maxLength = 256;
-        if (safe.Length > maxLength)
-            safe = safe[..maxLength];
-
-        return safe;
-    }
-
     private static string SanitizeProtocolToken(string? value, int maxLength)
     {
         var safe = (value ?? string.Empty)
@@ -162,13 +141,6 @@ public sealed partial class NetNode
         return string.Create(
             CultureInfo.InvariantCulture,
             $"PREVIVE|{request.ReviverId}|{request.TargetId}\n");
-    }
-
-    private static string BuildBossVictoryLine(BossVictoryState state)
-    {
-        return string.Create(
-            CultureInfo.InvariantCulture,
-            $"BOSSVICTORY|{state.Generation}|{state.EncounterId}\n");
     }
 
     private static string BuildPosLine(int id, double cx, double cy, int dir)

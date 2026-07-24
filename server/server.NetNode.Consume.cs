@@ -161,26 +161,17 @@ public sealed partial class NetNode
         }
     }
 
-    public bool TryConsumeChatMessages(out List<RemoteChatMessage> messages)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingChatMessages, out messages);
-        }
-    }
-
     public void ClearMobSyncQueues()
     {
         lock (_sync)
         {
             _pendingMobStates.Clear();
             _pendingMobMoves.Clear();
-            _pendingMobCharges.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
-            _pendingBossVictories.Clear();
             _pendingMobAttacks.Clear();
             _pendingMobDraws.Clear();
+            _pendingMobRegistry.Clear();
         }
     }
 
@@ -219,14 +210,6 @@ public sealed partial class NetNode
         }
     }
 
-    public bool TryConsumeMobCharges(out List<MobChargeSnapshot> charges)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobCharges, out charges);
-        }
-    }
-
     public bool TryConsumeMobHits(out List<MobHit> hits)
     {
         lock (_sync)
@@ -243,14 +226,6 @@ public sealed partial class NetNode
         }
     }
 
-    public bool TryConsumeBossVictories(out List<BossVictoryState> victories)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossVictories, out victories);
-        }
-    }
-
     public bool TryConsumeMobAttacks(out List<MobAttack> attacks)
     {
         lock (_sync)
@@ -264,6 +239,14 @@ public sealed partial class NetNode
         lock (_sync)
         {
             return TryConsumePendingListLocked(ref _pendingMobDraws, out draws);
+        }
+    }
+
+    public bool TryConsumeMobRegistry(out List<MobRegistryEntry> entries)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingMobRegistry, out entries);
         }
     }
 
@@ -293,22 +276,6 @@ public sealed partial class NetNode
         lock (_sync)
         {
             return TryConsumePendingListLocked(ref _pendingBossCineLevelIds, out levelIds);
-        }
-    }
-
-    public bool TryConsumeBossIntroEnds(out List<string> completions)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossIntroEnds, out completions);
-        }
-    }
-
-    public bool TryConsumeBossIntroReadyStates(out List<BossIntroReadyState> readyStates)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossIntroReadyStates, out readyStates);
         }
     }
 

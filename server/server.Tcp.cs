@@ -386,7 +386,6 @@ public sealed partial class NetNode
         {
             RemoveRemoteLocked(sender.AssignedId);
             _pendingAttacks.RemoveAll(a => a.Id == sender.AssignedId);
-            _pendingChatMessages.RemoveAll(m => m.Id == sender.AssignedId);
             _pendingMobHits.RemoveAll(h => h.UserId == sender.AssignedId);
             _pendingMobDies.RemoveAll(d => d.UserId == sender.AssignedId);
             _pendingExitReadyStates.RemoveAll(s => s.UserId == sender.AssignedId);

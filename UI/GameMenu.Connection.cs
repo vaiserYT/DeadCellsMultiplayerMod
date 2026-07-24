@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using dc.pr;
@@ -184,7 +184,6 @@ namespace DeadCellsMultiplayerMod
         private static void DisconnectFromMenu(TitleScreen screen)
         {
             StopNetworkFromMenu();
-            _waitingForHost = false;
             ResetClientConnectState();
             _menuSelection = NetRole.None;
             ResetSteamState();
@@ -231,7 +230,6 @@ namespace DeadCellsMultiplayerMod
 
             if (role == NetRole.Host)
             {
-                _waitingForHost = false;
                 SendCachedDataToRemote();
                 lock (Sync)
                 {
@@ -248,9 +246,6 @@ namespace DeadCellsMultiplayerMod
             }
             else if (role == NetRole.Client)
             {
-                _waitingForHost = false;
-                _clientConnecting = false;
-                _clientConnectAttempt = 0;
                 ConnectionUI.NotifyConnectionsChanged();
                 if (_menuSelection == NetRole.Client)
                 {
@@ -264,13 +259,6 @@ namespace DeadCellsMultiplayerMod
 
         internal static void NotifyClientConnectAttempt(int attempt)
         {
-            lock (Sync)
-            {
-                _clientConnectAttempt = attempt;
-                _clientConnecting = true;
-                _waitingForHost = true;
-            }
-
             if (_menuSelection == NetRole.Client)
             {
                 var ts = GetTitleScreen();
@@ -282,7 +270,6 @@ namespace DeadCellsMultiplayerMod
         {
             StopNetworkFromMenu();
             ResetClientConnectState();
-            _waitingForHost = false;
             _menuSelection = NetRole.Client;
 
             var ts = GetTitleScreen();
@@ -329,7 +316,6 @@ namespace DeadCellsMultiplayerMod
 
             SetRole(NetRole.None);
             NetRef = null;
-            _waitingForHost = false;
             _menuSelection = NetRole.None;
             ResetSteamState();
             ClearNetworkCaches();
@@ -405,7 +391,6 @@ namespace DeadCellsMultiplayerMod
                 try { SteamConnect.LeaveLobby(lobbyId); } catch { }
             }
             try { SteamConnect.StopHostLobbyWorker(); } catch { }
-            _steamLobbyActive = false;
             _steamLobbyId = 0;
             _steamLobbyCode = string.Empty;
             _steamHostSteamId = 0UL;
@@ -678,7 +663,7 @@ namespace DeadCellsMultiplayerMod
                     if (_role == NetRole.Client && !_inActualRun)
                     {
                         _genArrived = true;
-                        _pendingAutoStart = true;
+                        SignalClientLaunchProgressLocked();
                     }
                 }
 
@@ -954,8 +939,6 @@ namespace DeadCellsMultiplayerMod
         {
             lock (Sync)
             {
-                _clientConnectAttempt = 0;
-                _clientConnecting = false;
                 _pendingClientRestartSeed = null;
                 _pendingClientRestartReason = string.Empty;
             }

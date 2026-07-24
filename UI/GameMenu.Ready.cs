@@ -24,7 +24,6 @@ namespace DeadCellsMultiplayerMod
         private static void ResetLobbyLaunchStateLocked()
         {
             _inActualRun = false;
-            _levelDescArrived = false;
             _pendingAutoStart = false;
             _autoStartTriggered = false;
             _pendingClientRestartSeed = null;
@@ -38,6 +37,7 @@ namespace DeadCellsMultiplayerMod
             _receivedNewCoopWorldPrepared = false;
             _remoteCustomGameDataReady = false;
             _pendingRemoteCustomGameDataJson = null;
+            ResetClientLaunchSessionLocked();
         }
 
         private static void PrepareLobbyForNewNetworkSession(bool clearRemoteCoopState = false)
@@ -185,26 +185,6 @@ namespace DeadCellsMultiplayerMod
                     return left.IsHost ? -1 : 1;
                 return left.UserId.CompareTo(right.UserId);
             });
-        }
-
-        internal static bool IsLocalReadyForUi()
-        {
-            return _localReady;
-        }
-
-        internal static string BuildConnectionPlayerDisplayLine(string? name, bool isHost, bool isLocal, bool ready)
-        {
-            var safeName = string.IsNullOrWhiteSpace(name) ? "Guest" : name.Trim();
-            var tags = string.Empty;
-            if (isHost)
-                tags += "(Host)";
-            if (isLocal)
-                tags += "(you)";
-
-            var readyLabel = ready ? "Ready" : "Not ready";
-            return string.Create(
-                CultureInfo.InvariantCulture,
-                $"{safeName}{tags} - {readyLabel}");
         }
 
         private static string GetReadyButtonLabel()

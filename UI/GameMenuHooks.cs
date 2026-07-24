@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using dc.pr;
 using Hashlink.Virtuals;
 using HaxeProxy.Runtime;
@@ -37,7 +37,6 @@ namespace DeadCellsMultiplayerMod
                 Hook_TitleScreen.addMenu += AddMenuHook;
                 _addMenuHookRegistered = true;
             }
-            MainThreadDispatcher.SetMainMenuReady();
             TryDisconnectWhenReturningToMainMenu();
             StoreTitleScreen(self);
             _mainMenuButtonAdded = false;
@@ -58,9 +57,6 @@ namespace DeadCellsMultiplayerMod
             _inHostStatusMenu = false;
             _inClientWaitingMenu = false;
             _menuSelection = NetRole.None;
-            _waitingForHost = false;
-            _clientConnecting = false;
-            _clientConnectAttempt = 0;
             ConnectionUI.set_visible = false;
         }
 
@@ -153,8 +149,8 @@ namespace DeadCellsMultiplayerMod
             var text = label.Trim();
             if (text.IndexOf("quit", StringComparison.OrdinalIgnoreCase) >= 0) return true;
             if (text.IndexOf("exit", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (text.IndexOf("выйт", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (text.IndexOf("выход", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (text.IndexOf("РІС‹Р№С‚", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (text.IndexOf("РІС‹С…РѕРґ", StringComparison.OrdinalIgnoreCase) >= 0) return true;
             try
             {
                 var localizedQuit = GetText.Instance.GetString("Quitter le jeu");

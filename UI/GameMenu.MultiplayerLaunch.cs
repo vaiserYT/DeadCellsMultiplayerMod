@@ -504,7 +504,7 @@ namespace DeadCellsMultiplayerMod
                     lock (Sync)
                     {
                         _remoteCustomGameDataReady = true;
-                        _pendingAutoStart = true;
+                        SignalClientLaunchProgressLocked();
                     }
 
                     _log?.Information("[NetMod] Client applied host customGameData ({Length} chars)", pending.Length);
