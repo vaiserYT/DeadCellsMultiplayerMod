@@ -22,6 +22,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (!IsIncomingMobIdentityReady())
                 return;
 
+            // Bind NetIds from the host spawn table before applying state/move/die packets.
+            ConsumeIncomingMobRegistry(net);
             ConsumeIncomingHostMobStates(net);
             ConsumeIncomingHostMobMoves(net);
             ConsumeIncomingHostMobAttacks(net);

@@ -705,7 +705,11 @@ public sealed partial class NetNode
         if (states == null || states.Count == 0)
             return;
 
-        if (MobWireBinary.UseBinaryWire && MobWireBinary.TryBuildMobStatesBinary(states, out var bin) && bin != null)
+        // Prefer binary MOBSTATE2; text MOBSTATE only when disabled via DCCM_MOB_WIRE_TEXT=1
+        // or when binary encoding fails.
+        if (MobWireBinary.UseBinaryWire &&
+            MobWireBinary.TryBuildMobStatesBinary(states, out var bin) &&
+            bin != null)
         {
             var line = "MOBSTATE2|" + Convert.ToBase64String(bin) + "\n";
             _ = SendLineSafe(line);
@@ -795,6 +799,22 @@ public sealed partial class NetNode
             return;
 
         var line = MobWireCodec.BuildMobDieLine(new MobDie(ID, mobIndex, x, y, generation, type));
+        _ = SendLineSafe(line);
+    }
+
+    /// <summary>
+    /// Host spawn table: NetId + type + spawn position so clients bind without using native/list ids.
+    /// </summary>
+    public void SendMobRegistry(int generation, IReadOnlyList<MobRegistryEntry> entries)
+    {
+        if (_role != NetRole.Host)
+            return;
+        if (!HasAnyConnection())
+            return;
+        if (entries == null || entries.Count == 0)
+            return;
+
+        var line = MobWireCodec.BuildMobRegistryLine(generation, entries);
         _ = SendLineSafe(line);
     }
 

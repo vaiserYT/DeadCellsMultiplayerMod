@@ -28,10 +28,6 @@ namespace DeadCellsMultiplayerMod
     {
         static Serilog.ILogger? _log;
         static public int Seed;
-        private static readonly bool EnableStoryManagerSync = false;
-
-        // When false, host does not send PROGRESS (packed user) to clients.
-        private static readonly bool EnableSendHostUserProgress = false;
 
         static public virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ _isTwitch = default!;
         static public bool _isCustom;
@@ -88,14 +84,6 @@ namespace DeadCellsMultiplayerMod
         private static readonly HashSet<string> _origVisitedLoreRoomsSnapshot = new(StringComparer.Ordinal);
         private static readonly List<int> _origPlannedLoresSnapshot = new();
         private static int _origStoryDataVersion;
-        private static bool _sessionStoryCaptured;
-        private static bool _sessionStoryWasNull;
-        private static readonly Dictionary<string, int> _sessionCountersSnapshot = new(StringComparer.Ordinal);
-        private static readonly Dictionary<int, int> _sessionNpcProgressSnapshot = new();
-        private static readonly Dictionary<string, int> _sessionLoreRoomRunIdsSnapshot = new(StringComparer.Ordinal);
-        private static readonly HashSet<string> _sessionVisitedLoreRoomsSnapshot = new(StringComparer.Ordinal);
-        private static readonly List<int> _sessionPlannedLoresSnapshot = new();
-        private static int _sessionStoryDataVersion;
         private static bool _origItemMetaCaptured;
         private static ItemMetaManager? _origItemMeta;
         private static ArrayObj? _origItemProgress;
@@ -639,44 +627,14 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        /// <summary>Story manager session capture is disabled; kept as a no-op API for call sites.</summary>
         public static void CaptureSessionStory(User user)
         {
-            if (!EnableStoryManagerSync || user == null)
-                return;
-
-            _sessionStoryCaptured = true;
-            CaptureStorySnapshot(
-                user,
-                _sessionCountersSnapshot,
-                _sessionNpcProgressSnapshot,
-                _sessionLoreRoomRunIdsSnapshot,
-                _sessionVisitedLoreRoomsSnapshot,
-                _sessionPlannedLoresSnapshot,
-                out _sessionStoryWasNull,
-                out _sessionStoryDataVersion);
         }
 
+        /// <summary>Story manager session restore is disabled; kept as a no-op API for call sites.</summary>
         public static void RestoreSessionStory(User user)
         {
-            if (!EnableStoryManagerSync || !_sessionStoryCaptured || user == null)
-                return;
-
-            if (_sessionStoryWasNull && _sessionCountersSnapshot.Count == 0 && _sessionNpcProgressSnapshot.Count == 0 && _sessionStoryDataVersion == 0)
-            {
-                ClearUserStoryState(user);
-                ClearSessionStory();
-                return;
-            }
-
-            ApplyStoryState(
-                user,
-                _sessionCountersSnapshot,
-                _sessionNpcProgressSnapshot,
-                _sessionStoryDataVersion,
-                _sessionLoreRoomRunIdsSnapshot,
-                _sessionVisitedLoreRoomsSnapshot,
-                _sessionPlannedLoresSnapshot);
-            ClearSessionStory();
         }
 
         public static void RestoreRemoteUserData(User user)
@@ -1610,14 +1568,7 @@ namespace DeadCellsMultiplayerMod
 
         private static void ClearSessionStory()
         {
-            _sessionStoryCaptured = false;
-            _sessionStoryWasNull = false;
-            _sessionCountersSnapshot.Clear();
-            _sessionNpcProgressSnapshot.Clear();
-            _sessionLoreRoomRunIdsSnapshot.Clear();
-            _sessionVisitedLoreRoomsSnapshot.Clear();
-            _sessionPlannedLoresSnapshot.Clear();
-            _sessionStoryDataVersion = 0;
+            // Session story sync is retired; method kept for call sites that still clear on reset.
         }
 
         private static void RestoreOriginalStory(User user, bool preserveLocalProgress)

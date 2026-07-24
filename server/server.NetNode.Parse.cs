@@ -229,6 +229,55 @@ public sealed partial class NetNode
                               string.Equals(parts[1], "true", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// MOBREG payload: generation|netId,escapedType,x,y;...
+    /// </summary>
+    private static bool TryParseMobRegistryPayload(string payload, out List<MobRegistryEntry> entries)
+    {
+        entries = new List<MobRegistryEntry>();
+        if (string.IsNullOrWhiteSpace(payload))
+            return false;
+
+        var genSep = payload.IndexOf('|');
+        if (genSep <= 0)
+            return false;
+
+        if (!int.TryParse(payload.AsSpan(0, genSep), NumberStyles.Integer, CultureInfo.InvariantCulture, out var generation))
+            return false;
+
+        var table = payload[(genSep + 1)..];
+        if (string.IsNullOrWhiteSpace(table))
+            return true;
+
+        var chunks = table.Split(';', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < chunks.Length; i++)
+        {
+            var parts = chunks[i].Split(',');
+            if (parts.Length < 4)
+                continue;
+            if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var netId))
+                continue;
+            if (!double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var x))
+                continue;
+            if (!double.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+                continue;
+
+            string type;
+            try
+            {
+                type = Uri.UnescapeDataString(parts[1] ?? string.Empty);
+            }
+            catch
+            {
+                type = parts[1] ?? string.Empty;
+            }
+
+            entries.Add(new MobRegistryEntry(netId, generation, type, x, y));
+        }
+
+        return true;
+    }
+
     private static List<MobStateSnapshot> ParseMobStatesPayload(string payload)
     {
         var states = new List<MobStateSnapshot>();

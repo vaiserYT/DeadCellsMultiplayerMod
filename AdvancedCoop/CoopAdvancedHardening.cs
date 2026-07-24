@@ -20,7 +20,8 @@ using Serilog;
 namespace DeadCellsMultiplayerMod.AdvancedCoop;
 
 /// <summary>
-/// Stability and progression layer built on top of the original multiplayer base.
+/// Lobby heartbeat and permanent unlock progression layer on top of the multiplayer base.
+/// This is not enemy/mob sync — combat entities are owned by <c>MobsSynchronization</c>.
 /// It deliberately avoids constructing fake heroes/items during HeroInit.
 /// </summary>
 public sealed class CoopAdvancedHardening :

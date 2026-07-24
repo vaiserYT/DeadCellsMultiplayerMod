@@ -188,6 +188,48 @@ internal static class MobWireCodec
         return sb.ToString();
     }
 
+    /// <summary>
+    /// MOBREG|&lt;generation&gt;|&lt;netId&gt;,&lt;escapedType&gt;,&lt;x&gt;,&lt;y&gt;;...
+    /// Type is Uri-escaped so commas/pipes in signatures cannot break the table.
+    /// </summary>
+    public static string BuildMobRegistryLine(int generation, IReadOnlyList<NetNode.MobRegistryEntry> entries)
+    {
+        var sb = MobLineBuilder.Value!;
+        sb.Clear();
+        sb.Append("MOBREG|");
+        AppendInvariant(sb, generation);
+        sb.Append('|');
+        if (entries != null)
+        {
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (i > 0)
+                    sb.Append(EntrySep);
+
+                var e = entries[i];
+                AppendInvariant(sb, e.NetId);
+                sb.Append(',');
+                string encodedType;
+                try
+                {
+                    encodedType = Uri.EscapeDataString(e.Type ?? string.Empty);
+                }
+                catch
+                {
+                    encodedType = e.Type ?? string.Empty;
+                }
+
+                sb.Append(encodedType);
+                sb.Append(',');
+                AppendInvariant(sb, e.X);
+                sb.Append(',');
+                AppendInvariant(sb, e.Y);
+            }
+        }
+        sb.Append('\n');
+        return sb.ToString();
+    }
+
     public static string BuildMobDieLine(NetNode.MobDie die)
     {
         var encodedType = string.IsNullOrWhiteSpace(die.Type)

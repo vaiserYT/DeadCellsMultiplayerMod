@@ -85,6 +85,7 @@ public class InteractionSync :
     private bool _applyingRemoteBreakableGroundEvents;
     private bool _applyingRemotePortalEvents;
     private bool _applyingRemoteElevatorEvents;
+    private bool _applyingRemoteElevatorStateEvents;
     /// <summary>Throttle elevator activation pulses — onStep can fire every frame while riding.</summary>
     private readonly Dictionary<Elevator, long> _elevatorLastInterSendTickMs = new();
     private readonly Dictionary<(PressurePlate Plate, int UserId), long> _pressurePlateLastAppliedSequence = new();
@@ -250,7 +251,7 @@ public class InteractionSync :
     private void Hook_Elevator_onStep(Hook_Elevator.orig_onStep orig, Elevator self)
     {
         orig(self);
-        if (_applyingRemoteElevatorEvents)
+        if (_applyingRemoteElevatorEvents || _applyingRemoteElevatorStateEvents)
             return;
         if (!IsNetReadyForSend(GameMenu.NetRef))
             return;
@@ -261,8 +262,18 @@ public class InteractionSync :
                 return;
             _elevatorLastInterSendTickMs[self] = now;
 
+            var net = GameMenu.NetRef!;
             var (x, y) = GetElevatorStableAnchor(self);
-            GameMenu.NetRef!.SendInterElevator(x, y);
+            net.SendInterElevator(x, y);
+
+            // Host publishes platform state so clients stay aligned while the car moves.
+            if (net.IsHost)
+            {
+                var (px, py) = GetEntityPixelPos(self);
+                var moving = false;
+                try { moving = System.Math.Abs(self.speed) > 0.01; } catch { }
+                net.SendInterElevatorState(net.id, x, y, now, px, py, moving, GetCurrentInteractionLevelId());
+            }
         }
         catch (Exception ex)
         {
@@ -533,10 +544,8 @@ public class InteractionSync :
         if (net.TryConsumeInterElevatorEvents(out var elevEvents))
             ApplyAndRelease(elevEvents, ApplyRemoteElevatorEvents);
 
-        // Legacy elevator mode deliberately ignores authoritative position snapshots. Consume and
-        // release any stale packet from a mismatched peer, but never move elevator/entity coordinates.
         if (net.TryConsumeInterElevatorStateEvents(out var elevatorStateEvents))
-            NetNode.ReleaseConsumedList(elevatorStateEvents);
+            ApplyAndRelease(elevatorStateEvents, ApplyRemoteElevatorStateEvents);
 
         if (net.TryConsumeInterPressurePlateEvents(out var plateEvents))
             ApplyAndRelease(plateEvents, ApplyRemotePressurePlateEvents);
@@ -998,6 +1007,62 @@ public class InteractionSync :
         finally
         {
             _applyingRemoteElevatorEvents = false;
+        }
+    }
+
+    private void ApplyRemoteElevatorStateEvents(List<InterElevatorStateEvent> events)
+    {
+        var level = ModEntry.me?._level;
+        if (level == null || events == null || events.Count == 0)
+            return;
+
+        _applyingRemoteElevatorStateEvents = true;
+        try
+        {
+            foreach (var ev in events)
+            {
+                var elevator = FindElevatorByPos(level, ev.AnchorX, ev.AnchorY);
+                if (elevator == null)
+                    continue;
+
+                try
+                {
+                    TryApplyElevatorRemoteState(elevator, ev);
+                }
+                catch (Exception ex)
+                {
+                    _log.Warning(
+                        ex,
+                        "[InteractionSync] Apply elevator state failed anchor=({X},{Y}) platform=({PX},{PY})",
+                        ev.AnchorX,
+                        ev.AnchorY,
+                        ev.PlatformX,
+                        ev.PlatformY);
+                }
+            }
+        }
+        finally
+        {
+            _applyingRemoteElevatorStateEvents = false;
+        }
+    }
+
+    private static void TryApplyElevatorRemoteState(Elevator elevator, InterElevatorStateEvent ev)
+    {
+        if (elevator == null)
+            return;
+
+        var tileX = ev.PlatformX / TileSizePx;
+        var tileY = ev.PlatformY / TileSizePx;
+        var cx = (int)System.Math.Floor(tileX);
+        var cy = (int)System.Math.Floor(tileY);
+        elevator.cx = cx;
+        elevator.cy = cy;
+        elevator.xr = tileX - cx;
+        elevator.yr = tileY - cy;
+        if (!ev.Moving)
+        {
+            try { elevator.speed = 0; } catch { }
         }
     }
 

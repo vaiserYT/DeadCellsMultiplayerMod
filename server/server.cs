@@ -389,6 +389,27 @@ public sealed partial class NetNode : IDisposable
     }
 
     /// <summary>
+    /// Host-authored spawn table entry. NetId is host-owned identity; Type+X+Y are bind hints for clients.
+    /// </summary>
+    public readonly struct MobRegistryEntry
+    {
+        public readonly int NetId;
+        public readonly int Generation;
+        public readonly string Type;
+        public readonly double X;
+        public readonly double Y;
+
+        public MobRegistryEntry(int netId, int generation, string type, double x, double y)
+        {
+            NetId = netId;
+            Generation = generation;
+            Type = type ?? string.Empty;
+            X = x;
+            Y = y;
+        }
+    }
+
+    /// <summary>
     /// Host-authoritative confirmation that the current boss encounter is over.  This is
     /// deliberately separate from MOBDIE: multipart and phase-replacing bosses can destroy one
     /// mob wrapper without completing the encounter.
@@ -648,6 +669,7 @@ public sealed partial class NetNode : IDisposable
     private List<BossVictoryState> _pendingBossVictories = new();
     private List<MobAttack> _pendingMobAttacks = new();
     private List<MobDraw> _pendingMobDraws = new();
+    private List<MobRegistryEntry> _pendingMobRegistry = new();
     private List<ExitReadyState> _pendingExitReadyStates = new();
     private List<PlayerDownState> _pendingPlayerDownStates = new();
     private List<PlayerReviveRequest> _pendingPlayerReviveRequests = new();

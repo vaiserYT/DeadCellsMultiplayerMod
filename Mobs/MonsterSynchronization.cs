@@ -576,9 +576,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var flushStart = RuntimeHitchWatch.Start();
                 FlushHostDirtyMobQueue(net);
                 ScanHostBossPartDespawns(net);
-                FlushHostBossReliableKeyframes(net);
-                FlushHostActiveReliableKeyframes(net);
-                FlushHostAuthoritativeFullResync(net);
+                FlushHostMobRegistry(net);
+                FlushHostPriorityResync(net);
                 FlushHostDeathTombstoneResends(net);
                 var flushMs = RuntimeHitchWatch.GetElapsedMilliseconds(flushStart);
                 if (flushMs >= RuntimeHitchWatch.MobSyncFlushSlowThresholdMs)
@@ -1257,11 +1256,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         RememberHostDeathTombstoneLocked(self, dieSyncId, dieX, dieY, identityToken);
                     }
 
-                    var update = new NetNode.MobEventUpdate(dieSyncId, dieX, dieY, 0, SingleEvent("die"), dieType, identityToken);
-                    MobSyncTrace.LogSendMobEvents(MobSyncNetRoleForTrace(dieNet), SingleUpdate(update));
-                    dieNet.SendMobEvents(SingleUpdate(update));
-                    // Redundant typed death packet: unlike the old untyped fallback, this can safely
-                    // recover a phase-rebuilt boss mapping if the MOBEVENT packet was missed.
+                    // Authoritative death: one reliable MOBDIE path (no dual MOBEVENT|die).
                     dieNet.SendMobDie(dieSyncId, dieX, dieY, identityToken, dieType);
                 }
             }

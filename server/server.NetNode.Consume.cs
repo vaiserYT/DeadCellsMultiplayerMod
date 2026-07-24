@@ -181,6 +181,7 @@ public sealed partial class NetNode
             _pendingBossVictories.Clear();
             _pendingMobAttacks.Clear();
             _pendingMobDraws.Clear();
+            _pendingMobRegistry.Clear();
         }
     }
 
@@ -264,6 +265,14 @@ public sealed partial class NetNode
         lock (_sync)
         {
             return TryConsumePendingListLocked(ref _pendingMobDraws, out draws);
+        }
+    }
+
+    public bool TryConsumeMobRegistry(out List<MobRegistryEntry> entries)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingMobRegistry, out entries);
         }
     }
 

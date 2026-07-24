@@ -870,6 +870,23 @@ public sealed partial class NetNode
             return true;
         }
 
+        if (line.StartsWith("MOBREG|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role == NetRole.Host)
+                return true;
+
+            var payload = line["MOBREG|".Length..];
+            if (TryParseMobRegistryPayload(payload, out var parsedRegistry) && parsedRegistry.Count > 0)
+            {
+                lock (_sync)
+                {
+                    AppendBoundedLocked(_pendingMobRegistry, parsedRegistry, PendingMobStateLimit);
+                    _hasRemote = true;
+                }
+            }
+            return true;
+        }
+
         if (line.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase))
         {
             if (_role != NetRole.Host)

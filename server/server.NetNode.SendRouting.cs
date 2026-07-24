@@ -85,7 +85,9 @@ public sealed partial class NetNode
         // subset of enemies even though ordinary movement packets continue to arrive.
         if (line.StartsWith("MOBEVENT|", StringComparison.OrdinalIgnoreCase) ||
             line.StartsWith("MOBSTATE|", StringComparison.OrdinalIgnoreCase) ||
-            line.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase))
+            line.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("MOBREG|", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("MOBDIE|", StringComparison.OrdinalIgnoreCase))
         {
             return EP2PSend.k_EP2PSendReliable;
         }
@@ -119,7 +121,7 @@ public sealed partial class NetNode
         return _stream != null && _client != null && _client.Connected;
     }
 
-    /// <summary>Sends a pre-encoded mob protocol line (used by MobSyncWorker). Line must start with MOB.</summary>
+    /// <summary>Sends a pre-encoded mob protocol line. Line must start with MOB.</summary>
     public Task SendMobWireLine(string line)
     {
         if (string.IsNullOrEmpty(line))

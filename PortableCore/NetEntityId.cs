@@ -1,8 +1,10 @@
 namespace DeadCellsMultiplayerMod.PortableCore;
 
 /// <summary>
-/// Stable identity assigned by the authority when an entity is spawned.
-/// Runtime object addresses, list indexes, names, and positions are not identities.
+/// Stable identity assigned by the host authority when an entity is spawned.
+/// Runtime object addresses, native game ids, list indexes, names, and positions are not identities.
+/// Wire traffic uses a compact int NetId + level generation; this struct is the conceptual form
+/// (generation + spawn sequence + archetype) used by host registry bookkeeping.
 /// </summary>
 internal readonly record struct NetEntityId(
     int LevelGeneration,

@@ -104,6 +104,7 @@ public sealed partial class NetNode
             _pendingBossVictories.Clear();
             _pendingMobAttacks.Clear();
             _pendingMobDraws.Clear();
+            _pendingMobRegistry.Clear();
             _pendingExitReadyStates.Clear();
             _pendingBossCineLevelIds.Clear();
             _pendingBossIntroEnds.Clear();
