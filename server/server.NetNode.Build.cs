@@ -8,6 +8,21 @@ public sealed partial class NetNode
         return $"{tag}|{id}|{payload}\n";
     }
 
+    private static string BuildReadyLine(int id, bool ready)
+    {
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"READY|{id}|{(ready ? 1 : 0)}\n");
+    }
+
+    private static string BuildCoopStateLine(int id, string? coopId, bool hasContinueSave)
+    {
+        var safeCoopId = SanitizeProtocolToken(coopId, 128);
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"COOPID|{id}|{safeCoopId}|{(hasContinueSave ? 1 : 0)}\n");
+    }
+
     private static string BuildAnimLine(int id, string animName, int? queue, bool? gFlag)
     {
         var queuePart = queue.HasValue ? queue.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
@@ -57,25 +72,15 @@ public sealed partial class NetNode
         return $"HP|{id}|{life}|{maxLife}|{lif}|{bonusLife}|{recover}\n";
     }
 
-    private static string BuildChatLine(int id, string message)
+    private static string SanitizeProtocolToken(string? value, int maxLength)
     {
-        var safe = SanitizeChatMessage(message);
-        return $"CHAT|{id}|{safe}\n";
-    }
-
-    private static string SanitizeChatMessage(string? message)
-    {
-        var safe = (message ?? string.Empty)
-            .Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal)
-            .Replace("|", "/", StringComparison.Ordinal)
+        var safe = (value ?? string.Empty)
+            .Replace("|", string.Empty, StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal)
             .Trim();
 
-        const int maxLength = 256;
-        if (safe.Length > maxLength)
-            safe = safe[..maxLength];
-
-        return safe;
+        return safe.Length > maxLength ? safe[..maxLength] : safe;
     }
 
     private bool TryBuildLocalHpLine(out string line)
@@ -136,13 +141,6 @@ public sealed partial class NetNode
         return string.Create(
             CultureInfo.InvariantCulture,
             $"PREVIVE|{request.ReviverId}|{request.TargetId}\n");
-    }
-
-    private static string BuildBossVictoryLine(BossVictoryState state)
-    {
-        return string.Create(
-            CultureInfo.InvariantCulture,
-            $"BOSSVICTORY|{state.Generation}|{state.EncounterId}\n");
     }
 
     private static string BuildPosLine(int id, double cx, double cy, int dir)

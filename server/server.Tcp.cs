@@ -133,6 +133,9 @@ public sealed partial class NetNode
                     string? cachedLevelDescPayload;
                     string? cachedLevelSeedPayload;
                     string? cachedLevelGraphPayload;
+                    string? cachedCustomGameDataPayload;
+                    string? cachedCoopId;
+                    bool cachedHasContinueSave;
                     double? cachedMobsHpMult;
                     double? cachedBossesHpMult;
                     lock (_hostCacheSync)
@@ -149,6 +152,9 @@ public sealed partial class NetNode
                         cachedLevelDescPayload = _cachedHostLevelDescPayload;
                         cachedLevelSeedPayload = _cachedHostLevelSeedPayload;
                         cachedLevelGraphPayload = _cachedHostLevelGraphPayload;
+                        cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
+                        cachedCoopId = _cachedHostCoopId;
+                        cachedHasContinueSave = _cachedHostHasContinueSave;
                         cachedMobsHpMult = _cachedHostMobsHpMult;
                         cachedBossesHpMult = _cachedHostBossesHpMult;
                     }
@@ -158,6 +164,12 @@ public sealed partial class NetNode
 
                     if (cachedBossRune.HasValue)
                         await SendLineToClientSafe(connection, $"BOSSRUNE|{cachedBossRune.Value}\n").ConfigureAwait(false);
+
+                    if (cachedCoopId != null)
+                        await SendLineToClientSafe(connection, BuildCoopStateLine(1, cachedCoopId, cachedHasContinueSave)).ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(cachedCustomGameDataPayload))
+                        await SendLineToClientSafe(connection, $"CGDATA|{cachedCustomGameDataPayload}\n").ConfigureAwait(false);
 
                     if (!string.IsNullOrWhiteSpace(cachedRunCommitPayload))
                         await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.CommitTag}|{cachedRunCommitPayload}\n").ConfigureAwait(false);
@@ -216,7 +228,7 @@ public sealed partial class NetNode
 
         try
         {
-            var readTask = ReadIncomingLinesLoop(stream, incomingLines.Writer, recvCt);
+            var readTask = ReadIncomingLinesLoop(stream, incomingLines.Writer, senderId, recvCt);
             var processTask = ProcessIncomingLinesLoop(incomingLines.Reader, senderId, sender, recvCts, recvCt);
             var handshakeTask = sender == null
                 ? Task.CompletedTask
@@ -243,7 +255,7 @@ public sealed partial class NetNode
         }
     }
 
-    private async Task ReadIncomingLinesLoop(NetworkStream stream, ChannelWriter<string> writer, CancellationToken ct)
+    private async Task ReadIncomingLinesLoop(NetworkStream stream, ChannelWriter<string> writer, int? senderId, CancellationToken ct)
     {
         var buf = new byte[4096];
         var sb = new StringBuilder();
@@ -263,6 +275,13 @@ public sealed partial class NetNode
                 while (TryReadBufferedLine(sb, out var line))
                 {
                     if (line.Length == 0)
+                        continue;
+
+                    // Resolve fast-path lines here rather than after the ordered channel. Mob
+                    // traffic needs no game thread, and a control line waiting on a full
+                    // main-thread queue would otherwise head-of-line block every movement
+                    // snapshot behind it — and then the socket read itself.
+                    if (TryHandleFastPathLine(line, senderId))
                         continue;
 
                     await writer.WriteAsync(line, ct).ConfigureAwait(false);
@@ -295,9 +314,6 @@ public sealed partial class NetNode
                 while (reader.TryRead(out var line))
                 {
                     var lineCopy = line;
-
-                    if (_role == NetRole.Client && TryHandleClientFastPathLine(lineCopy))
-                        continue;
 
                     await GameMenu.EnqueueNetworkMainThreadAsync(() =>
                     {
@@ -374,7 +390,6 @@ public sealed partial class NetNode
         {
             RemoveRemoteLocked(sender.AssignedId);
             _pendingAttacks.RemoveAll(a => a.Id == sender.AssignedId);
-            _pendingChatMessages.RemoveAll(m => m.Id == sender.AssignedId);
             _pendingMobHits.RemoveAll(h => h.UserId == sender.AssignedId);
             _pendingMobDies.RemoveAll(d => d.UserId == sender.AssignedId);
             _pendingExitReadyStates.RemoveAll(s => s.UserId == sender.AssignedId);
@@ -421,6 +436,8 @@ public sealed partial class NetNode
                 continue;
             var line = BuildTaggedLine("USER", state.Id, username);
             await SendLineToClientSafe(connection, line).ConfigureAwait(false);
+            await SendLineToClientSafe(connection, BuildReadyLine(state.Id, state.Ready)).ConfigureAwait(false);
+            await SendLineToClientSafe(connection, BuildCoopStateLine(state.Id, state.CoopId, state.HasContinueSave)).ConfigureAwait(false);
         }
     }
 }

@@ -12,7 +12,7 @@ internal sealed class CoopSessionStateMachine
             [CoopSessionPhase.Disconnected] = [CoopSessionPhase.Lobby],
             [CoopSessionPhase.Lobby] = [CoopSessionPhase.LaunchCommitted, CoopSessionPhase.Disconnected, CoopSessionPhase.Faulted],
             [CoopSessionPhase.LaunchCommitted] = [CoopSessionPhase.LoadingLevel, CoopSessionPhase.Lobby, CoopSessionPhase.Faulted],
-            [CoopSessionPhase.LoadingLevel] = [CoopSessionPhase.Playing, CoopSessionPhase.Lobby, CoopSessionPhase.Faulted, CoopSessionPhase.Disconnected],
+            [CoopSessionPhase.LoadingLevel] = [CoopSessionPhase.Playing, CoopSessionPhase.TransitionCommitted, CoopSessionPhase.Lobby, CoopSessionPhase.Faulted, CoopSessionPhase.Disconnected],
             [CoopSessionPhase.Playing] = [CoopSessionPhase.TransitionCommitted, CoopSessionPhase.RunEnded, CoopSessionPhase.Faulted, CoopSessionPhase.Disconnected],
             [CoopSessionPhase.TransitionCommitted] = [CoopSessionPhase.LoadingLevel, CoopSessionPhase.Lobby, CoopSessionPhase.RunEnded, CoopSessionPhase.Faulted],
             [CoopSessionPhase.RunEnded] = [CoopSessionPhase.Lobby, CoopSessionPhase.Disconnected],

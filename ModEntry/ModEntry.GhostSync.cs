@@ -342,13 +342,21 @@ namespace DeadCellsMultiplayerMod
         double last_x, last_y;
         int lastDir;
 
+        private void ResetLocalHeroPositionSendCache()
+        {
+            last_x = 0;
+            last_y = 0;
+            lastDir = 0;
+        }
+
         private void SendHeroCoords()
         {
             if (_netRole == NetRole.None) return;
             if (_net == null || me == null) return;
             int dir = me.dir;
-            if (me.spr.x == last_x && me.spr.y == last_y && lastDir == dir) return;
 
+            // Always send X/Y/dir. Skipping unchanged frames let peer GhostKing physics drift
+            // the remote Y while the local player stood still (no correction packets).
             _net.TickSend(me.spr.x, me.spr.y, dir);
             last_x = me.spr.x;
             last_y = me.spr.y;
@@ -585,13 +593,14 @@ namespace DeadCellsMultiplayerMod
                             wasUsingDownedOffset ? "snapshot-transition" : "snapshot-grace");
                     }
 
-                    if (rLastX[index] != drawX || rLastY[index] != drawY)
-                    {
-                        client.setPosPixel(drawX, drawY);
-                        rLastX[index] = drawX;
-                        rLastY[index] = drawY;
+                    // Always re-apply remote Y (and X). GhostKing physics can drift between
+                    // snapshots; skipping unchanged coords left peers floating/sinking.
+                    var posChanged = rLastX[index] != drawX || rLastY[index] != drawY;
+                    client.setPosPixel(drawX, drawY);
+                    rLastX[index] = drawX;
+                    rLastY[index] = drawY;
+                    if (posChanged)
                         headDirty = true;
-                    }
 
                     if (clientLastDirs[index] != remote.Dir)
                     {
@@ -690,8 +699,6 @@ namespace DeadCellsMultiplayerMod
                 return true;
 
             // After revive, allow a short marker-settle window and force the existing shell visible.
-            // Without this, the stale environmental-death marker can immediately dispose the player
-            // again until a sublevel transition rebuilds all remote entities.
             if (IsRemoteReviveVisibilityGraceActive(remote.Id))
                 return true;
 
@@ -702,27 +709,9 @@ namespace DeadCellsMultiplayerMod
                 return false;
             }
 
-            if (!remote.HasRoom ||
-                !remote.RoomId.HasValue ||
-                remote.RoomId.Value < 0 ||
-                string.IsNullOrWhiteSpace(remote.RoomLevelId))
-            {
-                return true;
-            }
-
-            if (!TryGetCurrentVisibilityContext(out var localContextLevelId, out var localBranchToken))
-            {
-                localContextLevelId = localLevelId;
-                localBranchToken = _localLastDoorMarkerToken >= 0 ? _localLastDoorMarkerToken : 0;
-            }
-
-            var remoteContextLevelId = remote.RoomLevelId.Trim();
-            if (!string.Equals(remoteContextLevelId, localContextLevelId, StringComparison.Ordinal))
-                return false;
-
-            if (remote.RoomId.Value != localBranchToken)
-                return false;
-
+            // Room marker replication is noisy around Continue/LoadSave and level bootstrap and can
+            // briefly diverge even when both players share the same map. Prefer level-only
+            // visibility so a fresh GhostKing can spawn after continue instead of being disposed.
             return true;
         }
 
@@ -806,8 +795,27 @@ namespace DeadCellsMultiplayerMod
             if (_ghost == null || me == null || me._level == null)
                 return null;
 
-            var created = _ghost.CreateGhostKing(me._level);
+            GhostKing created;
+            try
+            {
+                created = _ghost.CreateGhostKing(me._level);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning(
+                    "[NetMod] Failed to create remote GhostKing slot={Slot} remoteId={RemoteId}: {Message}",
+                    slot,
+                    clientIds[slot],
+                    ex.Message);
+                return null;
+            }
+
             clients[slot] = created;
+            Logger.Information(
+                "[NetMod] Created remote GhostKing slot={Slot} remoteId={RemoteId} level={LevelId}",
+                slot,
+                clientIds[slot],
+                me._level.map?.id?.ToString() ?? "?");
 
             var knownSkin = clientSkins[slot];
             if (!string.IsNullOrWhiteSpace(knownSkin))
@@ -953,6 +961,76 @@ namespace DeadCellsMultiplayerMod
 
             clientIds[slot] = 0;
             clientLabels[slot] = null;
+        }
+
+        /// <summary>
+        /// GhostHero.PurgeGhostKingsFromCurrentGame destroys GhostKing runtime entities before
+        /// Dead Cells serializes a save. The purge happens outside the normal slot disposer, so
+        /// the clients[] array can otherwise keep pointing at the destroyed GhostKing forever.
+        /// That stale non-null slot prevents EnsureClientKingSlot from creating a replacement
+        /// after save-triggering sublevel transitions such as the Giant door.
+        ///
+        /// Clear only runtime/render references here. Network identity, labels and cosmetics are
+        /// deliberately retained so the next cached remote snapshot can rebuild the visual shell
+        /// without treating the peer as a new player.
+        /// </summary>
+        internal void InvalidateRemoteKingRuntimeSlotsAfterSavePurge(string reason)
+        {
+            var invalidated = 0;
+
+            for (var slot = 0; slot < clients.Length; slot++)
+            {
+                var client = clients[slot];
+                var head = clientHeads[slot];
+                if (client == null && head == null)
+                    continue;
+
+                _pendingClientDisposeTicks.Remove(slot);
+
+                // The GhostKing itself was already destroyed by the save purge. Avoid calling its
+                // disposal path a second time. The head is a separate runtime process, so retire it
+                // defensively before dropping our reference.
+                clientHeads[slot] = null;
+                if (head != null)
+                {
+                    try
+                    {
+                        if (!TryDisposeRuntimeProcessImmediately(head))
+                            head.dispose();
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                clients[slot] = null!;
+                pendingClientHeadRecreate[slot] = false;
+                ResetGhostHeadRuntimeState(slot);
+
+                clientLastBodyAnims[slot] = null;
+                clientLastBodyAnimQueues[slot] = null;
+                clientLastBodyAnimGs[slot] = null;
+                clientLastHeadAnims[slot] = null;
+                clientLastDirs[slot] = 0;
+                clientLastDownedOffsets[slot] = false;
+                rLastX[slot] = 0;
+                rLastY[slot] = 0;
+                invalidated++;
+            }
+
+            if (invalidated <= 0)
+                return;
+
+            Logger.Information(
+                "[NetMod][GhostRender] invalidated {Count} purged remote runtime slot(s) reason={Reason}; identity retained for snapshot rebuild",
+                invalidated,
+                reason);
+
+            // Do not create a GhostKing synchronously inside Save.save. The native serializer and,
+            // for Giant-door/return-teleporter paths, the sublevel render guard may still own the
+            // display tree. Queue a rebuild; ReceiveGhostCoords also runs from normal hero updates,
+            // so a transition guard that temporarily rejects this queued attempt still recovers.
+            GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
         }
 
         private void DisposeClientSlot(int slot, bool clearIdentity)
@@ -1122,9 +1200,19 @@ namespace DeadCellsMultiplayerMod
                     var client = clients[index];
                     if (client?.kingWeaponsManager == null) continue;
                     if (attack.Action == RemoteAttackAction.Interrupt)
+                    {
                         client.kingWeaponsManager.queueInterrupt(attack.Slot);
+                    }
                     else
+                    {
                         client.kingWeaponsManager.queueAttack(attack.Slot);
+                    }
+
+                    // Remote ATK changes GhostKing.spr outside the ANIM path. Drop the body-anim
+                    // cache so a standing re-idle is not treated as a no-op.
+                    clientLastBodyAnims[index] = null;
+                    clientLastBodyAnimQueues[index] = null;
+                    clientLastBodyAnimGs[index] = null;
 
                     queuedAttacks++;
                     LogGhostRuntimeStepIfSlow(
@@ -1511,6 +1599,69 @@ namespace DeadCellsMultiplayerMod
             {
                 // Cosmetic ghost cleanup must never affect the run.
             }
+        }
+
+        private void DisposeCoopGhostRuntime()
+        {
+            try
+            {
+                ResetFakeDeathState(unlockLocalHero: false, sendNetworkUpState: false);
+            }
+            catch
+            {
+            }
+
+            for (int i = 0; i < clients.Length; i++)
+            {
+                try
+                {
+                    DisposeClientSlot(i, clearIdentity: true);
+                }
+                catch
+                {
+                }
+            }
+
+            var ghost = _ghost;
+            _ghost = null!;
+            _ghostOwnerHero = null;
+            _ghostOwnerGame = null;
+            _ghostBootstrapNet = null;
+            _ = ghost;
+        }
+
+        internal void DisposeCoopGhostRuntimeForWorldTeardown(dc.pr.Game? disposingGame = null)
+        {
+            _ = disposingGame;
+            DisposeCoopGhostRuntime();
+        }
+
+        internal void HandleNetworkDisconnectGhostCleanup(NetRole role)
+        {
+            if (role == NetRole.Host)
+            {
+                var activeRemoteIds = new HashSet<int>();
+                try { _net?.CopyRemoteUserIdsTo(activeRemoteIds, includePrimary: true); } catch { }
+
+                for (int i = 0; i < clientIds.Length; i++)
+                {
+                    var remoteId = clientIds[i];
+                    if (remoteId <= 0 || activeRemoteIds.Contains(remoteId))
+                        continue;
+
+                    try
+                    {
+                        DisposeClientSlot(i, clearIdentity: true);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                return;
+            }
+
+            DisposeCoopGhostRuntime();
         }
 
         private static void ApplyRemoteWeaponAmmo(InventItem item, int? ammo)

@@ -53,10 +53,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                   System.Math.Abs(target.Dy) > ClientJumpVelocityEpsilon));
             var preserveLocalMotion = HasLocalQueuedOrChargingSkill(self) || networkAttackActive;
 
-            // Network attacks normally keep their local vanilla motion. Jump/leap attacks are the one
-            // exception: they still need bounded host phase alignment or the client can land on a
-            // different platform and remain permanently offset.
-            if (!preserveLocalMotion || forcePositionSnap || jumpLikeMotion)
+            // The host position remains authoritative even while a native attack animation/action is
+            // running on the replica. Previously those attack windows skipped position convergence,
+            // so charges/elite skills could run locally for seconds and permanently diverge online.
+            // Keep the native action for visuals, but continuously and safely converge it to the host.
             {
                 var currentX = GetWorldX(self);
                 var currentY = GetWorldY(self);
@@ -112,6 +112,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     (forceVerticalPositionSnap || recoverGroundedMobFromBelowFloor);
 
                 var syncY = !hasGravity ||
+                            jumpLikeMotion ||
                             IsClientVerticalSyncEnabled() ||
                             safeGroundedLanding;
                 var hardSnapY = (!hasGravity && hardSnapX) || safeGroundedLanding;
@@ -148,7 +149,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                             var maxStep = System.Math.Clamp(
                                 ClientGroundedBaseCorrectionPxPerFrame + System.Math.Abs(velocityXPx) * 0.35,
                                 ClientGroundedBaseCorrectionPxPerFrame,
-                                jumpLikeMotion
+                                jumpLikeMotion || preserveLocalMotion
                                     ? ClientGroundedLargeDriftCorrectionPxPerFrame
                                     : ClientGroundedMaxCorrectionPxPerFrame);
                             desiredStep = absDeltaX < 0.20
@@ -204,20 +205,16 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 }
                 else
                 {
-                    try
-                    {
-                        self.dx = 0;
-                        self.bdx = 0;
-                        if (syncY)
-                        {
-                            self.dy = 0;
-                            self.bdy = 0;
-                            self.fallStartY = lerpedY;
-                        }
-                    }
-                    catch
-                    {
-                    }
+                    ApplyClientReplicaVelocityHints(
+                        self,
+                        target,
+                        hasGravity,
+                        syncY,
+                        preserveLocalMotion,
+                        safeGroundedLanding,
+                        deltaX,
+                        deltaY,
+                        lerpedY);
                 }
             }
 
@@ -378,6 +375,66 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var responsiveDir = ComputeResponsiveFacingDir(boss, target);
             if (responsiveDir != 0)
                 boss.dir = responsiveDir;
+        }
+
+        private static void ApplyClientReplicaVelocityHints(
+            Mob mob,
+            ClientMobState target,
+            bool hasGravity,
+            bool syncY,
+            bool preserveLocalMotion,
+            bool safeGroundedLanding,
+            double deltaX,
+            double deltaY,
+            double appliedY)
+        {
+            if (mob == null)
+                return;
+
+            try
+            {
+                var hostDx = double.IsFinite(target.Dx)
+                    ? System.Math.Clamp(target.Dx, -ClientReplicaVelocityMaxRawMagnitude, ClientReplicaVelocityMaxRawMagnitude)
+                    : 0.0;
+                var localDx = mob.dx + mob.bdx;
+
+                // During a host-selected native action, keep small local phase differences so the
+                // animation/skill can finish naturally. Correct meaningful divergence immediately.
+                if (!preserveLocalMotion ||
+                    System.Math.Abs(deltaX) >= ClientGroundedMaxCorrectionPxPerFrame ||
+                    System.Math.Abs(localDx - hostDx) > 0.50)
+                {
+                    mob.dx = hostDx;
+                    mob.bdx = 0;
+                }
+
+                if (!hasGravity && syncY)
+                {
+                    var hostDy = double.IsFinite(target.Dy)
+                        ? System.Math.Clamp(target.Dy, -ClientReplicaVelocityMaxRawMagnitude, ClientReplicaVelocityMaxRawMagnitude)
+                        : 0.0;
+                    var localDy = mob.dy + mob.bdy;
+                    if (!preserveLocalMotion ||
+                        System.Math.Abs(deltaY) >= ClientGroundedMaxCorrectionPxPerFrame ||
+                        System.Math.Abs(localDy - hostDy) > 0.50)
+                    {
+                        mob.dy = hostDy;
+                        mob.bdy = 0;
+                    }
+                }
+                else if (safeGroundedLanding)
+                {
+                    // Teleport/fall recovery starts just above the authoritative floor and lets
+                    // vanilla collision perform the final landing instead of forcing Y every frame.
+                    mob.dy = 0;
+                    mob.bdy = 0;
+                    mob.fallStartY = appliedY;
+                }
+            }
+            catch
+            {
+                // Position convergence above is sufficient if optional velocity fields differ in a proxy build.
+            }
         }
 
         private static void TryAlignClientJumpMotion(

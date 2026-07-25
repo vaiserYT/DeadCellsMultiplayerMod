@@ -1,14 +1,12 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Threading;
 using dc.pr;
 using dc.ui;
 using HaxeProxy.Runtime;
 using Newtonsoft.Json;
 using ModCore.Utilities;
 using Microsoft.Win32;
-using DeadCellsMultiplayerMod.UI;
 using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 using DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI;
 using ModCore.Modules;
@@ -17,8 +15,6 @@ namespace DeadCellsMultiplayerMod
 {
     internal static partial class GameMenu
     {
-        private static bool _protocolMismatchPending;
-
         private static void ForceExitToMainMenu()
         {
             try
@@ -61,10 +57,143 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        private static void ShowHostStatusMenu(TitleScreen screen)
+        {
+            if (_menuRebuildDepth > 0)
+                return;
+            _menuRebuildDepth++;
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
+            try
+            {
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+
+                var multiplayerSaveLabel = GetMultiplayerSaveButtonLabel();
+                var continueLabel = GetContinueButtonLabel(screen);
+                var startLabel = GetStartNormalModeButtonLabel();
+                var canLaunch = AllPlayersReady();
+                var continueCompatible = IsHostContinueCompatible(out var continueBlockReason);
+                var canContinue = canLaunch && continueCompatible;
+                var disabledContinueReason = canLaunch ? continueBlockReason : "Not all players ready";
+                AddMenuButton(screen, continueLabel, () => ContinueHostRun(screen), canContinue ? Localize("Continue the selected multiplayer save") : Localize(disabledContinueReason), canContinue);
+                AddMenuButton(screen, startLabel, () => StartHostRunNormalMode(screen), GetText.Instance.GetString("Launch game"), canLaunch);
+                AddMenuButton(screen, "Custom Mode", () => OpenHostCustomMode(screen), Localize("Configure and launch multiplayer custom mode"), canLaunch);
+                AddMenuButton(screen, GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
+                AddMenuButton(screen, multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
+                AddMenuButton(screen, GetText.Instance.GetString("Back"), () =>
+                {
+                    StopNetworkFromMenu();
+                    SetRole(NetRole.None);
+                    _menuSelection = NetRole.None;
+                    ShowMultiplayerMenu(screen);
+                    screen.ShouldAutoHideConnectionUI(false);
+                }, GetText.Instance.GetString("Back to host setup"));
+
+                RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
+                RemoveDuplicatesKeepFirst(screen, continueLabel, startLabel, "Custom Mode", GetReadyButtonLabel(), multiplayerSaveLabel, GetText.Instance.GetString("Back"));
+                _inHostStatusMenu = true;
+                _inClientWaitingMenu = false;
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to open host status menu: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
+                _menuRebuildDepth--;
+            }
+        }
+
+        private static void ShowClientWaitingMenu(TitleScreen screen)
+        {
+            if (_menuRebuildDepth > 0)
+                return;
+            _menuRebuildDepth++;
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
+            try
+            {
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+
+                AddInfoLine(screen, $"Selected mode: {GetPendingLaunchSummaryLabel(screen)}", infoColor: 0xE0E0E0);
+                AddMenuButton(screen, GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
+                var multiplayerSaveLabel = GetMultiplayerSaveButtonLabel();
+                AddMenuButton(screen, multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
+                AddMenuButton(
+                    screen,
+                    GetText.Instance.GetString("Disconnect"),
+                    () => {DisconnectFromMenu(screen); screen.ShouldAutoHideConnectionUI(false);},
+                    GetText.Instance.GetString("Disconnect and return to main menu"));
+
+                RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
+                RemoveDuplicatesKeepFirst(screen, GetReadyButtonLabel(), multiplayerSaveLabel, GetText.Instance.GetString("Disconnect"));
+                _inClientWaitingMenu = true;
+                _inHostStatusMenu = false;
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to open client waiting menu: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
+                _menuRebuildDepth--;
+            }
+        }
+
+        private static void ShowLobbyNotFoundPopup(TitleScreen screen)
+        {
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
+            try
+            {
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+
+                AddInfoLine(screen, GetText.Instance.GetString("Can't find lobby"), infoColor: 0xFF9090);
+                AddMenuButton(
+                    screen,
+                    GetText.Instance.GetString("OK"),
+                    () => ShowConnectionMenu(screen, NetRole.Client),
+                    GetText.Instance.GetString("Return to join menu"));
+
+                RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
+                RemoveDuplicatesKeepFirst(screen, GetText.Instance.GetString("OK"));
+                _inClientWaitingMenu = false;
+                _inHostStatusMenu = false;
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to open lobby not found popup: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
+            }
+        }
+
+        private static void DisconnectFromMenu(TitleScreen screen)
+        {
+            StopNetworkFromMenu();
+            ResetClientConnectState();
+            _menuSelection = NetRole.None;
+            ResetSteamState();
+            _inHostStatusMenu = false;
+            _inClientWaitingMenu = false;
+            screen.mainMenu();
+        }
+
         private static void StopNetworkFromMenu()
         {
-            _steamJoinLobbyResolvePending = false;
-            Interlocked.Increment(ref _steamJoinResolveGeneration);
             ResetHostDisconnectCountdown();
             try
             {
@@ -73,180 +202,137 @@ namespace DeadCellsMultiplayerMod
             catch { }
             lock (Sync)
             {
-                _inActualRun = false;
-                _remoteSeed = null;
-                _remoteSeedSequence = 0;
-                _consumedRemoteSeedSequence = 0;
-                _remoteLaunchKind = string.Empty;
-                _seedArrived = false;
-                ClearStructuredLaunchFlagsLocked();
-                ClearPrecommittedHostRunSeedLocked();
-                Monitor.PulseAll(Sync);
+                ResetLobbyLaunchStateLocked();
+                ResetRemoteCoopStateLocked();
             }
+            ResetLobbyReadyState();
             ResetSteamState();
+        }
+
+        private static void EditUsername(TitleScreen screen)
+        {
+            OpenTextInput(screen, GetText.Instance.GetString("Username"), _username, value =>
+            {
+                var cleaned = CleanUsername(value);
+                _username = cleaned;
+                SaveConfig();
+                SendUsernameToRemote();
+                ShowConnectionMenu(screen, _menuSelection == NetRole.None ? NetRole.Host : _menuSelection);
+            }, noSpaces: true);
         }
 
         public static void NotifyRemoteConnected(NetRole role)
         {
             ResetHostDisconnectCountdown();
-            RunLaunchCoordinator.OnRemoteConnected(role);
             SendUsernameToRemote();
+            SendLocalReadyState();
+            SendCoopStateToRemote();
 
             if (role == NetRole.Host)
             {
-                _waitingForHost = false;
                 SendCachedDataToRemote();
-                SendCachedGeneratePayload();
+                lock (Sync)
+                {
+                    if (_inActualRun)
+                        SendCachedGeneratePayload();
+                }
                 ConnectionUI.NotifyConnectionsChanged();
+
+                if (_menuSelection == NetRole.Host)
+                {
+                    var ts = GetTitleScreen();
+                    if (ts != null) ShowHostStatusMenu(ts);
+                }
             }
             else if (role == NetRole.Client)
             {
-                _waitingForHost = false;
-                _clientConnecting = false;
-                _clientConnectAttempt = 0;
                 ConnectionUI.NotifyConnectionsChanged();
+                if (_menuSelection == NetRole.Client)
+                {
+                    var ts = GetTitleScreen();
+                    if (ts != null) ShowClientWaitingMenu(ts);
+                }
             }
+
+            RequestLobbyMenuRefresh();
         }
 
         internal static void NotifyClientConnectAttempt(int attempt)
         {
-            lock (Sync)
+            if (_menuSelection == NetRole.Client)
             {
-                _protocolMismatchPending = false;
-                _clientConnectAttempt = attempt;
-                _clientConnecting = true;
-                _waitingForHost = true;
+                var ts = GetTitleScreen();
+                if (ts != null) ShowClientWaitingMenu(ts);
             }
-
-            ConnectionUI.NotifyConnectionsChanged();
         }
 
         internal static void NotifyClientConnectFailed()
         {
             StopNetworkFromMenu();
             ResetClientConnectState();
-            _waitingForHost = false;
             _menuSelection = NetRole.Client;
 
-            EnqueueMainThread(() =>
-            {
-                var screen = GetTitleScreen();
-                if (screen != null)
-                {
-                    screen.clearMenu();
-                    AddInfoLine(screen, Localize("Can't find lobby"), 0xFF9090);
-                    AddInfoLine(screen, Localize("Check the address or Steam lobby code."), 0xE0E0E0);
-                    AddMenuButton(screen, GetText.Instance.GetString("OK"), () =>
-                    {
-                        screen.clearMenu();
-                        ShowJoinTransportMenu(screen);
-                    }, Localize("Return to join menu"));
-                    screen.ShouldAutoHideConnectionUI(false);
-                }
-            });
-        }
-
-        internal static void NotifyProtocolMismatch(
-            string remoteBuild,
-            int remoteProtocol,
-            string localBuild,
-            int localProtocol,
-            NetRole localRole)
-        {
-            var remoteLabel = string.IsNullOrWhiteSpace(remoteBuild) ? "unknown" : remoteBuild.Trim();
-            var detail = string.Create(
-                CultureInfo.InvariantCulture,
-                $"Other player: {remoteLabel} (protocol {remoteProtocol}). You: {localBuild} (protocol {localProtocol}).");
-
-            MultiplayerUI.PushSystemMessage(
-                "Co-op version mismatch. Both players need the exact same mod build.",
-                8.0,
-                1.5);
-            ConnectionUI.NotifyConnectionsChanged();
-
-            // Hosts stay in their lobby and simply reject the incompatible peer. A joining client
-            // gets a clear menu error instead of an unexplained generic disconnect.
-            if (localRole != NetRole.Client)
-                return;
-
-            lock (Sync)
-            {
-                _protocolMismatchPending = true;
-                _clientConnecting = false;
-                _waitingForHost = false;
-            }
-
-            EnqueueMainThreadCoalesced("ui:protocol-mismatch", () =>
-            {
-                var screen = GetTitleScreen();
-                if (screen == null)
-                    return;
-
-                screen.clearMenu();
-                AddInfoLine(screen, Localize("Co-op version mismatch"), 0xFF9090);
-                AddInfoLine(screen, detail, 0xE0E0E0);
-                AddInfoLine(
-                    screen,
-                    Localize("Install the exact same DeadCellsMultiplayerMod build on both computers."),
-                    0xE0E0E0);
-                AddMenuButton(screen, GetText.Instance.GetString("OK"), () =>
-                {
-                    screen.clearMenu();
-                    ShowJoinTransportMenu(screen);
-                }, Localize("Return to join menu"));
-                screen.ShouldAutoHideConnectionUI(false);
-            });
+            var ts = GetTitleScreen();
+            if (ts != null) ShowLobbyNotFoundPopup(ts);
         }
 
         public static void NotifyRemoteDisconnected(NetRole role)
         {
-            RunLaunchCoordinator.OnRemoteDisconnected(role);
+            // Clear launch ACK/queued/ready state before any reconnect can reuse this NetNode.
+            // This matters when one peer restarts its process while the other peer stays alive.
+            try { RunLaunchCoordinator.OnRemoteDisconnected(role); } catch { }
+            try { ModEntry.Instance?.HandleNetworkDisconnectGhostCleanup(role); } catch { }
+
             if (role == NetRole.Host)
             {
                 var disconnectedName = string.IsNullOrWhiteSpace(_remoteUsername) ? Localize("Guest") : _remoteUsername.Trim();
                 MultiplayerUI.PushSystemMessage(FormatLocalized("{0} disconnected from the server.", disconnectedName));
                 _remoteUsername = "guest";
+                ResetLobbyReadyState();
+                lock (Sync)
+                {
+                    ResetRemoteCoopStateLocked();
+                }
+                _genArrived = false;
                 _seedArrived = false;
+                if (_menuSelection == NetRole.Host)
+                {
+                    var ts = GetTitleScreen();
+                    if (ts != null) ShowHostStatusMenu(ts);
+                }
 
-                ConnectionUI.NotifyConnectionsChanged();
                 EnqueueMainThreadCoalesced("ui:refresh-layout-after-disconnect", () => ConnectionUI.RefreshLayoutAfterDisconnect());
+                RequestLobbyMenuRefresh();
                 return;
             }
 
-            bool protocolMismatch;
+            bool wasInRun;
             lock (Sync)
             {
-                protocolMismatch = _protocolMismatchPending;
-                _protocolMismatchPending = false;
+                wasInRun = _inActualRun;
+                ResetLobbyLaunchStateLocked();
             }
 
-            var wasInRun = _inActualRun;
-            // Unexpected disconnect used to clear only the menu's public NetRef. ModEntry still
-            // retained a client role/node and remote serializer/user state until another menu
-            // action happened, so hooks could continue behaving as a client after the host was
-            // already gone. Run the same centralized cleanup used by an explicit disconnect.
-            try
-            {
-                ModEntry.Instance?.StopNetworkFromMenu();
-            }
-            catch (Exception ex)
-            {
-                _log?.Warning("[NetMod] Client disconnect cleanup failed: {Message}", ex.Message);
-            }
+            var saved = true;
+            if (wasInRun)
+                saved = TrySaveClientWorldBeforeHostAutoExit("host_disconnect");
 
             SetRole(NetRole.None);
             NetRef = null;
-            _waitingForHost = false;
             _menuSelection = NetRole.None;
             ResetSteamState();
             ClearNetworkCaches();
+            _inHostStatusMenu = false;
+            _inClientWaitingMenu = false;
             _remoteUsername = "guest";
-            if (!protocolMismatch)
-                MultiplayerUI.PushSystemMessage(Localize("Host disconnected from server."));
-            if (wasInRun && !protocolMismatch)
-                StartHostDisconnectCountdown();
+            ResetLobbyReadyState();
+            _genArrived = false;
+            MultiplayerUI.PushSystemMessage(Localize("Host disconnected from server."));
+            if (wasInRun)
+                StartHostDisconnectCountdown(savePending: !saved);
 
             EnqueueMainThreadCoalesced("ui:refresh-layout-after-disconnect", () => ConnectionUI.RefreshLayoutAfterDisconnect());
+            RequestLobbyMenuRefresh();
         }
 
         private static void SendUsernameToRemote()
@@ -274,6 +360,7 @@ namespace DeadCellsMultiplayerMod
                 var ld = GetCachedLevelDescSync();
                 if (ld != null)
                     net.SendLevelDesc(JsonConvert.SerializeObject(ld));
+                SendCoopStateToRemote();
             }
             catch (Exception ex)
             {
@@ -281,18 +368,21 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        private static bool AllPlayersReady()
+        {
+            RefreshPlayersDisplayFromNetwork();
+            if (_playersDisplay.Count == 0)
+                return false;
+            return _playersDisplay.All(p => p.Ready);
+        }
+
         private static void ClearNetworkCaches()
         {
-            CacheLevelDescSync(null);
             lock (Sync)
             {
-                _remoteSeed = null;
-                _remoteSeedSequence = 0;
-                _consumedRemoteSeedSequence = 0;
-                _remoteLaunchKind = string.Empty;
-                _seedArrived = false;
-                ClearPrecommittedHostRunSeedLocked();
-                Monitor.PulseAll(Sync);
+                _cachedLevelDescSync = null;
+                ResetLobbyLaunchStateLocked();
+                ResetRemoteCoopStateLocked();
             }
         }
 
@@ -304,7 +394,6 @@ namespace DeadCellsMultiplayerMod
                 try { SteamConnect.LeaveLobby(lobbyId); } catch { }
             }
             try { SteamConnect.StopHostLobbyWorker(); } catch { }
-            _steamLobbyActive = false;
             _steamLobbyId = 0;
             _steamLobbyCode = string.Empty;
             _steamHostSteamId = 0UL;
@@ -313,19 +402,38 @@ namespace DeadCellsMultiplayerMod
                 _menuTransport = ConnectionTransport.Lan;
         }
 
-        private static void StartHostDisconnectCountdown()
+        private static void StartHostDisconnectCountdown(bool savePending = false)
         {
+            var now = DateTime.UtcNow;
             _hostDisconnectCountdownActive = true;
-            _hostDisconnectCountdownUntil = DateTime.UtcNow.AddSeconds(HostDisconnectCountdownSeconds);
+            CaptureHostDisconnectCountdownGame();
+            _hostDisconnectCountdownUntil = now.AddSeconds(HostDisconnectCountdownSeconds);
             _lastHostDisconnectCountdown = HostDisconnectCountdownSeconds;
+            _hostDisconnectSavePending = savePending;
+            _forceMultiplayerSaveStore = savePending;
+            if (savePending)
+            {
+                _hostDisconnectSaveRetryAt = now.AddMilliseconds(HostDisconnectSaveRetryMs);
+                _hostDisconnectSaveDeadline = now.AddSeconds(HostDisconnectSaveMaxSeconds);
+            }
+            else
+            {
+                _hostDisconnectSaveRetryAt = DateTime.MinValue;
+                _hostDisconnectSaveDeadline = DateTime.MinValue;
+            }
             MultiplayerUI.PushSystemMessage(FormatLocalized("Back to menu in {0}...", HostDisconnectCountdownSeconds));
         }
 
         private static void ResetHostDisconnectCountdown()
         {
             _hostDisconnectCountdownActive = false;
+            _hostDisconnectCountdownGameRef = null;
             _hostDisconnectCountdownUntil = DateTime.MinValue;
             _lastHostDisconnectCountdown = -1;
+            _hostDisconnectSavePending = false;
+            _forceMultiplayerSaveStore = false;
+            _hostDisconnectSaveRetryAt = DateTime.MinValue;
+            _hostDisconnectSaveDeadline = DateTime.MinValue;
         }
 
         private static void UpdateHostDisconnectCountdown()
@@ -333,7 +441,29 @@ namespace DeadCellsMultiplayerMod
             if (!_hostDisconnectCountdownActive)
                 return;
 
-            var remaining = (int)Math.Ceiling((_hostDisconnectCountdownUntil - DateTime.UtcNow).TotalSeconds);
+            if (!IsHostDisconnectCountdownGameStillActive())
+            {
+                _log?.Information("[NetMod] Host-disconnect auto-exit canceled because client already left the run");
+                ResetHostDisconnectCountdown();
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if (_hostDisconnectSavePending && now >= _hostDisconnectSaveRetryAt)
+            {
+                if (TrySaveClientWorldBeforeHostAutoExit("host_disconnect_retry"))
+                {
+                    _hostDisconnectSavePending = false;
+                    _forceMultiplayerSaveStore = false;
+                }
+                else
+                {
+                    _forceMultiplayerSaveStore = true;
+                    _hostDisconnectSaveRetryAt = now.AddMilliseconds(HostDisconnectSaveRetryMs);
+                }
+            }
+
+            var remaining = (int)Math.Ceiling((_hostDisconnectCountdownUntil - now).TotalSeconds);
             if (remaining < 0)
                 remaining = 0;
 
@@ -346,8 +476,129 @@ namespace DeadCellsMultiplayerMod
             if (remaining > 0)
                 return;
 
+            if (_hostDisconnectSavePending && now < _hostDisconnectSaveDeadline)
+            {
+                _hostDisconnectCountdownUntil = now.AddSeconds(1);
+                return;
+            }
+
             _hostDisconnectCountdownActive = false;
+            _hostDisconnectCountdownGameRef = null;
+            _hostDisconnectSavePending = false;
+            _forceMultiplayerSaveStore = false;
             ForceExitToMainMenu();
+        }
+
+        private static void CaptureHostDisconnectCountdownGame()
+        {
+            try
+            {
+                var game = dc.pr.Game.Class.ME ?? ModEntry.Instance?.game;
+                _hostDisconnectCountdownGameRef = game == null ? null : new WeakReference<dc.pr.Game>(game);
+            }
+            catch
+            {
+                _hostDisconnectCountdownGameRef = null;
+            }
+        }
+
+        private static bool IsHostDisconnectCountdownGameStillActive()
+        {
+            var gameRef = _hostDisconnectCountdownGameRef;
+            if (gameRef == null)
+                return true;
+
+            if (!gameRef.TryGetTarget(out var scheduledGame) || scheduledGame == null)
+                return false;
+
+            try
+            {
+                if (scheduledGame.destroyed)
+                    return false;
+            }
+            catch
+            {
+                return false;
+            }
+
+            try
+            {
+                var currentGame = dc.pr.Game.Class.ME ?? ModEntry.Instance?.game;
+                return ReferenceEquals(currentGame, scheduledGame);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TrySaveClientWorldBeforeHostAutoExit(string reason)
+        {
+            try
+            {
+                var main = dc.Main.Class.ME;
+                var user = main?.user;
+                if (main == null || user == null)
+                    return true;
+
+                GameDataSync.SwapToOriginalUserData(user);
+                var serializerSwapped = GameDataSync.SwapToLocalSerializerSync();
+                _forceMultiplayerSaveStore = true;
+                try
+                {
+                    var saved = main.writeSave();
+                    if (saved)
+                    {
+                        if (!TryValidateClientMultiplayerSave(out var validationError))
+                        {
+                            _log?.Warning("[NetMod] Client multiplayer save validation failed before host-disconnect auto-exit ({Reason}): {Error}", reason, validationError);
+                            return false;
+                        }
+
+                        _log?.Information("[NetMod] Saved client multiplayer world before host-disconnect auto-exit ({Reason})", reason);
+                        return true;
+                    }
+
+                    _log?.Warning("[NetMod] Client world save is pending before host-disconnect auto-exit ({Reason})", reason);
+                    return false;
+                }
+                finally
+                {
+                    _forceMultiplayerSaveStore = false;
+                    if (!serializerSwapped)
+                        GameDataSync.SwapToLocalSerializerSync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to save client world before host-disconnect auto-exit ({Reason}): {Message}", reason, ex.Message);
+                return false;
+            }
+        }
+
+        private static bool TryValidateClientMultiplayerSave(out string error)
+        {
+            error = string.Empty;
+            try
+            {
+                var savePath = GetMultiplayerSaveRelativeFilePath(null);
+                if (!dc.tool.File.Class.exists.Invoke(MakeHLString(savePath)))
+                {
+                    error = "no multiplayer save";
+                    return false;
+                }
+
+                // Same reasoning as TryResolveContinueUser: a readSave probe on an incompatible
+                // save throws a HashlinkError that poisons the Haxe VM even though this catch
+                // reports it, and the game fatals on a later tick. Presence is all this validation
+                // needs; vanilla owns the real load when the player actually continues.
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
         }
 
         internal static string Localize(string message)
@@ -375,7 +626,13 @@ namespace DeadCellsMultiplayerMod
                 var payload = JsonConvert.DeserializeAnonymousType(json, new
                 {
                     levelDesc = new LevelDescSync(),
-                    rawDesc = string.Empty
+                    rawDesc = string.Empty,
+                    launchAction = string.Empty,
+                    launchCustom = false,
+                    launchStreamEnabled = false,
+                    newCoopWorldPrepared = false,
+                    coopId = string.Empty,
+                    hostHasContinueSave = false
                 });
                 if (payload == null) return;
 
@@ -390,11 +647,26 @@ namespace DeadCellsMultiplayerMod
                     _log?.Information("[NetMod] Client received raw LevelDesc: {Json}", payload.rawDesc);
                 }
 
+                ApplyReceivedPendingLaunch(payload.launchAction, payload.launchCustom, payload.launchStreamEnabled);
+                if (!string.IsNullOrWhiteSpace(payload.coopId))
+                    ReceiveRemoteCoopState(1, payload.coopId, payload.hostHasContinueSave);
+                lock (Sync)
+                {
+                    _receivedLaunchPayload = true;
+                    _receivedNewCoopWorldPrepared = payload.newCoopWorldPrepared;
+                }
+                TryStoreRemoteCoopIdForPendingNewGame();
+
                 lock (Sync)
                 {
                     if (_role == NetRole.Client && !_inActualRun)
-                        _pendingAutoStart = true;
+                    {
+                        _genArrived = true;
+                        SignalClientLaunchProgressLocked();
+                    }
                 }
+
+                RequestLobbyMenuRefresh();
             }
             catch (Exception ex)
             {
@@ -434,6 +706,14 @@ namespace DeadCellsMultiplayerMod
             public string last_ip { get; set; } = "127.0.0.1";
             public int last_port { get; set; } = 1234;
             public string player_id { get; set; } = Guid.NewGuid().ToString("N");
+        }
+
+        private sealed class PlayerInfo
+        {
+            public int UserId { get; set; }
+            public string Name { get; set; } = "guest";
+            public bool Ready { get; set; }
+            public bool IsHost { get; set; }
         }
 
         private static void LoadConfig()
@@ -654,35 +934,12 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static string BuildStatus(NetRole role)
-        {
-            var net = NetRef;
-            if (role == NetRole.Client && _clientConnecting)
-            {
-                if (_clientConnectAttempt > 0)
-                    return $"{GetText.Instance.GetString("connecting...")} ({_clientConnectAttempt}/{ClientConnectMaxAttempts})";
-                return GetText.Instance.GetString("connecting...");
-            }
-
-            if (net != null && net.HasRemote)
-                return role == NetRole.Host
-                    ? GetText.Instance.GetString("client connected")
-                    : GetText.Instance.GetString("connected to host");
-
-            if (role == NetRole.Client)
-                return _waitingForHost
-                    ? GetText.Instance.GetString("waiting for the host")
-                    : GetText.Instance.GetString("not connected");
-
-            return GetText.Instance.GetString("waiting for client");
-        }
-
         private static void ResetClientConnectState()
         {
             lock (Sync)
             {
-                _clientConnectAttempt = 0;
-                _clientConnecting = false;
+                _pendingClientRestartSeed = null;
+                _pendingClientRestartReason = string.Empty;
             }
         }
 
@@ -1021,31 +1278,256 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        private static void TryAddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null)
+        {
+            try
+            {
+                AddMenuButton(screen, label, onClick, help);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Menu add failed for {Label}: {Message}", label, ex.Message);
+            }
+        }
+
+        private static void AddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, bool? isEnabled = null)
+        {
+            var cb = new HlAction(onClick);
+            var labelStr = MakeHLString(label);
+            var helpStr = MakeHLString(help ?? string.Empty);
+            int colorVal = 0xFFFFFF;
+            var color = Ref<int>.From(ref colorVal);
+            screen.addMenu(labelStr, cb, helpStr, isEnabled, color);
+        }
+
+        private static void AddInfoLine(TitleScreen screen, string text, int? infoColor = null)
+        {
+            int colorVal = infoColor ?? 0xFFFFFF;
+            var labelStr = MakeHLString(text);
+            var helpStr = MakeHLString(string.Empty);
+            var color = Ref<int>.From(ref colorVal);
+            var cb = new HlAction(() => { });
+            screen.addMenu(labelStr, cb, helpStr, false, color);
+        }
+
         private static object? GetMemberValue(object? obj, string name, bool ignoreCase)
-            => TitleScreenReflection.GetMemberValue(obj, name, ignoreCase);
+        {
+            if (obj == null || string.IsNullOrWhiteSpace(name)) return null;
+
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var type = obj.GetType();
+            var flags = ignoreCase ? Flags | BindingFlags.IgnoreCase : Flags;
+            try
+            {
+                var prop = type.GetProperty(name, flags);
+                if (prop != null) return prop.GetValue(obj);
+
+                var field = type.GetField(name, flags);
+                if (field != null) return field.GetValue(obj);
+            }
+            catch { }
+
+            return null;
+        }
 
         private static bool TrySetMember(object? obj, string name, object? value)
-            => TitleScreenReflection.TrySetMember(obj, name, value);
+        {
+            if (obj == null || string.IsNullOrWhiteSpace(name)) return false;
+
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+            var type = obj.GetType();
+            try
+            {
+                var prop = type.GetProperty(name, Flags);
+                if (prop != null && prop.CanWrite)
+                {
+                    prop.SetValue(obj, value);
+                    return true;
+                }
+
+                var field = type.GetField(name, Flags);
+                if (field != null)
+                {
+                    field.SetValue(obj, value);
+                    return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
 
         private static dc.String MakeHLString(string value)
         {
             return value.AsHaxeString();
         }
 
-        private static void AddMenuButton(
-            TitleScreen screen,
-            string label,
-            Action onClick,
-            string? help = null,
-            int textColor = 0xFFFFFF)
+        private static bool GetIsMainMenu(TitleScreen screen)
         {
-            var cb = new HlAction(onClick);
-            var labelStr = MakeHLString(label);
-            var helpStr = MakeHLString(help ?? string.Empty);
-            int colorVal = textColor;
-            var color = Ref<int>.From(ref colorVal);
-            screen.addMenu(labelStr, cb, helpStr, null, color);
+            try
+            {
+                var val = GetMemberValue(screen, "isMainMenu", true);
+                if (val is bool b) return b;
+            }
+            catch { }
+            return false;
         }
+
+        private static void SetIsMainMenu(TitleScreen screen, bool value)
+        {
+            try
+            {
+                TrySetMember(screen, "isMainMenu", value);
+            }
+            catch { }
+        }
+
+        private static int GetArrayLength(object arrObj)
+        {
+            try
+            {
+                var lenObj = GetMemberValue(arrObj, "length", true);
+                if (lenObj is IConvertible conv)
+                    return conv.ToInt32(null);
+            }
+            catch { }
+            return 0;
+        }
+
+        private static int FindMenuIndexByLabel(object? arrObj, string label)
+        {
+            if (arrObj == null) return -1;
+            try
+            {
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null) return -1;
+
+                int len = GetArrayLength(arrObj);
+                for (int i = 0; i < len; i++)
+                {
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    var text = GetMenuLabel(item);
+                    if (text.Equals(label, StringComparison.OrdinalIgnoreCase))
+                        return i;
+                }
+            }
+            catch { }
+            return -1;
+        }
+
+        private static string GetMenuLabel(object? menuItem)
+        {
+            if (menuItem == null) return string.Empty;
+
+            try
+            {
+                var t = GetMemberValue(menuItem, "t", true);
+                if (t is dc.String ds)
+                    return ds.ToString() ?? string.Empty;
+
+                var textValue = GetMemberValue(t ?? menuItem, "text", true)
+                             ?? GetMemberValue(t ?? menuItem, "str", true);
+                if (textValue != null)
+                    return textValue.ToString() ?? string.Empty;
+
+                return t?.ToString() ?? menuItem.ToString() ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static void RemoveMenuItems(TitleScreen screen, params string[] labels)
+        {
+            if (labels.Length == 0) return;
+            var arrObj = GetMemberValue(screen, "menuItems", true);
+            if (arrObj == null) return;
+
+            try
+            {
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var removeDyn = type.GetMethod("removeDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                              ?? type.GetMethod("remove", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null || removeDyn == null) return;
+
+                var targets = new System.Collections.Generic.List<object>();
+                int len = GetArrayLength(arrObj);
+                for (int i = 0; i < len; i++)
+                {
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    if (item == null)
+                        continue;
+                    var label = GetMenuLabel(item);
+                    foreach (var l in labels)
+                    {
+                        if (label.Equals(l, StringComparison.OrdinalIgnoreCase))
+                        {
+                            targets.Add(item);
+                            break;
+                        }
+                    }
+                }
+
+                foreach (var it in targets)
+                {
+                    removeDyn.Invoke(arrObj, new object[] { it });
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to clean menu items: {Message}", ex.Message);
+            }
+        }
+
+        private static void RemoveDuplicatesKeepFirst(TitleScreen screen, params string[] labels)
+        {
+            if (labels.Length == 0) return;
+            var arrObj = GetMemberValue(screen, "menuItems", true);
+            if (arrObj == null) return;
+
+            try
+            {
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var removeDyn = type.GetMethod("removeDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                              ?? type.GetMethod("remove", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null || removeDyn == null) return;
+
+                var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var toRemove = new System.Collections.Generic.List<object>();
+
+                int len = GetArrayLength(arrObj);
+                for (int i = 0; i < len; i++)
+                {
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    if (item == null)
+                        continue;
+                    var label = GetMenuLabel(item);
+                    foreach (var l in labels)
+                    {
+                        if (label.Equals(l, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!seen.Add(label))
+                                toRemove.Add(item);
+                            break;
+                        }
+                    }
+                }
+
+                foreach (var it in toRemove)
+                {
+                    removeDyn.Invoke(arrObj, new object[] { it });
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to clean duplicate menu items: {Message}", ex.Message);
+            }
+        }
+
 
         private static void StoreTitleScreen(TitleScreen ts)
         {

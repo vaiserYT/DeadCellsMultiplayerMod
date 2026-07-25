@@ -111,6 +111,11 @@ public partial class ModEntry
         var ammo = GetWeaponAmmoForSync(item);
         _net?.SendAttack(kindId!, slot, item.permanentId, ammo);
         _suppressHeroAnimUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 0.18);
+        // Attack poses travel via ATK, not ANIM. Invalidate the idle dedupe cache so a standing
+        // re-idle after the swing is actually sent to peers.
+        _lastAnimSent = null;
+        _lastAnimQueueSent = null;
+        _lastAnimGSent = null;
     }
 
     internal void NotifyLocalShieldHoldingPulseFromKingWeaponHooks(BaseShield self, double ratio)

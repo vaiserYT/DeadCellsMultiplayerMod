@@ -20,7 +20,8 @@ using Serilog;
 namespace DeadCellsMultiplayerMod.AdvancedCoop;
 
 /// <summary>
-/// Stability and progression layer built on top of the original multiplayer base.
+/// Lobby heartbeat and permanent unlock progression layer on top of the multiplayer base.
+/// This is not enemy/mob sync — combat entities are owned by <c>MobsSynchronization</c>.
 /// It deliberately avoids constructing fake heroes/items during HeroInit.
 /// </summary>
 public sealed class CoopAdvancedHardening :
@@ -165,8 +166,8 @@ public sealed class CoopAdvancedHardening :
         if (string.IsNullOrWhiteSpace(payload))
             return;
 
-        // Current build uses this mainly as a live-room heartbeat. The menu/connection UI already reads NetNode.HasRemote;
-        // receiving this packet marks the remote alive in NetNode. Keep parsing intentionally loose for forward compatibility.
+        // Live-room heartbeat only. Username updates are applied when the value actually changes
+        // (ReceiveRemoteUsername is change-gated) so this path must not spam logs/UI refreshes.
         try
         {
             var parts = payload.Split('|');

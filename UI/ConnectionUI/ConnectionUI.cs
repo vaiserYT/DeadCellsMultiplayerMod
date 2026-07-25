@@ -50,8 +50,55 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         public static bool set_visible
         {
-            get => Instance?.root.visible ?? false;
-            set { if (Instance != null) Instance.root.visible = value; }
+            get
+            {
+                var instance = TryGetLiveInstance();
+                return instance?.root?.visible ?? false;
+            }
+            set
+            {
+                var instance = TryGetLiveInstance();
+                if (instance?.root == null)
+                    return;
+
+                try
+                {
+                    instance.root.visible = value;
+                }
+                catch
+                {
+                    // TitleScreen/Process teardown can invalidate root mid-return-to-menu.
+                    Instance = null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns the current ConnectionUI only while its Process root is still alive.
+        /// Returning to the main menu mid-run destroys the old TitleScreen tree first; keeping a
+        /// stale Instance then NRE's on visibility toggles.
+        /// </summary>
+        private static ConnectionUI? TryGetLiveInstance()
+        {
+            var instance = Instance;
+            if (instance == null)
+                return null;
+
+            try
+            {
+                if (instance.root == null || instance.destroyed)
+                {
+                    Instance = null;
+                    return null;
+                }
+            }
+            catch
+            {
+                Instance = null;
+                return null;
+            }
+
+            return instance;
         }
 
         /// <summary>After gamepad connect/disconnect, window metrics can change; re-run layout to avoid blurred/scaled UI.</summary>
@@ -59,8 +106,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         {
             try
             {
-                if (Instance != null && set_visible)
-                    Instance.onResize();
+                var instance = TryGetLiveInstance();
+                if (instance != null && set_visible)
+                    instance.onResize();
             }
             catch
             {
@@ -340,7 +388,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         public static void NotifyConnectionsChanged()
         {
-            Instance?.updateConnections();
+            TryGetLiveInstance()?.updateConnections();
         }
 
         private void RefreshConnections(List<string>? names)
@@ -559,12 +607,20 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         /// </summary>
         public static void EnsureCreated(TitleScreen screen)
         {
-            if (Instance != null && ReferenceEquals(Instance.parent, screen))
+            var live = TryGetLiveInstance();
+            if (live != null && ReferenceEquals(live.parent, screen))
                 return;
+
             Instance = null;
             var connectionUI = new ConnectionUI(screen);
             screen.addChild(connectionUI);
-            connectionUI.root.set_visible(false);
+            try
+            {
+                connectionUI.root?.set_visible(false);
+            }
+            catch
+            {
+            }
         }
 
 

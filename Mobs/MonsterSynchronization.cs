@@ -576,9 +576,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var flushStart = RuntimeHitchWatch.Start();
                 FlushHostDirtyMobQueue(net);
                 ScanHostBossPartDespawns(net);
-                FlushHostBossReliableKeyframes(net);
-                FlushHostActiveReliableKeyframes(net);
-                FlushHostAuthoritativeFullResync(net);
+                FlushHostMobRegistry(net);
+                FlushHostPriorityResync(net);
                 FlushHostDeathTombstoneResends(net);
                 var flushMs = RuntimeHitchWatch.GetElapsedMilliseconds(flushStart);
                 if (flushMs >= RuntimeHitchWatch.MobSyncFlushSlowThresholdMs)
@@ -1036,7 +1035,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 MobSyncTrace.LogRegisterTracked(regRole, registerSyncId, registerLocalIndex, BuildMobStateTypeSignature(mob));
 
             if (shouldQueueInitialSync)
+            {
+                MobSyncTrace.LogMobSpawnRegistered(regRole, registerSyncId, BuildMobStateTypeSignature(mob));
                 QueueInitialMobSync(mob);
+            }
         }
 
         private static void Hook_Level_unregisterEntity(Hook_Level.orig_unregisterEntity orig, Level self, Entity clid)
@@ -1153,12 +1155,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             orig(self);
             if (IsSyncMob(self))
             {
+                // The host is the authoritative vanilla simulation. Observe what vanilla produced,
+                // but never unlock/wake/move the mob merely because a network watchdog thinks it is
+                // stationary. That kind of recovery can corrupt legitimate elite/teleport/skill
+                // phases and makes enemy behavior depend on synchronization timing.
                 ObserveHostMobForDirtyQueue(self);
-
-                // Conservative host-only watchdog from the working-sync source. It ignores
-                // bosses, sleeping/off-screen mobs and active skill phases, and only repairs an
-                // enemy after it has remained motionless with a real living player target.
-                TryRecoverHostStalledMob(self);
             }
         }
 
@@ -1257,11 +1258,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         RememberHostDeathTombstoneLocked(self, dieSyncId, dieX, dieY, identityToken);
                     }
 
-                    var update = new NetNode.MobEventUpdate(dieSyncId, dieX, dieY, 0, SingleEvent("die"), dieType, identityToken);
-                    MobSyncTrace.LogSendMobEvents(MobSyncNetRoleForTrace(dieNet), SingleUpdate(update));
-                    dieNet.SendMobEvents(SingleUpdate(update));
-                    // Redundant typed death packet: unlike the old untyped fallback, this can safely
-                    // recover a phase-rebuilt boss mapping if the MOBEVENT packet was missed.
+                    // Authoritative death: one reliable MOBDIE path (no dual MOBEVENT|die).
                     dieNet.SendMobDie(dieSyncId, dieX, dieY, identityToken, dieType);
                 }
             }
@@ -1661,9 +1658,18 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             {
             }
 
-            // A hit reached Mob.onDamage but produced no local HP delta. Send a minimal intent so
-            // the authoritative host can decide whether its copy is actually vulnerable.
-            return 1.0;
+            // No local HP delta and no readable damage field. Returning a fabricated 1.0 here was
+            // the cause of the client needing 20-30 hits for a mob the host two-shots: any
+            // DamageHint > 0 makes the host IGNORE the client's absolute HP and replay exactly that
+            // number as native damage, so every unresolved hit landed for 1 point. The client's
+            // replica HP is continuously overwritten by the authoritative stream, so the observed
+            // delta above is frequently 0 through no fault of the attack.
+            //
+            // Reporting 0 instead routes the host through its absolute-HP path, where
+            // ShouldReplayIncomingHitWithoutLifeDelta decides whether the mob was genuinely
+            // invulnerable. That is the same "let the host decide" intent, without inventing a
+            // damage number the host is contractually obliged to honour.
+            return 0.0;
         }
 
         private static bool IsDamageFromLocalPlayer(AttackData attack)

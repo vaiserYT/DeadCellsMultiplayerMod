@@ -597,6 +597,34 @@ internal static class RunLaunchCoordinator
             return _remoteDescriptor;
     }
 
+    /// <summary>
+    /// Returns the already-committed run seed only while the coordinator is still
+    /// inside an active run/load.  This is used to distinguish Dead Cells' native
+    /// same-run restart re-entry into User.newGame from a genuinely new lobby launch.
+    /// A restart must reuse the committed seed and must never try to commit a second
+    /// RUNCOMMIT while the original session is LoadingLevel/Playing.
+    /// </summary>
+    internal static bool TryGetActiveRunSeedForNativeRestart(out int seed, out CoopSessionPhase phase)
+    {
+        lock (Sync)
+        {
+            phase = _state.Phase;
+            var descriptor = _role == NetRole.Host ? _hostDescriptor : _remoteDescriptor;
+            if (descriptor != null &&
+                _state.Phase is (CoopSessionPhase.LaunchCommitted or
+                                 CoopSessionPhase.LoadingLevel or
+                                 CoopSessionPhase.Playing or
+                                 CoopSessionPhase.TransitionCommitted))
+            {
+                seed = descriptor.RunSeed;
+                return seed > 0;
+            }
+
+            seed = 0;
+            return false;
+        }
+    }
+
 
     internal static RunLaunchDescriptor? TryEnrichHostInitialLevel(
         string levelId,
@@ -890,6 +918,17 @@ internal static class RunLaunchCoordinator
                 return TryTransitionLocked(CoopSessionPhase.LaunchCommitted, reason);
 
             case CoopSessionPhase.Playing:
+            case CoopSessionPhase.LoadingLevel:
+                // LoadingLevel was the one live phase with no commit path, so it fell to `default`
+                // and threw. In practice the session spends most of its life here — MarkLocalPlaying
+                // does not reliably advance it to Playing — which made two separate failures:
+                // the native-restart crash ("Cannot commit a host launch while session phase is
+                // LoadingLevel"), and the Boss Rush door precommit silently returning false because
+                // its catch swallowed that same exception, so the client was never sent the
+                // authoritative launch and both peers waited on each other until the gate timed out.
+                //
+                // A commit raised from a live run is a transition, not a fresh lobby launch, so it
+                // resolves the same way Playing does.
                 return TryTransitionLocked(CoopSessionPhase.TransitionCommitted, reason);
 
             case CoopSessionPhase.RunEnded:

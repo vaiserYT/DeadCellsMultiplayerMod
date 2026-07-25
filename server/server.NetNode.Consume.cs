@@ -161,26 +161,36 @@ public sealed partial class NetNode
         }
     }
 
-    public bool TryConsumeChatMessages(out List<RemoteChatMessage> messages)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingChatMessages, out messages);
-        }
-    }
-
     public void ClearMobSyncQueues()
     {
         lock (_sync)
         {
             _pendingMobStates.Clear();
             _pendingMobMoves.Clear();
-            _pendingMobCharges.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
-            _pendingBossVictories.Clear();
             _pendingMobAttacks.Clear();
             _pendingMobDraws.Clear();
+            _pendingMobRegistry.Clear();
+        }
+    }
+
+    /// <summary>
+    /// After Continue/LoadSave the session stays alive, but cached peer level/room markers still
+    /// describe the previous world. Clear them so ghost visibility uses fresh LEVEL/ROOM packets
+    /// instead of disposing the new GhostKing as "wrong room/level".
+    /// </summary>
+    public void ClearRemoteRoomMarkers()
+    {
+        lock (_sync)
+        {
+            foreach (var state in _remotes.Values)
+            {
+                state.LevelId = null;
+                state.RoomLevelId = null;
+                state.RoomId = null;
+                state.HasRoom = false;
+            }
         }
     }
 
@@ -200,14 +210,6 @@ public sealed partial class NetNode
         }
     }
 
-    public bool TryConsumeMobCharges(out List<MobChargeSnapshot> charges)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobCharges, out charges);
-        }
-    }
-
     public bool TryConsumeMobHits(out List<MobHit> hits)
     {
         lock (_sync)
@@ -224,14 +226,6 @@ public sealed partial class NetNode
         }
     }
 
-    public bool TryConsumeBossVictories(out List<BossVictoryState> victories)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossVictories, out victories);
-        }
-    }
-
     public bool TryConsumeMobAttacks(out List<MobAttack> attacks)
     {
         lock (_sync)
@@ -245,6 +239,14 @@ public sealed partial class NetNode
         lock (_sync)
         {
             return TryConsumePendingListLocked(ref _pendingMobDraws, out draws);
+        }
+    }
+
+    public bool TryConsumeMobRegistry(out List<MobRegistryEntry> entries)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingMobRegistry, out entries);
         }
     }
 
@@ -274,22 +276,6 @@ public sealed partial class NetNode
         lock (_sync)
         {
             return TryConsumePendingListLocked(ref _pendingBossCineLevelIds, out levelIds);
-        }
-    }
-
-    public bool TryConsumeBossIntroEnds(out List<string> completions)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossIntroEnds, out completions);
-        }
-    }
-
-    public bool TryConsumeBossIntroReadyStates(out List<BossIntroReadyState> readyStates)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossIntroReadyStates, out readyStates);
         }
     }
 
@@ -440,6 +426,21 @@ public sealed partial class NetNode
             }
 
             return snapshot.Count > 0;
+        }
+    }
+
+    public bool TryGetRemoteReady(int userId, out bool ready)
+    {
+        lock (_sync)
+        {
+            if (userId > 0 && _remotes.TryGetValue(userId, out var state) && state.HasRemote)
+            {
+                ready = state.Ready;
+                return true;
+            }
+
+            ready = false;
+            return false;
         }
     }
 

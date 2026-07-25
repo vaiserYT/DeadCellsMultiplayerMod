@@ -26,15 +26,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private const double MobHitTrustedSyncIdDistancePx = 24.0 * 64.0;
         /// <summary>Host-side fallback radius for client kill reports whose sync id was pruned locally while the mob is still alive.</summary>
         private const double MobHitMissingSyncIdRebindDistancePx = 24.0 * 48.0;
-        /// <summary>How often the host sends a full authoritative snapshot for all tracked mobs. This heals missed dirty packets after level loads.</summary>
-        private const double HostAuthoritativeFullResyncIntervalFrames = 30.0;
-        /// <summary>Reliable position/state keyframe interval for mobs actively fighting or visible to either player.</summary>
-        private const double HostActiveReliableKeyframeIntervalFrames = 6.0;
+        /// <summary>How often the host catch-up pass covers remaining tracked mobs.</summary>
+        private const double HostAuthoritativeFullResyncIntervalFrames = 45.0;
+        /// <summary>Reliable keyframe interval for mobs actively fighting or visible to either player.</summary>
+        private const double HostActiveReliableKeyframeIntervalFrames = 8.0;
         /// <summary>Bosses get a tighter reliable state cadence without increasing traffic for every normal mob.</summary>
-        private const double HostBossReliableKeyframeIntervalFrames = 2.0;
-        /// <summary>After a level registry rebuild, send a few quick full snapshots so clients that finish loading slightly later still catch the mob table.</summary>
-        private const int HostAuthoritativeBootstrapResyncCount = 12;
+        private const double HostBossReliableKeyframeIntervalFrames = 3.0;
+        /// <summary>After a level registry rebuild, resend MOBREG + catch-up a few times for late-loading clients.</summary>
+        private const int HostAuthoritativeBootstrapResyncCount = 6;
         private const double HostAuthoritativeBootstrapResyncIntervalFrames = 5.0;
+        /// <summary>Max mobs included in one catch-up pass (byte budget still applies).</summary>
+        private const int HostPriorityResyncCatchUpBudgetPerFlush = 48;
         /// <summary>Keep a short host-side tombstone for dead mobs so clients that miss the one death packet still clean up 0-HP ghosts.</summary>
         private const int HostAuthoritativeDeathTombstoneResendCount = 18;
         private const double HostAuthoritativeDeathTombstoneResendIntervalFrames = 8.0;
@@ -82,8 +84,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private const double ClientJumpPhaseBelowHostRecoveryPx = 24.0;
         private const double ClientJumpVelocityEpsilon = 0.03;
         private const double ClientJumpVelocityMaxRawMagnitude = 4.0;
+        /// <summary>Bound host velocity hints used by non-boss client replicas; prevents corrupt snapshots from injecting extreme local physics.</summary>
+        private const double ClientReplicaVelocityMaxRawMagnitude = 8.0;
         private const double ClientAiAuthorityLockDurationSeconds = 99999.0;
-        private const double HostBossIntroReadyBarrierLockSeconds = 0.5;
         /// <summary>Boss replicas converge much more tightly than ordinary grounded mobs.</summary>
         private const double ClientBossHardSnapDistancePx = 24.0 * 3.0;
         private const double ClientBossMinimumInterpolationAlpha = 0.82;

@@ -82,6 +82,9 @@ public sealed partial class NetNode
             _cachedHostHeroSkin = null;
             _cachedHostHeroHeadSkin = null;
             _cachedHostLevelGraphPayload = null;
+            _cachedHostCustomGameDataPayload = null;
+            _cachedHostCoopId = null;
+            _cachedHostHasContinueSave = false;
             _cachedHostMobsHpMult = null;
             _cachedHostBossesHpMult = null;
         }
@@ -92,19 +95,15 @@ public sealed partial class NetNode
             _hasRemote = false;
             _connectedClientCount = 0;
             _pendingAttacks.Clear();
-            _pendingChatMessages.Clear();
             _pendingMobStates.Clear();
             _pendingMobMoves.Clear();
-            _pendingMobCharges.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
-            _pendingBossVictories.Clear();
             _pendingMobAttacks.Clear();
             _pendingMobDraws.Clear();
+            _pendingMobRegistry.Clear();
             _pendingExitReadyStates.Clear();
             _pendingBossCineLevelIds.Clear();
-            _pendingBossIntroEnds.Clear();
-            _pendingBossIntroReadyStates.Clear();
             _pendingBossHeroTeleports.Clear();
             _pendingPlayerDownStates.Clear();
             _pendingPlayerReviveRequests.Clear();

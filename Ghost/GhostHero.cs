@@ -100,64 +100,153 @@ namespace DeadCellsMultiplayerMod
 
         public void disposeKing(GhostKing k)
         {
-            if (k.spr != null)
-            {
-                ColorMap shader = (ColorMap)k.spr.getShader(ColorMap.Class);
+            if (k == null)
+                return;
 
-                if (shader != null)
-                {
-                    k.spr.removeShader(shader);
-                    k.spr.lib = null;
-                }
+            if (ReferenceEquals(king, k))
+                king = null!;
+
+            try
+            {
+                if (_labels.ContainsKey(k))
+                    _labels.Remove(k);
+            }
+            catch
+            {
             }
 
-            if (k.spriteClones != null)
+            DisposeKingRuntime(k);
+        }
+
+        public static void DisposeKingRuntime(GhostKing k)
+        {
+            if (k == null)
+                return;
+
+            List<Exception>? failures = null;
+            try
             {
-                int num = 0;
-                ArrayObj arrayObj = k.spriteClones;
-                for (; ; )
+                Level? level = null;
+                try { level = k._level; } catch { }
+
+                try
                 {
-                    int length = arrayObj.length;
-                    if (num >= length)
+                    if (k.spr != null)
                     {
-                        break;
-                    }
-                    length = arrayObj.length;
-                    virtual_e_followHead_notActualClone_offX_offY_scaleBonus_? virtual_e_followHead_notActualClone_offX_offY_scaleBonus_;
-                    if (num >= length)
-                    {
-                        virtual_e_followHead_notActualClone_offX_offY_scaleBonus_ = null;
-                    }
-                    else
-                    {
-                        virtual_e_followHead_notActualClone_offX_offY_scaleBonus_ = (virtual_e_followHead_notActualClone_offX_offY_scaleBonus_)arrayObj.array[num]!;
-                    }
-                    num++;
-                    HSprite hsprite = virtual_e_followHead_notActualClone_offX_offY_scaleBonus_!.e;
-                    if (hsprite != null)
-                    {
-                        if (hsprite.parent != null)
+                        ColorMap shader = (ColorMap)k.spr.getShader(ColorMap.Class);
+                        if (shader != null)
                         {
-                            hsprite.parent.removeChild(hsprite);
+                            k.spr.removeShader(shader);
+                            k.spr.lib = null;
                         }
                     }
                 }
-            }
+                catch (Exception ex)
+                {
+                    failures ??= new List<Exception>();
+                    failures.Add(ex);
+                }
 
-            if (k.speechSfxDeck != null)
+                try
+                {
+                    if (!k.destroyed)
+                        k.destroy();
+                }
+                catch (Exception ex)
+                {
+                    failures ??= new List<Exception>();
+                    failures.Add(ex);
+                }
+
+                if (level != null)
+                {
+                    try { level.runEntitiesGC(); } catch { }
+                    try { RemoveKingFromLevelCollections(level, k); } catch { }
+                }
+                else
+                {
+                    try { k.dispose(); } catch { }
+                }
+            }
+            catch (Exception ex)
             {
-                k.speechSfxDeck.clear();
+                failures ??= new List<Exception>();
+                failures.Add(ex);
             }
 
-            if (k.runAnims != null)
+            if (failures != null && failures.Count > 0)
+                _log?.Warning("[NetMod] GhostKing dispose reported {Count} step failure(s)", failures.Count);
+        }
+
+        private static void RemoveKingFromLevelCollections(Level level, GhostKing k)
+        {
+            level.entities?.remove(k);
+            level.qTreeEntities?.remove(k);
+            level.savedEntities?.remove(k);
+            level.entitiesGC?.remove(k);
+
+            ArrayBytes_Int? clids = null;
+            try { clids = k.getEntityCLIDS(); } catch { }
+            if (clids == null || level.entitiesByClass == null)
+                return;
+
+            for (var i = 0; i < clids.length; i++)
             {
-                k.runAnims = null;
+                var entries = level.entitiesByClass.get(clids.getDyn(i)) as ArrayObj;
+                entries?.remove(k);
             }
-            k.removeAllLights(true);
-            k.disposeGfx();
-            k.destroy();
-            k.dispose();
+        }
 
+        /// <summary>
+        /// Strip any GhostKing instances from a level's entity collections so they cannot leak into
+        /// MSave / Continue. Safe to call during level create and immediately before writeSave.
+        /// </summary>
+        public static int PurgeGhostKingsFromLevel(Level? level)
+        {
+            if (level == null)
+                return 0;
+
+            var ghosts = new HashSet<GhostKing>();
+            CollectGhostKings(level.entities, ghosts);
+            CollectGhostKings(level.qTreeEntities, ghosts);
+            CollectGhostKings(level.savedEntities, ghosts);
+            CollectGhostKings(level.entitiesGC, ghosts);
+
+            foreach (var ghost in ghosts)
+                DisposeKingRuntime(ghost);
+
+            return ghosts.Count;
+        }
+
+        public static int PurgeGhostKingsFromCurrentGame()
+        {
+            try
+            {
+                Level? level = null;
+                try { level = ModEntry.me?._level; } catch { }
+                if (level == null)
+                {
+                    try { level = ModEntry.Instance?.game?.curLevel; } catch { }
+                }
+
+                return PurgeGhostKingsFromLevel(level);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static void CollectGhostKings(ArrayObj? entries, HashSet<GhostKing> ghosts)
+        {
+            if (entries == null)
+                return;
+
+            for (var i = 0; i < entries.length; i++)
+            {
+                if (entries.getDyn(i) is GhostKing ghost)
+                    ghosts.Add(ghost);
+            }
         }
 
         public void SetLabel(Entity entity, string? text)

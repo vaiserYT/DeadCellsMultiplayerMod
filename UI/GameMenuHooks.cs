@@ -1,3 +1,4 @@
+﻿using System.Reflection;
 using dc.pr;
 using Hashlink.Virtuals;
 using HaxeProxy.Runtime;
@@ -18,6 +19,7 @@ namespace DeadCellsMultiplayerMod
             {
                 LoadConfig();
                 InitializeMultiplayerSaveHooks();
+                InitializeMultiplayerLaunchHooks();
                 Hook_TitleScreen.mainMenu += MainMenuHook;
                 _menuHooksAttached = true;
             }
@@ -37,18 +39,25 @@ namespace DeadCellsMultiplayerMod
             }
             TryDisconnectWhenReturningToMainMenu();
             StoreTitleScreen(self);
-            ConnectionUI.EnsureCreated(self);
             _mainMenuButtonAdded = false;
+            // Ensure a live ConnectionUI before any visibility toggle: returning mid-run
+            // destroys the previous TitleScreen tree and leaves a stale Instance.root.
+            ConnectionUI.EnsureCreated(self);
+            ResetOriginalMainMenuUiState();
+            ConnectionUI.set_visible = false;
             orig(self);
 
-            if (!_mainMenuButtonAdded)
-            {
-                var label = GetText.Instance.GetString("Play multiplayer");
-                var help = GetText.Instance.GetString("Host or join a multiplayer session");
-                AddMenuButton(self, label, () => ShowMultiplayerMenu(self), help, MultiplayerMainMenuTextColor);
-                _mainMenuButtonAdded = true;
-            }
+            EnsureMainMenuMultiplayerButton(self);
             ProcessPendingOverlayJoinRequest(self);
+        }
+
+        private static void ResetOriginalMainMenuUiState()
+        {
+            ResetHostDisconnectCountdown();
+            _inHostStatusMenu = false;
+            _inClientWaitingMenu = false;
+            _menuSelection = NetRole.None;
+            ConnectionUI.set_visible = false;
         }
 
         private static void ProcessPendingOverlayJoinRequest(TitleScreen screen)
@@ -81,35 +90,39 @@ namespace DeadCellsMultiplayerMod
         {
             ModEntry.PumpSteamCallbacksForOverlay();
             GameMenu.ProcessMainThreadQueue();
+            var wrappedCb = WrapQuitCallbackIfNeeded(str, cb);
+            var ret = orig(self, str, wrappedCb ?? cb, help, isEnable, color);
 
-            if (!_addingMultiplayerButton && !_mainMenuButtonAdded)
+            try
             {
-                var label = str?.ToString() ?? string.Empty;
-                var playLabel = GetText.Instance.GetString("Play");
-                if (label.Equals(playLabel, StringComparison.OrdinalIgnoreCase))
+                if (_suppressAutoButton) return ret;
+                if (_mainMenuButtonAdded) return ret;
+                if (!self.isMainMenu) return ret;
+
+                var items = TitleScreenReflection.GetMemberValue(self, "menuItems", true);
+                if (items == null)
+                    return ret;
+                var count = TitleScreenReflection.GetArrayLength(items);
+                if (count == 1)
                 {
-                    var wrappedCb = WrapQuitCallbackIfNeeded(str, cb);
-                    var result = orig(self, str, wrappedCb ?? cb, help, isEnable, color);
-
-                    _addingMultiplayerButton = true;
-                    try
-                    {
-                        var mpLabel = GetText.Instance.GetString("Play multiplayer");
-                        var mpHelp = GetText.Instance.GetString("Host or join a multiplayer session");
-                        AddMenuButton(self, mpLabel, () => ShowMultiplayerMenu(self), mpHelp, MultiplayerMainMenuTextColor);
-                        _mainMenuButtonAdded = true;
-                    }
-                    finally { _addingMultiplayerButton = false; }
-
-                    return result;
+                    int white = 0xFFFFFF;
+                    var label = GetText.Instance.GetString("Play multiplayer").AsHaxeString();
+                    var helpStr = GetText.Instance.GetString("Host or join a multiplayer session").AsHaxeString();
+                    var colorHl = Ref<int>.From(ref white);
+                    var cbHl = new HlAction(() => ShowMultiplayerMenu(self));
+                    orig(self, label, cbHl, helpStr, null, colorHl);
+                    _mainMenuButtonAdded = true;
                 }
             }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] addMenu hook failed: {Message}", ex.Message);
+            }
 
-            var wrapped = WrapQuitCallbackIfNeeded(str, cb);
-            return orig(self, str, wrapped ?? cb, help, isEnable, color);
+            return ret;
         }
 
-        private static HlAction? WrapQuitCallbackIfNeeded(dc.String? label, HlAction? callback)
+        private static HlAction? WrapQuitCallbackIfNeeded(dc.String label, HlAction? callback)
         {
             if (callback == null)
                 return null;
@@ -136,8 +149,8 @@ namespace DeadCellsMultiplayerMod
             var text = label.Trim();
             if (text.IndexOf("quit", StringComparison.OrdinalIgnoreCase) >= 0) return true;
             if (text.IndexOf("exit", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (text.IndexOf("выйт", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (text.IndexOf("выход", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (text.IndexOf("РІС‹Р№С‚", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (text.IndexOf("РІС‹С…РѕРґ", StringComparison.OrdinalIgnoreCase) >= 0) return true;
             try
             {
                 var localizedQuit = GetText.Instance.GetString("Quitter le jeu");
@@ -149,5 +162,69 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
+        private static void EnsureMainMenuMultiplayerButton(TitleScreen screen)
+        {
+            try
+            {
+                var arr = TitleScreenReflection.GetMemberValue(screen, "menuItems", true);
+                var playMultiplayer = GetText.Instance.GetString("Play multiplayer");
+                var playHelp = GetText.Instance.GetString("Host or join a multiplayer session");
+                var playLabel = GetText.Instance.GetString("Play");
+                var existingIdx = TitleScreenReflection.FindMenuIndexByLabel(arr, playMultiplayer);
+                if (existingIdx < 0)
+                {
+                    TryAddMenuButton(screen, playMultiplayer, () => ShowMultiplayerMenu(screen), playHelp);
+                    arr = TitleScreenReflection.GetMemberValue(screen, "menuItems", true);
+                }
+                _mainMenuButtonAdded = true;
+                MoveButtonAfterPlay(arr, playMultiplayer, playLabel);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to ensure main menu button order: {Message}", ex.Message);
+            }
+        }
+
+        private static void MoveButtonAfterPlay(object? arrObj, string targetLabel, string anchorLabel)
+        {
+            if (arrObj == null) return;
+            try
+            {
+                var type = arrObj.GetType();
+                var getDyn = type.GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var removeDyn = type.GetMethod("removeDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var insertDyn = type.GetMethod("insertDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null || removeDyn == null || insertDyn == null) return;
+
+                int len = TitleScreenReflection.GetArrayLength(arrObj);
+                int targetIdx = -1;
+                int anchorIdx = -1;
+                object? targetObj = null;
+
+                for (int i = 0; i < len; i++)
+                {
+                    var item = getDyn.Invoke(arrObj, new object[] { i });
+                    var label = TitleScreenReflection.GetMenuLabel(item);
+                    if (targetIdx < 0 && label.Equals(targetLabel, StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetIdx = i;
+                        targetObj = item;
+                    }
+                    if (anchorIdx < 0 && label.Equals(anchorLabel, StringComparison.OrdinalIgnoreCase))
+                        anchorIdx = i;
+                }
+
+                if (targetIdx < 0 || anchorIdx < 0 || targetObj == null) return;
+                var desired = anchorIdx + 1;
+                if (targetIdx == desired) return;
+
+                removeDyn.Invoke(arrObj, new[] { targetObj });
+                insertDyn.Invoke(arrObj, new object[] { desired, targetObj });
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to reposition menu button: {Message}", ex.Message);
+            }
+        }
     }
 }

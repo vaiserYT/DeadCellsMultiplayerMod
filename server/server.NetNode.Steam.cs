@@ -513,8 +513,11 @@ public sealed partial class NetNode
         string? cachedLevelDescPayload;
         string? cachedLevelSeedPayload;
         string? cachedLevelGraphPayload;
+        string? cachedCustomGameDataPayload;
         string? cachedHeroSkin;
         string? cachedHeroHeadSkin;
+        string? cachedCoopId;
+        bool cachedHasContinueSave;
         double? cachedMobsHpMult;
         double? cachedBossesHpMult;
         lock (_hostCacheSync)
@@ -531,8 +534,11 @@ public sealed partial class NetNode
             cachedLevelDescPayload = _cachedHostLevelDescPayload;
             cachedLevelSeedPayload = _cachedHostLevelSeedPayload;
             cachedLevelGraphPayload = _cachedHostLevelGraphPayload;
+            cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
             cachedHeroSkin = _cachedHostHeroSkin;
             cachedHeroHeadSkin = _cachedHostHeroHeadSkin;
+            cachedCoopId = _cachedHostCoopId;
+            cachedHasContinueSave = _cachedHostHasContinueSave;
             cachedMobsHpMult = _cachedHostMobsHpMult;
             cachedBossesHpMult = _cachedHostBossesHpMult;
         }
@@ -541,6 +547,10 @@ public sealed partial class NetNode
             await SendLineToSteamClientSafe(connection, $"HXSYNC|{cachedSerializerSeq.Value}|{cachedSerializerUid.Value}\n").ConfigureAwait(false);
         if (cachedBossRune.HasValue)
             await SendLineToSteamClientSafe(connection, $"BOSSRUNE|{cachedBossRune.Value}\n").ConfigureAwait(false);
+        if (cachedCoopId != null)
+            await SendLineToSteamClientSafe(connection, BuildCoopStateLine(1, cachedCoopId, cachedHasContinueSave)).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(cachedCustomGameDataPayload))
+            await SendLineToSteamClientSafe(connection, $"CGDATA|{cachedCustomGameDataPayload}\n").ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedRunCommitPayload))
             await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.CommitTag}|{cachedRunCommitPayload}\n").ConfigureAwait(false);
         if (cachedSeed.HasValue && cachedRunSeedSequence.HasValue)
@@ -596,7 +606,7 @@ public sealed partial class NetNode
                 continue;
 
             var lineCopy = line;
-            if (_role == NetRole.Client && TryHandleClientFastPathLine(lineCopy))
+            if (TryHandleFastPathLine(lineCopy, senderId))
                 continue;
 
             await GameMenu.EnqueueNetworkMainThreadAsync(() =>
@@ -674,7 +684,6 @@ public sealed partial class NetNode
         {
             RemoveRemoteLocked(sender.AssignedId);
             _pendingAttacks.RemoveAll(a => a.Id == sender.AssignedId);
-            _pendingChatMessages.RemoveAll(m => m.Id == sender.AssignedId);
             _pendingMobHits.RemoveAll(h => h.UserId == sender.AssignedId);
             _pendingMobDies.RemoveAll(d => d.UserId == sender.AssignedId);
             _pendingExitReadyStates.RemoveAll(s => s.UserId == sender.AssignedId);

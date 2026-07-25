@@ -198,15 +198,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 {
                     ResetMobTrackingLocked("rebuild_prepare");
                     currentLevel = level;
-                    for (int i = 0; i < candidateTrackedMobs.Count; i++)
-                    {
-                        var mob = candidateTrackedMobs[i];
-                        MobToId[mob] = i;
-                        IdToMob[i] = mob;
-                        trackedMobs.Add(mob);
-                        trackedMobIndices[mob] = i;
-                    }
-                    nextRuntimeSyncId = candidateTrackedMobs.Count;
+                    // Host-owned NetIds: only the host assigns identity. Clients track unbound
+                    // locals and bind from MOBREG / first authoritative state (type + spawn).
+                    AssignHostNetIdsForRebuildLocked(candidateTrackedMobs);
 
                     trackedAfterRebuild = trackedMobs.Count;
                     s_levelIdentityToken = candidateIdentityToken;
@@ -314,6 +308,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             ClearSyncQuiesceAfterRebuild();
+            QueueHostMobRegistryAfterRebuild();
 
             for (int i = 0; i < s_batchMobsScratch.Count; i++)
                 QueueInitialMobSync(s_batchMobsScratch[i]);
@@ -633,6 +628,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             s_lastHostAuthoritativeFullResyncFrame = -99999.0;
             s_lastHostAuthoritativeFullResyncToken = 0;
             s_hostAuthoritativeBootstrapResyncsRemaining = 0;
+            s_lastHostMobRegistryToken = 0;
+            s_lastHostMobRegistrySendFrame = -99999.0;
+            s_hostMobRegistryResendsRemaining = 0;
             hostDetectedTargets.Clear();
 
             // Scratch collections can retain destroyed Haxe proxy references across levels when an
@@ -1351,12 +1349,14 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (!IsLevelIdentityReadyLocked(mob._level))
                     return false;
 
+                // Clients never invent NetIds — host is the sole authority (native ids diverge).
                 if (GameMenu.NetRef?.IsHost != true)
                     return false;
 
                 syncId = nextRuntimeSyncId++;
                 MobToId[mob] = syncId;
                 IdToMob[syncId] = mob;
+                StampHostBossNetIdLocked(mob, syncId);
                 // Dynamic/runtime-spawned mobs must be in the canonical tracked list immediately;
                 // otherwise the first dirty packet creates an IdToMob entry that is rejected as
                 // untracked_mob on the next dequeue.
@@ -1395,7 +1395,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static Mob? ResolveTrackedMobForIncomingStateLocked(NetNode.MobStateSnapshot state, HashSet<Mob>? reservedMobs)
         {
-            // Phase 2: stable boss identity carried in the boss state payload ("bid:"). 0 => none.
+            // Boss identity (bid:) folded into NetId space; still used across phase/proxy rebuilds.
             var bossEntityId = BossStateSync.TryGetEntityId(state.StatePayload);
 
             var mappedMob = ResolveTrackedMobBySyncIdLocked(state.Index);
@@ -1404,8 +1404,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var reserved = reservedMobs != null && reservedMobs.Contains(mappedMob);
                 if (!reserved && DoesMobMatchStateType(mappedMob, state.Type))
                 {
-                    // Learn the identity on the deterministic (load-time) sync-id hit so later
-                    // rebuilds can rebind by identity even in a multi-boss arena.
                     if (bossEntityId > 0)
                         RememberClientBossEntityIdLocked(mappedMob, bossEntityId);
                     return mappedMob;
@@ -1423,41 +1421,30 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 }
             }
 
-            // Phase 2 identity-primary rebind: once a boss id has been learned, follow it across
-            // native phase/proxy rebuilds and sync-id changes. This never uses proximity and
-            // disambiguates any number of same-type bosses (Boss Rush duos, Servants, etc.).
+            // Boss phase/proxy rebuild: follow learned EntityId without proximity.
             if (bossEntityId > 0 &&
                 TryResolveClientBossByEntityIdLocked(bossEntityId, state.Index, reservedMobs, out var identityBoss) &&
                 identityBoss != null)
             {
                 RememberClientBossEntityIdLocked(identityBoss, bossEntityId);
+                TryRebindTrackedMobSyncIdLocked(identityBoss, state.Index);
                 MobSyncTrace.LogBindSyncId(
                     "boss_identity_rebind",
                     state.Index,
                     state.Type ?? string.Empty,
                     state.X,
                     state.Y);
-                BossSyncDiag.Trace(
-                    "client boss identity rebind entityId={EntityId} syncId={SyncId} type={Type}",
-                    bossEntityId,
-                    state.Index,
-                    state.Type ?? string.Empty);
                 return identityBoss;
             }
 
-            // Bosses are commonly rebuilt behind a new HashLink proxy during phase changes.  The
-            // ordinary recovery path intentionally requires close coordinates and matching HP,
-            // which is too strict here: the whole purpose of this packet is to repair divergent
-            // boss HP/position.  Rebind only a unique, explicitly-marked compatible boss (skipping
-            // any boss already claimed by a different living identity, so the newly rebuilt boss is
-            // the sole candidate for a not-yet-learned id).
+            // Unique authoritative boss (payload marked) when identity not yet learned.
             if (TryResolveUniqueAuthoritativeBossLocked(
                     state.Type,
                     state.StatePayload,
                     reservedMobs,
                     bossEntityId,
                     out var authoritativeBoss,
-                    out var bossCandidateCount) &&
+                    out _) &&
                 authoritativeBoss != null)
             {
                 TryRebindTrackedMobSyncIdLocked(authoritativeBoss, state.Index);
@@ -1472,39 +1459,28 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return authoritativeBoss;
             }
 
-            if (TryResolveSingleUnboundTrackedMobForFirstStateLocked(state, reservedMobs, out var unresolvedMob, out var candidateCount) &&
-                unresolvedMob != null)
+            // One-shot unbound bind: type + spawn position. No ongoing proximity combat rebind.
+            if (TryBindUnboundMobByTypeAndSpawnLocked(
+                    state.Index,
+                    state.Type,
+                    state.X,
+                    state.Y,
+                    reservedMobs,
+                    out var unboundMob) &&
+                unboundMob != null)
             {
-                TryRebindTrackedMobSyncIdLocked(unresolvedMob, state.Index);
                 if (bossEntityId > 0)
-                    RememberClientBossEntityIdLocked(unresolvedMob, bossEntityId);
-                MobSyncTrace.LogBindSyncId("state_first_snapshot", state.Index, state.Type ?? string.Empty, state.X, state.Y);
-                return unresolvedMob;
-            }
-
-            if (TryResolveNearestAuthoritativeStateMobLocked(state, reservedMobs, out var nearestMob, out var nearestCandidates) &&
-                nearestMob != null)
-            {
-                TryRebindTrackedMobSyncIdLocked(nearestMob, state.Index);
-                if (bossEntityId > 0)
-                    RememberClientBossEntityIdLocked(nearestMob, bossEntityId);
-                MobSyncTrace.LogFallbackMatchResolved(
-                    "state_authoritative_repair",
+                    RememberClientBossEntityIdLocked(unboundMob, bossEntityId);
+                MobSyncTrace.LogBindSyncId(
+                    "state_oneshot_bind",
                     state.Index,
                     state.Type ?? string.Empty,
                     state.X,
-                    state.Y,
-                    nearestCandidates,
-                    rebound: true);
-                return nearestMob;
+                    state.Y);
+                return unboundMob;
             }
 
-            // Last-resort anchor for encounter bosses: whatever churned the id table (dynamic
-            // add spawns reshuffling bindings, distance caps after drift), the arena's
-            // Level.boss of the matching type IS this state's subject. Proximity-free and
-            // type-checked so it can never steal an add's binding; identity-gated so duo
-            // arenas stay correct. Without this, an evicted boss binding could stay unbound
-            // for the whole fight (KingsHand syncId=0 -> Worm/Archer churn).
+            // Level.boss anchor for encounter bosses only (proximity-free, type-checked).
             if (TryResolveLevelBossAnchorForStateLocked(state, reservedMobs, bossEntityId, out var anchoredBoss) &&
                 anchoredBoss != null)
             {
@@ -1518,25 +1494,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     state.X,
                     state.Y);
                 return anchoredBoss;
-            }
-
-            if (candidateCount > 1 || nearestCandidates > 1 || bossCandidateCount > 1)
-            {
-                lock (Sync)
-                {
-                    var currentFrame = (int)GetCurrentFrame(null);
-                    if (currentFrame - s_lastAmbiguousFallbackLogFrame >= AmbiguousFallbackLogCooldownFrames)
-                    {
-                        MobSyncTrace.LogAmbiguousMatchRejected(
-                            "state",
-                            state.Index,
-                            state.Type ?? string.Empty,
-                            state.X,
-                            state.Y,
-                            System.Math.Max(System.Math.Max(candidateCount, nearestCandidates), bossCandidateCount));
-                        s_lastAmbiguousFallbackLogFrame = currentFrame;
-                    }
-                }
             }
 
             return null;
@@ -1667,190 +1624,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                    lowerType.Contains("appendage") ||
                    lowerType.Contains("proxy") ||
                    lowerType.Contains("ttcl");
-        }
-
-        private static bool TryResolveNearestAuthoritativeStateMobLocked(
-            NetNode.MobStateSnapshot state,
-            HashSet<Mob>? reservedMobs,
-            out Mob? uniqueMob,
-            out int candidateCount)
-        {
-            uniqueMob = null;
-            candidateCount = 0;
-            if (trackedMobs.Count == 0 || string.IsNullOrWhiteSpace(state.Type))
-                return false;
-            if (!double.IsFinite(state.X) || !double.IsFinite(state.Y))
-                return false;
-
-            var maxDistanceSq = ClientStateRebindMaxDistancePx * ClientStateRebindMaxDistancePx;
-            var bestDistanceSq = double.MaxValue;
-            var secondBestDistanceSq = double.MaxValue;
-            Mob? best = null;
-
-            for (var i = 0; i < trackedMobs.Count; i++)
-            {
-                var mob = trackedMobs[i];
-                if (mob == null || (reservedMobs != null && reservedMobs.Contains(mob)))
-                    continue;
-                if (!IsStateRebindCandidateLocked(mob) || !DoesMobMatchStateType(mob, state.Type))
-                    continue;
-
-                // Do not steal a healthy authoritative mapping from another sync id. A mapping whose
-                // reverse entry disappeared is already stale and may be repaired.
-                if (MobToId.TryGetValue(mob, out var existingId) && existingId != state.Index &&
-                    IdToMob.TryGetValue(existingId, out var existingMapped) &&
-                    existingMapped != null && ReferenceEquals(existingMapped, mob))
-                {
-                    continue;
-                }
-
-                double dx;
-                double dy;
-                try
-                {
-                    dx = GetWorldX(mob) - state.X;
-                    dy = GetWorldY(mob) - state.Y;
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (!double.IsFinite(dx) || !double.IsFinite(dy))
-                    continue;
-                var distanceSq = dx * dx + dy * dy;
-                if (distanceSq > maxDistanceSq)
-                    continue;
-
-                candidateCount++;
-                if (distanceSq < bestDistanceSq)
-                {
-                    secondBestDistanceSq = bestDistanceSq;
-                    bestDistanceSq = distanceSq;
-                    best = mob;
-                }
-                else if (distanceSq < secondBestDistanceSq)
-                {
-                    secondBestDistanceSq = distanceSq;
-                }
-            }
-
-            if (best == null)
-                return false;
-
-            if (candidateCount > 1 && secondBestDistanceSq < double.MaxValue)
-            {
-                var gap = System.Math.Sqrt(secondBestDistanceSq) - System.Math.Sqrt(bestDistanceSq);
-
-                // Boss parts (Conjunctivius tentacles, hands, claws) spawn in same-type clusters.
-                // Rejecting ambiguous candidates meant that whenever two parts stood close
-                // together NONE of them ever bound, leaving the whole cluster unsynchronized.
-                // Parts of one type are interchangeable actors, and the caller reserves each
-                // bound mob before resolving the next state, so greedy nearest binding is
-                // deterministic across the batch and strictly better than binding nothing.
-                if (!IsBossRelatedEntity(state.Type) && gap < ClientStateRebindMinimumGapPx)
-                    return false;
-            }
-
-            uniqueMob = best;
-            return true;
-        }
-
-        private static bool TryResolveSingleUnboundTrackedMobForFirstStateLocked(
-            NetNode.MobStateSnapshot state,
-            HashSet<Mob>? reservedMobs,
-            out Mob? uniqueMob,
-            out int candidateCount)
-        {
-            uniqueMob = null;
-            candidateCount = 0;
-            if (trackedMobs.Count == 0)
-                return false;
-
-            if (clientAuthoritativeStateSeenSyncIds.Contains(state.Index))
-                return false;
-
-            if (string.IsNullOrWhiteSpace(state.Type))
-                return false;
-
-            if (!TryGetCurrentLevelIdentityTokenLocked(out _))
-                return false;
-
-            QuantizeWorldPositionToPixelsInt32(state.X, state.Y, out var qRefX, out var qRefY);
-            var preferredStateSignature = ExtractAffectPresenceSignature(state.StatePayload);
-
-            for (int i = 0; i < trackedMobs.Count; i++)
-            {
-                var mob = trackedMobs[i];
-                if (mob == null)
-                    continue;
-                if (reservedMobs != null && reservedMobs.Contains(mob))
-                    continue;
-                if (!IsStateRebindCandidateLocked(mob))
-                    continue;
-                if (MobToId.TryGetValue(mob, out _))
-                    continue;
-                if (!DoesMobMatchStateType(mob, state.Type))
-                    continue;
-
-                QuantizeWorldPositionToPixelsInt32(GetWorldX(mob!), GetWorldY(mob), out var qMobX, out var qMobY);
-                if (qMobX != qRefX || qMobY != qRefY)
-                    continue;
-
-                var normalizedPreferredDir = NormalizeDir(state.Dir);
-                if (normalizedPreferredDir != 0)
-                {
-                    try
-                    {
-                        if (NormalizeDir(mob.dir) != normalizedPreferredDir)
-                            continue;
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-                }
-
-                if (state.Life != int.MinValue || state.MaxLife != int.MinValue)
-                {
-                    try
-                    {
-                        if (state.Life != int.MinValue && mob.life != state.Life)
-                            continue;
-                        if (state.MaxLife != int.MinValue && mob.maxLife != state.MaxLife)
-                            continue;
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-                }
-
-                if (!string.IsNullOrWhiteSpace(preferredStateSignature))
-                {
-                    try
-                    {
-                        var stateSignature = BuildMobAffectPresencePayload(mob);
-                        if (!string.Equals(stateSignature, preferredStateSignature, StringComparison.Ordinal))
-                            continue;
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-                }
-
-                candidateCount++;
-                uniqueMob = mob;
-            }
-
-            if (candidateCount != 1)
-            {
-                uniqueMob = null;
-                return false;
-            }
-
-            return uniqueMob != null;
         }
 
         /// <summary>Rounds world coordinates to int32 pixels so host/client hit routing agrees despite float drift.</summary>
@@ -2375,14 +2148,23 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             RefreshClientNetworkAttackState(mob);
-            if (HasLocalQueuedOrChargingSkill(mob) || IsClientNetworkAttackActive(mob))
+            var queuedOrCharging = HasLocalQueuedOrChargingSkill(mob);
+            var networkAttackActive = IsClientNetworkAttackActive(mob);
+
+            if (queuedOrCharging)
             {
+                // A host-selected native skill may need the brain unlocked while it is being
+                // queued/charged. Once the action is running, lock the decision-making brain again:
+                // the native action/physics can finish, but the replica cannot independently pick a
+                // second target/skill and diverge from the host during an online-latency window.
                 TryUnlockClientMobAiAuthority(mob);
                 TryRepairClientMobAttackTarget(mob);
                 return;
             }
 
             TryLockClientMobAiAuthority(mob);
+            if (networkAttackActive)
+                TryRepairClientMobAttackTarget(mob);
         }
 
         /// <summary>
@@ -2499,8 +2281,19 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             RefreshHostContactAttackState(mob);
-            if (TryGetCurrentHostAttackTarget(mob, out _))
-                return;
+            if (TryGetCurrentHostAttackTarget(mob, out var existingTarget))
+            {
+                // Retention is deliberately MUCH more permissive than acquisition. Testing the
+                // current target against the acquire gate re-selected every single frame the target
+                // sat outside the facing cone — which is most frames during a real fight — so mobs
+                // flipped between players, turned around mid-approach and swung at nothing.
+                // Vanilla does not drop aggro because an enemy turned its head; neither do we.
+                if (existingTarget == null ||
+                    IsPlayerCombatTargetStillRelevant(mob, existingTarget))
+                {
+                    return;
+                }
+            }
 
             // Let vanilla finish elite teleports, charges, stuns and scripted locks. Co-op only fills
             // an actually missing immediate attack target; it never unlocks AI or rewrites nemesis.
@@ -2521,11 +2314,51 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             try
             {
-                if (!ReferenceEquals(mob.aTarget, selected))
-                    mob.setAttackTarget(selected);
+                if (ReferenceEquals(mob.aTarget, selected))
+                    return;
+
+                // Hard backstop against oscillation. Even if some other path decides a mob should
+                // reconsider, it cannot actually switch players more often than this. Without it a
+                // single mis-scoped check flips every hostile mob every frame, which reads as
+                // enemies running the wrong way and attacking empty air.
+                if (!TryBeginHostTargetSwitch(mob))
+                    return;
+
+                mob.setAttackTarget(selected);
             }
             catch
             {
+            }
+        }
+
+        /// <summary>Minimum frames a mob must keep a player target before it may switch again.</summary>
+        private const double HostTargetSwitchCooldownFrames = 45.0;
+
+        private static readonly ConditionalWeakTable<Mob, StrongBox<double>> s_hostLastTargetSwitchFrame = new();
+
+        private static bool TryBeginHostTargetSwitch(Mob mob)
+        {
+            try
+            {
+                var now = GetCurrentFrame(mob);
+                if (!double.IsFinite(now))
+                    return true;
+
+                if (s_hostLastTargetSwitchFrame.TryGetValue(mob, out var last) &&
+                    last != null &&
+                    now - last.Value < HostTargetSwitchCooldownFrames &&
+                    now >= last.Value)
+                {
+                    return false;
+                }
+
+                s_hostLastTargetSwitchFrame.Remove(mob);
+                s_hostLastTargetSwitchFrame.Add(mob, new StrongBox<double>(now));
+                return true;
+            }
+            catch
+            {
+                return true;
             }
         }
 
@@ -2815,6 +2648,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || attackerUserId <= 0 || currentLife <= 0)
                 return;
 
+            // Threat refresh can interruptSkills mid-charge when aTarget is invalid, stranding the
+            // host mob with no attack/move until a full reset. Skip while a skill is in flight.
+            if (HasLocalQueuedOrChargingSkill(mob))
+                return;
+
             var attacker = ResolveHostPlayerCombatEntity(attackerUserId);
             if (attacker == null || !IsPreservablePlayerCombatTargetForMob(mob, attacker))
                 return;
@@ -3013,21 +2851,77 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             return true;
         }
 
+        private static void TraceTargetAcquireRejected(Mob mob, Entity entity, string reason)
+        {
+            if (!MobSyncTrace.Enabled)
+                return;
+
+            MobSyncTrace.LogTargetAcquire(
+                GetMobRuntimeClassKeySafe(mob),
+                IsRemotePlayerCombatShell(entity),
+                reason);
+        }
+
+        /// <summary>
+        /// True when this entity is a remote player's networked shell rather than the local Hero.
+        /// </summary>
+        private static bool IsRemotePlayerCombatShell(Entity? entity)
+        {
+            if (entity == null)
+                return false;
+
+            var localHero = ModEntry.me ?? ModCore.Modules.Game.Instance?.HeroInstance;
+            if (localHero != null && ReferenceEquals(entity, localHero))
+                return false;
+
+            for (int i = 0; i < ModEntry.clients.Length; i++)
+            {
+                var client = ModEntry.clients[i];
+                if (client != null && ReferenceEquals(entity, client))
+                    return true;
+            }
+
+            return false;
+        }
+
         private static bool IsAcquirablePlayerCombatTargetForMob(Mob mob, Entity entity, bool requireDetectArea = false)
         {
             if (!IsPreservablePlayerCombatTargetForMob(mob, entity))
                 return false;
 
-            try
+            // The remote player is a GhostKing (KingSkin), not a Hero. canBeDetected/canBeHitBy are
+            // Hero-shaped vanilla checks — canBeHitBy is hooked for Hero only, and canBeDetected is
+            // not hooked at all — so asking them about a KingSkin can reject a perfectly valid,
+            // living target and leave the second player permanently un-aggroed. Use the mod's own
+            // liveness rules for the shell instead; the detect-area test below still applies.
+            var remoteShell = IsRemotePlayerCombatShell(entity);
+            if (remoteShell)
             {
-                if (!entity.canBeDetected())
+                if (IsHardInvalidPlayerTargetEntity(entity))
+                {
+                    TraceTargetAcquireRejected(mob, entity, "remote_shell_invalid");
                     return false;
-                if (!entity.canBeHitBy(mob))
-                    return false;
+                }
             }
-            catch
+            else
             {
-                return false;
+                try
+                {
+                    if (!entity.canBeDetected())
+                    {
+                        TraceTargetAcquireRejected(mob, entity, "canBeDetected");
+                        return false;
+                    }
+                    if (!entity.canBeHitBy(mob))
+                    {
+                        TraceTargetAcquireRejected(mob, entity, "canBeHitBy");
+                        return false;
+                    }
+                }
+                catch
+                {
+                    return false;
+                }
             }
 
             if (!requireDetectArea)
@@ -3035,12 +2929,89 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             try
             {
-                return mob.inDetectArea(entity);
+                if (mob.inDetectArea(entity))
+                    return true;
             }
             catch
             {
                 return false;
             }
+
+            // inDetectArea is a facing-dependent cone, so it alone can never see a player standing
+            // behind a mob. Vanilla still aggros the LOCAL hero from behind because the game has
+            // other acquisition routes — noise, threat, ambient wake — that only ever consider
+            // game.hero. The remote player has no such routes: this gate is its only way in, so a
+            // cone-only test made the second player permanently sneak-proof.
+            //
+            // Close proximity stands in for those missing routes. Kept deliberately tight, and
+            // tighter vertically than horizontally, so it approximates "same platform, right next
+            // to me" rather than aggro through floors or across a room.
+            if (remoteShell && IsRemotePlayerWithinProximityAggro(mob, entity))
+                return true;
+
+            TraceTargetAcquireRejected(mob, entity, "inDetectArea");
+            return false;
+        }
+
+        /// <summary>Horizontal reach of the remote-player proximity fallback (~6 tiles).</summary>
+        private const double RemotePlayerProximityAggroRangeXPx = 24.0 * 6.0;
+
+        /// <summary>Vertical reach, kept short so mobs do not notice players through floors.</summary>
+        private const double RemotePlayerProximityAggroRangeYPx = 24.0 * 2.5;
+
+        /// <summary>
+        /// Retention envelope. Wider than the acquire ranges on purpose: the gap between acquiring
+        /// and losing a target is what stops a mob oscillating between two players standing at
+        /// similar distances.
+        /// </summary>
+        private const double PlayerTargetRetentionRangeXPx = 24.0 * 14.0;
+
+        private const double PlayerTargetRetentionRangeYPx = 24.0 * 6.0;
+
+        private static bool IsWithinRangeBox(Mob mob, Entity entity, double rangeX, double rangeY)
+        {
+            try
+            {
+                var dx = GetWorldX(entity) - GetWorldX(mob);
+                var dy = GetWorldY(entity) - GetWorldY(mob);
+                if (!double.IsFinite(dx) || !double.IsFinite(dy))
+                    return false;
+
+                return System.Math.Abs(dx) <= rangeX && System.Math.Abs(dy) <= rangeY;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Whether a mob should keep fighting its current player target. Only a target that is
+        /// genuinely gone — dead, downed, off-level, or well outside the retention box — releases
+        /// the mob to re-select.
+        /// </summary>
+        private static bool IsPlayerCombatTargetStillRelevant(Mob mob, Entity entity)
+        {
+            if (IsHardInvalidPlayerTargetEntity(entity))
+                return false;
+
+            try
+            {
+                if (mob.inDetectArea(entity))
+                    return true;
+            }
+            catch
+            {
+                // If the game cannot answer, keep the existing target rather than thrash.
+                return true;
+            }
+
+            return IsWithinRangeBox(mob, entity, PlayerTargetRetentionRangeXPx, PlayerTargetRetentionRangeYPx);
+        }
+
+        private static bool IsRemotePlayerWithinProximityAggro(Mob mob, Entity entity)
+        {
+            return IsWithinRangeBox(mob, entity, RemotePlayerProximityAggroRangeXPx, RemotePlayerProximityAggroRangeYPx);
         }
 
         private static bool IsHardInvalidPlayerTargetEntity(Entity? entity)

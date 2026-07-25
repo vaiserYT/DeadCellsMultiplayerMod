@@ -494,6 +494,151 @@ internal static class MobSyncTrace
             budget);
     }
 
+    private static long s_lastTargetAcquireLogTick;
+
+    /// <summary>
+    /// Logs which gate rejected a player as an aggro candidate. This is the signal that separates
+    /// "the mob never saw the second player" from "the mob saw them and chose someone else".
+    /// Rate-limited to once every two seconds across all mobs.
+    /// </summary>
+    public static void LogTargetAcquire(string mobType, bool remoteShell, string reason)
+    {
+        if (!Enabled)
+            return;
+
+        var now = Environment.TickCount64;
+        var last = System.Threading.Interlocked.Read(ref s_lastTargetAcquireLogTick);
+        if (last != 0 && now - last < 2000)
+            return;
+        System.Threading.Interlocked.Exchange(ref s_lastTargetAcquireLogTick, now);
+
+        Log.Information(
+            "[MobTarget] acquire rejected mob={MobType} target={Target} reason={Reason}",
+            mobType ?? string.Empty,
+            remoteShell ? "client" : "host",
+            reason ?? string.Empty);
+    }
+
+    private static long s_lastDamageDroppedLogTick;
+    private static long s_damageDroppedCount;
+    private static long s_damageDroppedSince;
+
+    /// <summary>
+    /// Counts hits discarded because the sync id could not be resolved. Reports a running total and
+    /// the count since the last report, so the drop RATE is visible rather than one line per packet.
+    /// </summary>
+    public static void LogDamageDropped(bool isHost, int syncId, int userId, double damageHint)
+    {
+        System.Threading.Interlocked.Increment(ref s_damageDroppedCount);
+        System.Threading.Interlocked.Increment(ref s_damageDroppedSince);
+
+        if (!Enabled)
+            return;
+
+        var now = Environment.TickCount64;
+        var last = System.Threading.Interlocked.Read(ref s_lastDamageDroppedLogTick);
+        if (last != 0 && now - last < 2000)
+            return;
+        System.Threading.Interlocked.Exchange(ref s_lastDamageDroppedLogTick, now);
+        var since = System.Threading.Interlocked.Exchange(ref s_damageDroppedSince, 0L);
+
+        Log.Warning(
+            "[MobDamage] DROPPED role={Role} syncId={SyncId} fromUser={UserId} damage={Damage} sinceLast={Since} total={Total}",
+            isHost ? "host" : "client",
+            syncId,
+            userId,
+            damageHint,
+            since,
+            System.Threading.Interlocked.Read(ref s_damageDroppedCount));
+    }
+
+    private static long s_lastMobSpawnLogTick;
+    private static long s_mobSpawnCount;
+
+    /// <summary>
+    /// Reports mobs registered after level bootstrap (malaise waves, summons, elite replacements).
+    /// The host allocates a sync id here; the client can only BIND an id to a mob that already
+    /// exists locally, so a host-only spawn shows a rising host count with no client counterpart.
+    /// </summary>
+    public static void LogMobSpawnRegistered(string role, int syncId, string type)
+    {
+        System.Threading.Interlocked.Increment(ref s_mobSpawnCount);
+
+        if (!Enabled)
+            return;
+
+        var now = Environment.TickCount64;
+        var last = System.Threading.Interlocked.Read(ref s_lastMobSpawnLogTick);
+        if (last != 0 && now - last < 2000)
+            return;
+        System.Threading.Interlocked.Exchange(ref s_lastMobSpawnLogTick, now);
+
+        Log.Information(
+            "[MobSpawn] runtime registration role={Role} syncId={SyncId} type={Type} totalRuntimeSpawns={Total}",
+            role ?? string.Empty,
+            syncId,
+            type ?? string.Empty,
+            System.Threading.Interlocked.Read(ref s_mobSpawnCount));
+    }
+
+    private static long s_lastClientSpawnLogTick;
+    private static long s_clientSpawnOk;
+    private static long s_clientSpawnFail;
+
+    /// <summary>Reports client replica creation for host-only runtime spawns (malaise, summons).</summary>
+    public static void LogClientSpawn(string runtimeClass, bool created, string reason)
+    {
+        if (created)
+            System.Threading.Interlocked.Increment(ref s_clientSpawnOk);
+        else
+            System.Threading.Interlocked.Increment(ref s_clientSpawnFail);
+
+        if (!Enabled)
+            return;
+
+        var now = Environment.TickCount64;
+        var last = System.Threading.Interlocked.Read(ref s_lastClientSpawnLogTick);
+        if (last != 0 && now - last < 2000)
+            return;
+        System.Threading.Interlocked.Exchange(ref s_lastClientSpawnLogTick, now);
+
+        Log.Information(
+            "[MobSpawn] clientBind type={Type} resolved={Created} reason={Reason} ok={Ok} failed={Failed}",
+            runtimeClass ?? string.Empty,
+            created,
+            reason ?? string.Empty,
+            System.Threading.Interlocked.Read(ref s_clientSpawnOk),
+            System.Threading.Interlocked.Read(ref s_clientSpawnFail));
+    }
+
+    private static long s_lastDamageAppliedLogTick;
+
+    /// <summary>
+    /// Reports damage the host actually applied from a remote hit. hint=0 means the host used the
+    /// client's absolute HP result; hint&gt;0 means the host replayed that exact damage natively.
+    /// A stream of hint=1 lines is the signature of an unresolvable client damage estimate.
+    /// </summary>
+    public static void LogDamageApplied(bool isHost, int syncId, int hpBefore, int hpAfter, double hint, bool replayed)
+    {
+        if (!Enabled)
+            return;
+
+        var now = Environment.TickCount64;
+        var last = System.Threading.Interlocked.Read(ref s_lastDamageAppliedLogTick);
+        if (last != 0 && now - last < 1000)
+            return;
+        System.Threading.Interlocked.Exchange(ref s_lastDamageAppliedLogTick, now);
+
+        Log.Information(
+            "[MobDamage] role={Role} syncId={SyncId} hpBefore={Before} hpAfter={After} hint={Hint} replayedNative={Replayed}",
+            isHost ? "host" : "client",
+            syncId,
+            hpBefore,
+            hpAfter,
+            hint,
+            replayed);
+    }
+
     public static void LogIncomingMappingMismatch(
         string context,
         int syncId,

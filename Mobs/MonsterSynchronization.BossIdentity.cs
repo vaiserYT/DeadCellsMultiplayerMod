@@ -46,7 +46,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly Dictionary<int, int> s_hostNextAttackSeqByEntityId = new();
 
         /// <summary>
-        /// Host-only. Returns the stable EntityId for a boss (assigning one on first sight), or 0
+        /// Host-only. Returns the stable EntityId for a boss (NetId+1 when mapped, else assign), or 0
         /// for non-bosses / when not hosting. Safe to call while holding <see cref="Sync"/>
         /// (Monitor is re-entrant).
         /// </summary>
@@ -67,6 +67,23 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             lock (Sync)
             {
+                // Prefer the host NetId space so bid: and sync Index stay aligned.
+                if (MobToId.TryGetValue(mob, out var netId) && netId >= 0)
+                {
+                    var fromNetId = netId + 1;
+                    if (s_hostBossIdentities.TryGetValue(mob, out var existingFromNet) &&
+                        existingFromNet.EntityId == fromNetId)
+                    {
+                        TrackHostPrimaryBossLocked(mob, fromNetId);
+                        return fromNetId;
+                    }
+
+                    s_hostBossIdentities.Remove(mob);
+                    s_hostBossIdentities.Add(mob, new HostBossIdentity { EntityId = fromNetId });
+                    TrackHostPrimaryBossLocked(mob, fromNetId);
+                    return fromNetId;
+                }
+
                 if (s_hostBossIdentities.TryGetValue(mob, out var existing) && existing.EntityId > 0)
                 {
                     TrackHostPrimaryBossLocked(mob, existing.EntityId);

@@ -181,27 +181,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 }
             }
 
-            foreach (var affectId in desired)
-            {
-                if (previousOwned.Contains(affectId))
-                    continue;
-
-                var alreadyPresent = false;
-                try { alreadyPresent = mob.hasAffect(affectId); } catch { }
-
-                // Never claim/remove an affect that already existed on the authoritative host.
-                if (alreadyPresent)
-                    continue;
-
-                try
-                {
-                    mob.setAffectS(affectId, AuthoritativeAffectPresenceSeconds, HaxeProxy.Runtime.Ref<double>.Null, null);
-                    nextOwned.Add(affectId);
-                }
-                catch
-                {
-                }
-            }
+            // Do not create new host affects from client presence reports. Client combat prediction
+            // previously called setAffectS(..., 99999) here and permanently froze mobs after hits
+            // during charge/attack (both peers). Host already applies damage via MOBHIT.
 
             lock (Sync)
             {
@@ -1672,10 +1654,32 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (target == null)
             {
                 target = ResolveClientAttackTargetEntity(mob, targetUserId);
-                if (target == null && IsMobHostileToPlayers(mob))
+
+                // Only fall back to "whoever is nearby" when the host named NO target. If the host
+                // did name one and we cannot resolve it locally, substituting the local player
+                // re-aims an attack that was swung at someone else. That is why dodging behind a
+                // boss still connected: the host's boss struck forward at the other player, the
+                // replica retargeted the local hero standing behind it, and vanilla attack
+                // resolution hit them.
+                if (target == null && targetUserId <= 0 && IsMobHostileToPlayers(mob))
                     target = ResolveDetectedClientTargetEntity(mob);
+
                 if (target == null)
+                {
+                    // Keep the authoritative facing so the swing still looks right, but leave the
+                    // replica's attack target alone.
+                    try
+                    {
+                        var hostDir = NormalizeDir(attackDir);
+                        if (hostDir != 0)
+                            mob.dir = hostDir;
+                    }
+                    catch
+                    {
+                    }
+
                     return;
+                }
 
                 lock (Sync)
                 {
@@ -2060,24 +2064,31 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                     var mob = ResolveMobFromHitLocked(hit);
                     if (mob == null)
+                    {
+                        // This is where a client's damage is lost. The host already publishes an
+                        // immediate reliable keyframe after every hit it DOES apply (below), so a
+                        // client needing many times more hits than the host is this drop, not a
+                        // missing HP broadcast. Count it so the rate is visible without per-packet spam.
+                        MobSyncTrace.LogDamageDropped(isHost, hit.MobIndex, hit.UserId, hit.DamageHint);
                         continue;
+                    }
 
                     if (!TryGetMobLifeAndMaxSafe(mob, out var prevLife, out var maxLife))
                         continue;
 
                     var targetLife = System.Math.Clamp(hit.Hp, 0, maxLife);
                     var isBoss = BossSyncHelpers.IsBossMob(mob);
-                    // Never assign a remote client's absolute boss HP to the host.  It may be one
-                    // packet behind or use a freshly rebuilt phase proxy.  Replay the reported
-                    // damage through native host hit handling so invulnerability, phase changes,
-                    // onDamage and final-death callbacks remain authoritative and idempotent.
-                    var replaySpecialHit = isHost && isBoss && hit.DamageHint > 0.0;
+                    // A remote player's hit is an INPUT/intent, never authoritative HP. Replaying the
+                    // reported damage through the host's native hit path preserves elite invulnerability,
+                    // phase transitions, onDamage hooks and final death logic. The absolute HP field is
+                    // retained only as a compatibility fallback for packets that carry no damage hint.
+                    var replaySpecialHit = isHost && hit.DamageHint > 0.0;
                     if (replaySpecialHit)
                         targetLife = prevLife;
 
-                    // On a client, every hit in this queue came from the authoritative host.  Apply
-                    // its absolute result even when it raises a locally speculative/stale boss HP
-                    // value.  Host-side client reports remain damage intents, never healing input.
+                    // On a client, every hit in this queue came from the authoritative host, so its
+                    // absolute result is applied even when it raises a speculative local value. On the
+                    // host, an old/no-hint client packet can only lower HP and can never heal a mob.
                     if (isHost && !replaySpecialHit && targetLife >= prevLife)
                     {
                         replaySpecialHit = hit.DamageHint > 0.0 || ShouldReplayIncomingHitWithoutLifeDelta(mob);
@@ -2091,6 +2102,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     var syncId = -1;
                     TryGetMobSyncId(mob, out syncId);
                     MobSyncTrace.LogIncomingHitApply(syncId, hit.Hp, hit.UserId, replaySpecialHit, forceDie);
+                    MobSyncTrace.LogDamageApplied(isHost, syncId, prevLife, targetLife, hit.DamageHint, replaySpecialHit);
                     s_pendingMobHitAppliesScratch.Add(new PendingMobHitApply(
                         mob,
                         hit.UserId,
@@ -2134,9 +2146,21 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var appliedLife = update.TargetLife;
                 if (update.ReplaySpecialHit)
                 {
-                    TryWakeMobForForcedSimulation(mob);
-                    TryReplayIncomingSpecialHitReaction(mob, update.DamageHint);
-                    appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);
+                    // Boss phase scripts remain the one conservative exception: replaying a
+                    // reconstructed hit in the middle of a queued boss skill can strand that script.
+                    // Normal mobs and elites always use native host damage, even while attacking, so
+                    // their armor/invulnerability/elite callbacks stay vanilla-authoritative.
+                    if (isHost && update.IsBoss && HasLocalQueuedOrChargingSkill(mob))
+                    {
+                        ApplyAuthoritativeLifeState(mob, update.TargetLife, update.TargetMaxLife);
+                        appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);
+                    }
+                    else
+                    {
+                        TryWakeMobForForcedSimulation(mob);
+                        TryReplayIncomingSpecialHitReaction(mob, update.DamageHint);
+                        appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);
+                    }
                 }
                 else if (update.ForceDie)
                 {
@@ -2183,15 +2207,15 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (isHost)
                     TryApplyHostMobHitCombatRefresh(mob, update.SourceUserId, update.PreviousLife, appliedLife, update.ReplaySpecialHit);
 
-                if (isHost && update.IsBoss)
+                if (isHost)
                 {
-                    var bossStillPresent = false;
-                    try { bossStillPresent = !mob.destroyed; } catch { }
-                    if (bossStillPresent)
+                    var mobStillPresent = false;
+                    try { mobStillPresent = !mob.destroyed; } catch { }
+                    if (mobStillPresent)
                     {
-                        // The same host frame publishes a reliable, fully-typed boss keyframe.
-                        // This heals HP, phase, and proxy bindings together instead of waiting for
-                        // the periodic resync after a remote player's hit.
+                        // Publish a reliable fully-typed keyframe immediately after any remote hit.
+                        // Besides HP, this carries authoritative affects/elite phase metadata and
+                        // repairs a stale binding without waiting for the periodic recovery pass.
                         QueueHostMobDirty(mob, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
                     }
                 }

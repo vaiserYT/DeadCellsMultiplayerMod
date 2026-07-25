@@ -114,6 +114,9 @@ namespace DeadCellsMultiplayerMod
         private static long[] clientNextHeadRecreateTick = new long[NetNode.MaxClientSlots];
         public static Hero me = null!;
         public static GhostHero _ghost = null!;
+        private Hero? _ghostOwnerHero;
+        private dc.pr.Game? _ghostOwnerGame;
+        private NetNode? _ghostBootstrapNet;
 
         private Hero? _debugPerkAppliedHero;
         private string _debugPerkAppliedId = string.Empty;
@@ -328,12 +331,6 @@ namespace DeadCellsMultiplayerMod
         private const double BossHeroTeleportEchoSuppressSeconds = 1.5;
         private int _suppressBossCineSendDepth;
         private long _suppressBossTriggerNetSendUntilTick;
-        private bool _clientBossVictoryRecoveryPending;
-        private long _clientBossVictoryRecoveryStartedTick;
-        private string? _clientBossVictoryRecoveryLevelId;
-        private const double ClientBossVictoryNoCineGraceSeconds = 2.0;
-        private const double ClientBossVictoryUnknownCineReleaseSeconds = 8.0;
-        private const double ClientBossVictoryRecoveryMaxSeconds = 12.0;
 
 
         void IOnAfterLoadingCDB.OnAfterLoadingCDB(dc._Data_ cdb)
@@ -514,8 +511,6 @@ namespace DeadCellsMultiplayerMod
                 BuildInfo.Version);
             entry.Logger.Information("[NetMod][FlintGuard] mode=local-vanilla-no-remote-runtime-preflight-powered-feedback-scan");
             entry.Logger.Information("[NetMod][BossCells] mode=working-v0.8.68-selector-reload-and-render-guard");
-            entry.Logger.Information("[NetMod][BossSafety] mode=legacy-native-death-no-custom-encounter-victory");
-            entry.Logger.Information("[NetMod][BossIntro] mode=legacy-native-trigger-no-ready-barrier");
             entry.Logger.Information("[NetMod][BossRushLoad] mode=host-door-precommit-structured-seed-barrier");
             entry.Logger.Information("[NetMod][CurseGuard] mode=fake-death-revive-dive-safe");
             entry.Logger.Information("[NetMod][VanillaTransitions] mode=working-v0.8.68-typed-activateSubLevel-stack");
@@ -527,7 +522,7 @@ namespace DeadCellsMultiplayerMod
             entry.Logger.Information("[NetMod][Corpse] mode=vanilla-fall-fast-grounded-failsafe");
             entry.Logger.Information("[NetMod][MobTeleportSync] mode=safe-above-floor-landing");
             entry.Logger.Information("[NetMod][MobGrounding] mode=upward-only-safe-landing-jump-phase");
-            entry.Logger.Information("[NetMod][MobSyncStack] mode=exact-uploaded-v0.8.68-working-stack");
+            entry.Logger.Information("[NetMod][MobSyncStack] mode=host-authoritative-vanilla-ai-transport-neutral-replica-keyframes");
             entry.Logger.Information("[NetMod][SteamCallbacks] mode=main-thread-only-no-timer");
             Hook_Game.init += Hook_gameinit;
             Hook_Hero.wakeup += hook_hero_wakeup;
@@ -859,6 +854,27 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook__Save_save(Hook__Save.orig_save orig, User u, bool onlyGameData)
         {
+            // Never let multiplayer GhostKing / KingSkin avatars enter MSave. A persisted GhostKing
+            // reloads through KingSkin.initGfx with a null cooldown map and fatals the game.
+            //
+            // IMPORTANT: PurgeGhostKingsFromCurrentGame destroys the runtime GhostKing. Keep the
+            // slot table in sync with that destruction or clients[slot] remains non-null and the
+            // renderer will never create a replacement after save-triggering sublevel transitions
+            // (notably entering/leaving the Giant door).
+            try
+            {
+                var purged = GhostHero.PurgeGhostKingsFromCurrentGame();
+                if (purged > 0)
+                {
+                    Logger.Information("[NetMod] Purged {Count} GhostKing(s) before save", purged);
+                    InvalidateRemoteKingRuntimeSlotsAfterSavePurge("save");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("[NetMod] GhostKing pre-save purge failed: {Message}", ex.Message);
+            }
+
             if (_netRole == NetRole.Host)
             {
                 orig(u, onlyGameData);
@@ -1079,6 +1095,9 @@ namespace DeadCellsMultiplayerMod
             var localId = net?.id ?? 0;
             _ghost = new GhostHero(localId, game!, me, Logger, this);
             _ghost.SetLabel(me, GameMenu.Username);
+            _ghostOwnerHero = me;
+            _ghostOwnerGame = game;
+            _ghostBootstrapNet = net;
             if (!keepRemoteRenderGuardHeld)
             {
                 for (int i = 0; i < clients.Length; i++)
@@ -1127,6 +1146,15 @@ namespace DeadCellsMultiplayerMod
 
         public void OnHeroInit()
         {
+            var localGame = game ?? dc.pr.Game.Class.ME;
+            var hero = localGame?.hero ?? ModCore.Modules.Game.Instance?.HeroInstance;
+            if (localGame != null && hero != null && IsHeroRuntimeReadyForCoop(localGame, hero))
+            {
+                me = hero;
+                me._targetable = true;
+                ApplyDebugHeroRuntimeOptions();
+            }
+
             GameMenu.MarkInRun();
             ApplyDebugHeroRuntimeOptions();
         }
@@ -1160,7 +1188,10 @@ namespace DeadCellsMultiplayerMod
         }
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
-            if (me == null) return;
+            if (!TryGetReadyLocalHero(out _, out var localHero))
+                return;
+
+            me = localHero;
             var hitchStart = RuntimeHitchWatch.Start();
             var stepStart = RuntimeHitchWatch.Start();
             ApplyDebugHeroRuntimeOptions();
@@ -1172,6 +1203,10 @@ namespace DeadCellsMultiplayerMod
 
             if (_netRole == NetRole.None || _net == null)
                 return;
+
+            stepStart = RuntimeHitchWatch.Start();
+            EnsureCoopRuntimeBootstrap();
+            LogHeroUpdateStepIfSlow("ModEntry.OnHeroUpdate.EnsureCoopRuntimeBootstrap", stepStart, null);
 
             stepStart = RuntimeHitchWatch.Start();
             TrySendCurrentDiveSkillInfoSnapshot();
@@ -1273,6 +1308,178 @@ namespace DeadCellsMultiplayerMod
 
             var type = cine.GetType();
             return type == typeof(DeadBase) || type == typeof(RemoteDownedCorpse);
+        }
+
+        internal void PrepareForContinueLaunch()
+        {
+            DisposeCoopGhostRuntime();
+            // Continue keeps the live net session; discard old-world remote combat work
+            // before the next load so stale dive/attack packets cannot replay into it.
+            DrainRemoteCombatQueuesAfterLevelChange();
+            ResetDoorMarkerState();
+            FinishRemoteKingLevelTransition();
+            s_remoteKingCreationBlockedUntilTicks = 0;
+            s_subLevelRenderGuardArmed = false;
+            try { _net?.ClearRemoteRoomMarkers(); } catch { }
+            me = null!;
+            game = null;
+            kingInitialized = false;
+            ResetHeroCosmeticSendCache();
+            GameDataSync.ClearPendingBossRuneReloadState();
+        }
+
+        /// <summary>
+        /// After Continue/LoadSave (and any path that clears <see cref="_ghost"/>), recreate the
+        /// GhostHero factory and wait for remote coords to spawn a fresh GhostKing on the live level.
+        /// </summary>
+        private void EnsureCoopRuntimeBootstrap()
+        {
+            if (_netRole == NetRole.None)
+                return;
+
+            var net = _net;
+            if (net == null || !TryGetReadyLocalHero(out var localGame, out var localHero))
+                return;
+
+            me = localHero;
+            me._targetable = true;
+            game = localGame;
+
+            if (_ghost != null &&
+                (!ReferenceEquals(_ghostOwnerHero, me) ||
+                 !ReferenceEquals(_ghostOwnerGame, localGame)))
+            {
+                DisposeCoopGhostRuntime();
+            }
+
+            if (_ghost == null)
+            {
+                _ghost = new GhostHero(net.id, localGame, me, Logger, this);
+                _ghost.SetLabel(me, GameMenu.Username);
+                _ghostOwnerHero = me;
+                _ghostOwnerGame = localGame;
+                _ghostBootstrapNet = null;
+                ResetDoorMarkerState();
+                FinishRemoteKingLevelTransition();
+                s_remoteKingCreationBlockedUntilTicks = 0;
+                try { net.ClearRemoteRoomMarkers(); } catch { }
+                Logger.Information(
+                    "[NetMod] Coop ghost runtime bootstrapped for continue/level hero={HeroUid} level={LevelId}",
+                    me.__uid,
+                    me._level?.map?.id?.ToString() ?? "?");
+            }
+
+            if (ReferenceEquals(_ghostBootstrapNet, net))
+                return;
+
+            _ghostBootstrapNet = net;
+            EnsureHeroVisibilityAfterRoomChange(me);
+            var currentLevelId = GetCurrentLevelId();
+            if (!string.IsNullOrWhiteSpace(currentLevelId))
+                SendLevel(currentLevelId);
+            SendCurrentRoomTarget(force: true);
+            ResetLocalHeroPositionSendCache();
+            SendHeroCoords();
+            if (me.inventory != null)
+                SendEquippedWeapons(me.inventory);
+            if (net.IsHost)
+                GameDataSync.SendBossRune(localGame.user, net);
+            GameDataSync.SendCurrentHeroCosmetics(localGame.user, net);
+            MarkDiveNetGuardAfterSpawnOrRoomChange();
+
+            // Immediately rebuild remote kings from any already-buffered peer poses so Continue
+            // does not wait for the next movement packet after a still-standing player loads in.
+            try { ReceiveGhostCoords(); } catch { }
+        }
+
+        private bool TryGetReadyLocalHero(out dc.pr.Game localGame, out Hero localHero)
+        {
+            localGame = null!;
+            localHero = null!;
+
+            var candidateGame = game ?? dc.pr.Game.Class.ME;
+            var candidateHero = candidateGame?.hero ?? ModCore.Modules.Game.Instance?.HeroInstance ?? me;
+            if (candidateGame == null || candidateHero == null)
+                return false;
+
+            if (!IsHeroRuntimeReadyForCoop(candidateGame, candidateHero))
+                return false;
+
+            localGame = candidateGame;
+            localHero = candidateHero;
+            return true;
+        }
+
+        private static bool IsHeroRuntimeReadyForCoop(dc.pr.Game localGame, Hero hero)
+        {
+            try
+            {
+                if (localGame == null || hero == null || hero.destroyed)
+                    return false;
+
+                if (localGame.user == null || localGame.data == null || localGame.controller == null)
+                    return false;
+
+                var gameHero = localGame.hero;
+                if (gameHero != null && !ReferenceEquals(gameHero, hero))
+                    return false;
+
+                var level = hero._level;
+                if (level == null || level.map == null)
+                    return false;
+
+                if (level.game != null && !ReferenceEquals(level.game, localGame))
+                    return false;
+
+                var currentLevel = localGame.curLevel;
+                if (currentLevel != null && currentLevel.map != null)
+                {
+                    var heroLevelId = level.map.id?.ToString();
+                    var currentLevelId = currentLevel.map.id?.ToString();
+                    if (!string.IsNullOrWhiteSpace(heroLevelId) &&
+                        !string.IsNullOrWhiteSpace(currentLevelId) &&
+                        !string.Equals(heroLevelId, currentLevelId, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+
+                if (!HasHeroEntityRuntimeInitialized(hero))
+                    return false;
+
+                var cooldown = hero.cd;
+                if (cooldown == null || cooldown.fastCheck == null)
+                    return false;
+
+                return localGame.curCine == null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static bool HasHeroEntityRuntimeInitialized(Hero? hero)
+        {
+            try
+            {
+                return hero != null && hero.awake && hero.initDone;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static void ResetHeroCosmeticSendCache()
+        {
+            try
+            {
+                Instance?.ResetLocalSkinSendCache();
+            }
+            catch
+            {
+            }
         }
 
     }

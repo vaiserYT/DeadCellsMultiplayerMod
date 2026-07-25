@@ -31,6 +31,7 @@ namespace DeadCellsMultiplayerMod
         private static NetRole _multiplayerSaveMenuReturnRole = NetRole.None;
         private static int? _multiplayerSaveImportTargetSlot;
         private static int? _preferredMultiplayerSaveSlot;
+        private static bool _forceMultiplayerSaveStore;
         private static ControlLabel? _multiplayerSaveImportControlLabel;
         private static string _multiplayerSaveDefaultTitle = string.Empty;
         private static bool _hasCapturedMultiplayerSaveDefaultTitle;
@@ -62,7 +63,11 @@ namespace DeadCellsMultiplayerMod
 
         private static void OpenMultiplayerSlotMenu(TitleScreen screen)
         {
-            _multiplayerSaveMenuReturnRole = _menuSelection;
+            _multiplayerSaveMenuReturnRole = _inHostStatusMenu
+                ? NetRole.Host
+                : _inClientWaitingMenu
+                    ? NetRole.Client
+                    : _role;
 
             OpenSaveMenu(screen, MultiplayerSaveMenuKind.MultiplayerSlots);
         }
@@ -165,13 +170,20 @@ namespace DeadCellsMultiplayerMod
         {
             if (_multiplayerSaveMenuKind != MultiplayerSaveMenuKind.OriginalSourceSelection)
             {
+                int? selectedMultiplayerSlot = null;
                 if (_multiplayerSaveMenuKind == MultiplayerSaveMenuKind.MultiplayerSlots &&
                     TryGetSelectedSaveSlot(self, out var selectedSlot))
                 {
                     _preferredMultiplayerSaveSlot = selectedSlot;
+                    selectedMultiplayerSlot = selectedSlot;
                 }
 
                 orig(self);
+                if (selectedMultiplayerSlot.HasValue)
+                {
+                    SetCurrentSaveSlot(selectedMultiplayerSlot.Value);
+                    NotifyMultiplayerSaveSlotChanged();
+                }
                 return;
             }
 
@@ -184,6 +196,7 @@ namespace DeadCellsMultiplayerMod
 
             _preferredMultiplayerSaveSlot = _multiplayerSaveImportTargetSlot.Value;
             SetCurrentSaveSlot(_multiplayerSaveImportTargetSlot.Value);
+            NotifyMultiplayerSaveSlotChanged();
             _multiplayerSaveImportTargetSlot = null;
             SwitchSaveChoiceStore(self, MultiplayerSaveMenuKind.MultiplayerSlots);
         }
@@ -205,7 +218,20 @@ namespace DeadCellsMultiplayerMod
             if (_multiplayerSaveMenuKind == MultiplayerSaveMenuKind.OriginalSourceSelection)
                 return;
 
+            int? deletedMultiplayerSlot = null;
+            if (_multiplayerSaveMenuKind == MultiplayerSaveMenuKind.MultiplayerSlots &&
+                TryGetSelectedSaveSlot(self, out var selectedSlot))
+            {
+                deletedMultiplayerSlot = selectedSlot;
+            }
+
             orig(self);
+
+            if (deletedMultiplayerSlot.HasValue)
+            {
+                MUser.ClearCoopId(deletedMultiplayerSlot.Value);
+                NotifyMultiplayerSaveSlotChanged();
+            }
         }
 
         private static void Hook_SaveChoice_onDispose(Hook_SaveChoice.orig_onDispose orig, SaveChoice self)
@@ -266,7 +292,7 @@ namespace DeadCellsMultiplayerMod
             if (_multiplayerSaveMenuKind == MultiplayerSaveMenuKind.OriginalSourceSelection)
                 return false;
 
-            return _role != NetRole.None || _multiplayerSaveMenuKind == MultiplayerSaveMenuKind.MultiplayerSlots || _multiplayerSaveMenuOpening;
+            return _forceMultiplayerSaveStore || _role != NetRole.None || _multiplayerSaveMenuKind == MultiplayerSaveMenuKind.MultiplayerSlots || _multiplayerSaveMenuOpening;
         }
 
         private static int ResolveSaveSlotNumber(int? slot)
@@ -612,16 +638,9 @@ namespace DeadCellsMultiplayerMod
             if (bindings == null)
                 return -1;
             if ((uint)actionCode >= (uint)bindings.length)
-                return -1;
+                return 0;
 
-            try
-            {
-                return Marshal.ReadInt32(bindings.bytes, actionCode << 2);
-            }
-            catch
-            {
-                return -1;
-            }
+            return Marshal.ReadInt32(bindings.bytes, actionCode << 2);
         }
 
         private static double GetCurrentUnixTimeSeconds()
@@ -894,6 +913,7 @@ namespace DeadCellsMultiplayerMod
                 EnsureMultiplayerSaveFolderExists();
                 var targetRelativePath = GetMultiplayerSaveRelativeFilePath(targetSlot);
                 dc.tool.File.Class.saveBytes.Invoke(MakeHLString(targetRelativePath), sourceBytes);
+                MUser.ClearCoopId(targetSlot);
                 return true;
             }
             catch (Exception ex)

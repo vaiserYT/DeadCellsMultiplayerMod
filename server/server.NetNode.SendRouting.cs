@@ -32,7 +32,6 @@ public sealed partial class NetNode
                trimmed.StartsWith("MOBSTATE|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase) ||
-               trimmed.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("INTERELEVSTATE|", StringComparison.OrdinalIgnoreCase);
     }
@@ -55,7 +54,6 @@ public sealed partial class NetNode
         return trimmed.StartsWith("ANIM|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("HEADANIM|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase) ||
-               trimmed.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase) ||
                trimmed.StartsWith("INTERELEVSTATE|", StringComparison.OrdinalIgnoreCase);
     }
@@ -85,7 +83,9 @@ public sealed partial class NetNode
         // subset of enemies even though ordinary movement packets continue to arrive.
         if (line.StartsWith("MOBEVENT|", StringComparison.OrdinalIgnoreCase) ||
             line.StartsWith("MOBSTATE|", StringComparison.OrdinalIgnoreCase) ||
-            line.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase))
+            line.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("MOBREG|", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("MOBDIE|", StringComparison.OrdinalIgnoreCase))
         {
             return EP2PSend.k_EP2PSendReliable;
         }
@@ -119,7 +119,7 @@ public sealed partial class NetNode
         return _stream != null && _client != null && _client.Connected;
     }
 
-    /// <summary>Sends a pre-encoded mob protocol line (used by MobSyncWorker). Line must start with MOB.</summary>
+    /// <summary>Sends a pre-encoded mob protocol line. Line must start with MOB.</summary>
     public Task SendMobWireLine(string line)
     {
         if (string.IsNullOrEmpty(line))
@@ -206,6 +206,8 @@ public sealed partial class NetNode
                 continue;
             var line = BuildTaggedLine("USER", state.Id, username);
             await SendLineToSteamClientSafe(connection, line).ConfigureAwait(false);
+            await SendLineToSteamClientSafe(connection, BuildReadyLine(state.Id, state.Ready)).ConfigureAwait(false);
+            await SendLineToSteamClientSafe(connection, BuildCoopStateLine(state.Id, state.CoopId, state.HasContinueSave)).ConfigureAwait(false);
 
             if (!string.IsNullOrWhiteSpace(state.Skin))
             {

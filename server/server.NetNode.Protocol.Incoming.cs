@@ -12,14 +12,12 @@ public sealed partial class NetNode
     // the correct failure mode for state/move snapshots.
     private const int PendingMobStateLimit = 8192;
     private const int PendingMobMoveLimit = 8192;
-    private const int PendingMobChargeLimit = 2048;
     private const int PendingMobHitLimit = 2048;
     private const int PendingMobDieLimit = 2048;
     private const int PendingMobAttackLimit = 2048;
     private const int PendingMobDrawLimit = 4096;
     private const int PendingNetworkLineLimit = 1024;
     private const int PendingAttackLimit = 1024;
-    private const int PendingChatLimit = 256;
     private const int PendingControlStateLimit = 256;
     private const int PendingInteractionLimit = 512;
     private const int PendingBossCineLimit = 64;
@@ -55,11 +53,35 @@ public sealed partial class NetNode
         target.Add(item);
     }
 
-    private bool TryHandleClientFastPathLine(string line)
+    /// <summary>
+    /// Lines that can be fully handled on the network thread, without hopping to the game thread.
+    /// </summary>
+    /// <remarks>
+    /// Mob traffic (MOBMOVE/MOBSTATE/MOBHIT/...) is by far the highest-volume part of the protocol
+    /// and consists only of string parsing plus an append into a <c>_pending*</c> list under
+    /// <c>_sync</c>. None of it touches the Haxe runtime. Routing it through the bounded
+    /// main-thread action queue therefore bought nothing and cost a great deal: the parse ran on
+    /// the render thread, and once that queue filled, back-pressure propagated all the way back
+    /// into the socket read loop, so movement snapshots AND the reliable keyframes that repair
+    /// them arrived late and bunched. That is invisible with two instances on one machine (the
+    /// queue never fills) and severe over real latency and jitter.
+    ///
+    /// MobSync still consumes the pending lists on the game thread in its frame loop, and every
+    /// mob packet carries a generation, so handling these lines earlier than surrounding protocol
+    /// lines is safe: a snapshot for a level the peer has not built yet is rejected by the
+    /// existing generation fence and re-sent by the host's periodic authoritative resync.
+    /// </remarks>
+    private bool TryHandleFastPathLine(string line, int? senderId)
     {
         if (IsSupersededNetworkSession())
             return true;
         if (string.IsNullOrEmpty(line))
+            return false;
+
+        if (TryHandleMobTrafficFastPath(line, senderId))
+            return true;
+
+        if (_role != NetRole.Client)
             return false;
 
         try
@@ -91,6 +113,238 @@ public sealed partial class NetNode
         catch (Exception ex)
         {
             _log.Warning("[NetNode] Fast-path line handling failed: {msg}", ex.Message);
+        }
+
+        return false;
+    }
+
+    private bool TryHandleMobTrafficFastPath(string line, int? senderId)
+    {
+        if (line.Length < 4 || !line.StartsWith("MOB", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // A host relaying another peer's MOBEVENT die must keep its position in the ordered
+        // forward stream, so that one case stays on the main-thread path.
+        if (_role == NetRole.Host && line.StartsWith("MOBEVENT|", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        try
+        {
+            var forceSenderId = _role == NetRole.Host && senderId.HasValue;
+            if (!TryHandleMobTrafficLineCore(line, senderId, forceSenderId, out _))
+                return false;
+
+            NetNodeMobTrafficStats.RecordFastPathLine();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // A malformed mob packet must never tear down the receive loop.
+            _log.Warning("[NetNode] Mob fast-path line handling failed: {msg}", ex.Message);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Shared handling for every MOB* protocol line. Pure parse plus a bounded enqueue; safe to run
+    /// on either the network thread or the game thread.
+    /// </summary>
+    private bool TryHandleMobTrafficLineCore(string line, int? senderId, bool forceSenderId, out string? forwardLine)
+    {
+        forwardLine = null;
+
+        if (line.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["MOBSTATE2|".Length..].TrimEnd('\r', '\n');
+            var parsedStates = new List<MobStateSnapshot>();
+            if (MobWireBinary.TryParseMobStatesBase64(payload, parsedStates))
+            {
+                lock (_sync)
+                {
+                    // MOBSTATE packets are often split into multiple wire lines when a level has
+                    // many mobs. The old client path replaced the pending list with each incoming
+                    // packet, so after level transitions the client only consumed the final chunk
+                    // of the host's bootstrap/full-resync. First Prison worked because it usually
+                    // fit in one packet; bigger next levels did not. Always append and let
+                    // TryConsumeMobStates swap/clear the accumulated frame batch. Generation checks
+                    // in MobSync still reject stale old-level states.
+                    if (parsedStates.Count > 0)
+                        AppendBoundedLocked(_pendingMobStates, parsedStates, PendingMobStateLimit);
+
+                    _hasRemote = true;
+                }
+            }
+
+            return true;
+        }
+
+        if (line.StartsWith("MOBSTATE|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["MOBSTATE|".Length..];
+            var parsedStates = ParseMobStatesPayload(payload);
+            lock (_sync)
+            {
+                // MOBSTATE packets can be chunked. Appending on the client is required so a
+                // full next-level mob bootstrap is consumed as one accumulated frame batch instead
+                // of keeping only the last chunk.
+                if (parsedStates.Count > 0)
+                    AppendBoundedLocked(_pendingMobStates, parsedStates, PendingMobStateLimit);
+                _hasRemote = true;
+            }
+            return true;
+        }
+
+        if (line.StartsWith("MOBREG|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role == NetRole.Host)
+                return true;
+
+            var payload = line["MOBREG|".Length..];
+            if (TryParseMobRegistryPayload(payload, out var parsedRegistry) && parsedRegistry.Count > 0)
+            {
+                lock (_sync)
+                {
+                    AppendBoundedLocked(_pendingMobRegistry, parsedRegistry, PendingMobStateLimit);
+                    _hasRemote = true;
+                }
+            }
+            return true;
+        }
+
+        if (line.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role != NetRole.Host)
+            {
+                var payload = line["MOBMOVE|".Length..];
+                var parsedMoves = ParseMobMovesPayload(payload);
+                lock (_sync)
+                {
+                    if (parsedMoves.Count > 0)
+                    {
+                        AppendBoundedLocked(_pendingMobMoves, parsedMoves, PendingMobMoveLimit);
+                        _hasRemote = true;
+                    }
+                }
+            }
+            return true;
+        }
+
+        if (line.StartsWith("MOBHIT|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role != NetRole.Host)
+                return true;
+
+            var payload = line["MOBHIT|".Length..];
+            if (TryParseMobHitPayload(payload, senderId, forceSenderId, out var hit))
+            {
+                lock (_sync)
+                {
+                    AddBoundedLocked(_pendingMobHits, hit, PendingMobHitLimit);
+                    _hasRemote = true;
+                }
+            }
+            return true;
+        }
+
+        if (line.StartsWith("MOBDIE|", StringComparison.OrdinalIgnoreCase))
+        {
+            // Death is host-authoritative. A client may report damage intent, never a completed
+            // death; do not enqueue or relay a spoofed/stale client MOBDIE to other peers.
+            if (_role == NetRole.Host)
+                return true;
+
+            var payload = line["MOBDIE|".Length..];
+            if (TryParseMobDiePayload(payload, senderId, forceSenderId, out var die))
+            {
+                lock (_sync)
+                {
+                    AddBoundedLocked(_pendingMobDies, die, PendingMobDieLimit);
+                    _hasRemote = true;
+                }
+
+            }
+            return true;
+        }
+
+        if (line.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role != NetRole.Host)
+                return true;
+
+            var payload = line["MOBDRAW|".Length..];
+            if (TryParseMobDrawPayload(payload, senderId, forceSenderId, out var draws))
+            {
+                lock (_sync)
+                {
+                    AppendBoundedLocked(_pendingMobDraws, draws, PendingMobDrawLimit);
+                    _hasRemote = true;
+                }
+            }
+            return true;
+        }
+
+        if (line.StartsWith("MOBEVENT|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["MOBEVENT|".Length..];
+            var parsed = ParseMobEventsPayload(payload);
+            var effectiveUserId = forceSenderId && senderId.HasValue ? senderId.Value : (senderId ?? 0);
+            var hasDieToForward = false;
+            if (parsed.Count > 0)
+            {
+                lock (_sync)
+                {
+                    foreach (var u in parsed)
+                    {
+                        if (u.Events == null)
+                            continue;
+                        foreach (var ev in u.Events)
+                        {
+                            if (string.IsNullOrEmpty(ev))
+                                continue;
+                            if (ev.StartsWith("attack|", StringComparison.Ordinal) && _role != NetRole.Host)
+                            {
+                                if (TryParseMobAttackEvent(ev, u.Index, u.X, u.Y, u.Dir, u.Type, u.Generation, out var attack))
+                                    AddBoundedLocked(_pendingMobAttacks, attack, PendingMobAttackLimit);
+                            }
+                            else if (ev.StartsWith("hit|", StringComparison.Ordinal))
+                            {
+                                if (TryParseMobHitEvent(ev, u.Index, u.X, u.Y, effectiveUserId, u.Type, u.Generation, out var hit))
+                                {
+                                    AddBoundedLocked(_pendingMobHits, hit, PendingMobHitLimit);
+                                }
+                            }
+                            else if (ev == "die")
+                            {
+                                var die = new MobDie(effectiveUserId, u.Index, u.X, u.Y, u.Generation, u.Type);
+                                AddBoundedLocked(_pendingMobDies, die, PendingMobDieLimit);
+                                if (_role == NetRole.Host && senderId.HasValue)
+                                    hasDieToForward = true;
+                            }
+                        }
+                    }
+                    _hasRemote = true;
+                }
+                if (hasDieToForward)
+                    forwardLine = line;
+            }
+            return true;
+        }
+
+        if (line.StartsWith("MOBATK|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role == NetRole.Host)
+                return true;
+
+            var payload = line["MOBATK|".Length..];
+            if (TryParseMobAttackPayload(payload, out var attack))
+            {
+                lock (_sync)
+                {
+                    AddBoundedLocked(_pendingMobAttacks, attack, PendingMobAttackLimit);
+                    _hasRemote = true;
+                }
+            }
+            return true;
         }
 
         return false;
@@ -266,6 +520,22 @@ public sealed partial class NetNode
             return true;
         }
 
+        if (line.StartsWith("RESTART|", StringComparison.Ordinal))
+        {
+            var payload = line["RESTART|".Length..];
+            if (int.TryParse(payload, NumberStyles.Integer, CultureInfo.InvariantCulture, out var restartSeed))
+            {
+                lock (_sync) _hasRemote = true;
+                GameMenu.ReceiveHostRunRestart(restartSeed);
+            }
+            else
+            {
+                _log.Warning("[NetNode] Malformed RESTART line: \"{line}\"");
+            }
+
+            return true;
+        }
+
         if (line.StartsWith("HXSYNC|", StringComparison.Ordinal))
         {
             var payload = line["HXSYNC|".Length..];
@@ -285,16 +555,18 @@ public sealed partial class NetNode
         if (line.StartsWith("BOSSRUNE_UPDATE_CELLS|", StringComparison.OrdinalIgnoreCase))
         {
             var payload = line["BOSSRUNE_UPDATE_CELLS|".Length..].Trim();
-            var parts = payload.Split('|');
-            if (parts.Length >= 3 &&
-                double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) &&
-                double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y) &&
-                int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var addInt))
+            if (TryParseInterBossRuneUpdateCellsPayload(payload, out var ev))
             {
                 lock (_sync)
                 {
-                    AddBoundedLocked(_pendingBossRuneUpdateCells, new InterBossRuneUpdateCellsEvent(x, y, addInt != 0), PendingInteractionLimit);
+                    AddBoundedLocked(_pendingBossRuneUpdateCells, ev, PendingInteractionLimit);
                     _hasRemote = true;
+                }
+
+                if (_role == NetRole.Host && senderId.HasValue)
+                {
+                    forwardLine =
+                        $"BOSSRUNE_UPDATE_CELLS|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{(ev.Add ? 1 : 0)}|{ev.LevelId}\n";
                 }
             }
             return true;
@@ -330,36 +602,98 @@ public sealed partial class NetNode
             return true;
         }
 
-        if (line.StartsWith("CHAT|", StringComparison.OrdinalIgnoreCase))
+        if (line.StartsWith("READY|", StringComparison.OrdinalIgnoreCase))
         {
-            var payload = line["CHAT|".Length..];
-            ParseChatPayload(payload, out var parsedId, out var message);
-            var effectiveId = parsedId ?? senderId;
-            if (forceSenderId)
-                effectiveId = senderId;
-
-            message = SanitizeChatMessage(message);
-            if (effectiveId.HasValue && !string.IsNullOrWhiteSpace(message))
+            var payload = line["READY|".Length..];
+            var parts = payload.Split('|');
+            if (parts.Length >= 2 &&
+                int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedReadyId))
             {
-                string? username;
-                lock (_sync)
+                var effectiveId = forceSenderId ? senderId : parsedReadyId;
+                if (effectiveId.HasValue)
                 {
-                    var state = GetOrCreateRemoteLocked(effectiveId.Value);
-                    state.HasRemote = true;
-                    _hasRemote = true;
-                    if (_primaryRemoteId == 0)
-                        _primaryRemoteId = effectiveId.Value;
-                    username = state.Username;
-                    AddBoundedLocked(_pendingChatMessages, new RemoteChatMessage(effectiveId.Value, username, message), PendingChatLimit);
-                }
+                    var ready = string.Equals(parts[1], "1", StringComparison.Ordinal);
+                    lock (_sync)
+                    {
+                        var state = GetOrCreateRemoteLocked(effectiveId.Value);
+                        state.Ready = ready;
+                        state.HasRemote = true;
+                        _hasRemote = true;
+                        if (_primaryRemoteId == 0)
+                            _primaryRemoteId = effectiveId.Value;
+                    }
 
-                if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = BuildChatLine(effectiveId.Value, message);
+                    GameMenu.ReceiveRemoteReady(effectiveId.Value, ready);
+
+                    if (_role == NetRole.Host && senderId.HasValue)
+                        forwardLine = BuildReadyLine(effectiveId.Value, ready);
+                }
             }
 
             return true;
         }
 
+        if (line.StartsWith("COOPID|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["COOPID|".Length..];
+            var effectiveId = ResolvePayloadId(payload, senderId, out var coopPayload);
+            if (forceSenderId)
+                effectiveId = senderId;
+
+            ParseCoopStatePayload(coopPayload, out var coopId, out var hasContinueSave);
+            if (effectiveId.HasValue)
+            {
+                lock (_sync)
+                {
+                    var state = GetOrCreateRemoteLocked(effectiveId.Value);
+                    state.CoopId = coopId;
+                    state.HasContinueSave = hasContinueSave;
+                    state.HasRemote = true;
+                    _hasRemote = true;
+                    if (_primaryRemoteId == 0)
+                        _primaryRemoteId = effectiveId.Value;
+                }
+
+                GameMenu.ReceiveRemoteCoopState(effectiveId.Value, coopId, hasContinueSave);
+
+                if (_role == NetRole.Host && senderId.HasValue)
+                    forwardLine = BuildCoopStateLine(effectiveId.Value, coopId, hasContinueSave);
+            }
+
+            return true;
+        }
+
+        if (line.StartsWith("LAUNCHMODE|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["LAUNCHMODE|".Length..];
+            var parts = payload.Split('|');
+            if (parts.Length >= 6 &&
+                int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var actionValue))
+            {
+                var custom = string.Equals(parts[1], "1", StringComparison.Ordinal);
+                var streamEnabled = string.Equals(parts[2], "1", StringComparison.Ordinal);
+                var newCoopWorldPrepared = string.Equals(parts[3], "1", StringComparison.Ordinal);
+                var coopId = SanitizeProtocolToken(parts[4], 128);
+                var hostHasContinueSave = string.Equals(parts[5], "1", StringComparison.Ordinal);
+
+                lock (_sync)
+                    _hasRemote = true;
+
+                GameMenu.ReceiveLaunchMode(
+                    actionValue,
+                    custom,
+                    streamEnabled,
+                    newCoopWorldPrepared,
+                    coopId,
+                    hostHasContinueSave);
+            }
+            else
+            {
+                _log.Warning("[NetNode] Malformed LAUNCHMODE line: \"{line}\"", line);
+            }
+
+            return true;
+        }
 
         if (line.StartsWith("LOBBYSTATE|", StringComparison.OrdinalIgnoreCase))
         {
@@ -509,6 +843,14 @@ public sealed partial class NetNode
             var payload = line["GEN|".Length..];
             lock (_sync) _hasRemote = true;
             GameMenu.ReceiveGeneratePayload(payload);
+            return true;
+        }
+
+        if (line.StartsWith("CGDATA|", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = line["CGDATA|".Length..];
+            lock (_sync) _hasRemote = true;
+            GameMenu.ReceiveCustomGameData(payload);
             return true;
         }
 
@@ -712,153 +1054,12 @@ public sealed partial class NetNode
             return true;
         }
 
-        if (line.StartsWith("MOBSTATE2|", StringComparison.OrdinalIgnoreCase))
+        // Mob traffic is pure parse + enqueue and never touches the Haxe runtime, so it is handled
+        // by one shared core that both this ordered main-thread path and the network-thread fast
+        // path can call. Whichever path reaches a given line first is the only one that runs it.
+        if (TryHandleMobTrafficLineCore(line, senderId, forceSenderId, out var mobForwardLine))
         {
-            var payload = line["MOBSTATE2|".Length..].TrimEnd('\r', '\n');
-            var parsedStates = new List<MobStateSnapshot>();
-            if (MobWireBinary.TryParseMobStatesBase64(payload, parsedStates))
-            {
-                lock (_sync)
-                {
-                    // MOBSTATE packets are often split into multiple wire lines when a level has
-                    // many mobs. The old client path replaced the pending list with each incoming
-                    // packet, so after level transitions the client only consumed the final chunk
-                    // of the host's bootstrap/full-resync. First Prison worked because it usually
-                    // fit in one packet; bigger next levels did not. Always append and let
-                    // TryConsumeMobStates swap/clear the accumulated frame batch. Generation checks
-                    // in MobSync still reject stale old-level states.
-                    if (parsedStates.Count > 0)
-                        AppendBoundedLocked(_pendingMobStates, parsedStates, PendingMobStateLimit);
-
-                    _hasRemote = true;
-                }
-            }
-
-            return true;
-        }
-
-        if (line.StartsWith("MOBSTATE|", StringComparison.OrdinalIgnoreCase))
-        {
-            var payload = line["MOBSTATE|".Length..];
-            var parsedStates = ParseMobStatesPayload(payload);
-            lock (_sync)
-            {
-                // MOBSTATE packets can be chunked. Appending on the client is required so a
-                // full next-level mob bootstrap is consumed as one accumulated frame batch instead
-                // of keeping only the last chunk.
-                if (parsedStates.Count > 0)
-                    AppendBoundedLocked(_pendingMobStates, parsedStates, PendingMobStateLimit);
-                _hasRemote = true;
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBMOVE|", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_role != NetRole.Host)
-            {
-                var payload = line["MOBMOVE|".Length..];
-                var parsedMoves = ParseMobMovesPayload(payload);
-                lock (_sync)
-                {
-                    if (parsedMoves.Count > 0)
-                    {
-                        AppendBoundedLocked(_pendingMobMoves, parsedMoves, PendingMobMoveLimit);
-                        _hasRemote = true;
-                    }
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBCHARGE|", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_role != NetRole.Host)
-            {
-                var payload = line["MOBCHARGE|".Length..];
-                var parsedCharges = ParseMobChargesPayload(payload);
-                lock (_sync)
-                {
-                    if (parsedCharges.Count > 0)
-                    {
-                        AppendBoundedLocked(_pendingMobCharges, parsedCharges, PendingMobChargeLimit);
-                        _hasRemote = true;
-                    }
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBHIT|", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_role != NetRole.Host)
-                return true;
-
-            var payload = line["MOBHIT|".Length..];
-            if (TryParseMobHitPayload(payload, senderId, forceSenderId, out var hit))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(_pendingMobHits, hit, PendingMobHitLimit);
-                    _hasRemote = true;
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBDIE|", StringComparison.OrdinalIgnoreCase))
-        {
-            // Death is host-authoritative. A client may report damage intent, never a completed
-            // death; do not enqueue or relay a spoofed/stale client MOBDIE to other peers.
-            if (_role == NetRole.Host)
-                return true;
-
-            var payload = line["MOBDIE|".Length..];
-            if (TryParseMobDiePayload(payload, senderId, forceSenderId, out var die))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(_pendingMobDies, die, PendingMobDieLimit);
-                    _hasRemote = true;
-                }
-
-            }
-            return true;
-        }
-
-        if (line.StartsWith("BOSSVICTORY|", StringComparison.OrdinalIgnoreCase))
-        {
-            // Victory and reward revival are host-authoritative. Silently consume a spoofed
-            // client packet on the host, but never enqueue or forward it.
-            if (_role == NetRole.Host)
-                return true;
-
-            var payload = line["BOSSVICTORY|".Length..];
-            if (TryParseBossVictoryPayload(payload, out var state))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(_pendingBossVictories, state, PendingControlStateLimit);
-                    _hasRemote = true;
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBDRAW|", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_role != NetRole.Host)
-                return true;
-
-            var payload = line["MOBDRAW|".Length..];
-            if (TryParseMobDrawPayload(payload, senderId, forceSenderId, out var draws))
-            {
-                lock (_sync)
-                {
-                    AppendBoundedLocked(_pendingMobDraws, draws, PendingMobDrawLimit);
-                    _hasRemote = true;
-                }
-            }
+            forwardLine = mobForwardLine;
             return true;
         }
 
@@ -933,54 +1134,6 @@ public sealed partial class NetNode
                         _hasRemote = true;
                     }
 
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("BOSSINTROEND|", StringComparison.OrdinalIgnoreCase))
-        {
-            // Intro completion is host-authoritative for the same reason as intro start. A client
-            // cannot release or advance another peer's arena presentation.
-            if (_role == NetRole.Host)
-                return true;
-
-            var payload = line["BOSSINTROEND|".Length..]
-                .Replace("\r", string.Empty, StringComparison.Ordinal)
-                .Replace("\n", string.Empty, StringComparison.Ordinal)
-                .Trim();
-            if (!string.IsNullOrWhiteSpace(payload))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(_pendingBossIntroEnds, payload, PendingBossCineLimit);
-                    _hasRemote = true;
-                }
-            }
-            return true;
-        }
-
-        if (line.StartsWith("BOSSINTROREADY|", StringComparison.OrdinalIgnoreCase))
-        {
-            // Readiness travels client-to-host only, and the sender id always comes from the
-            // authenticated TCP/Steam connection. Never relay it back to clients.
-            if (_role != NetRole.Host || !senderId.HasValue ||
-                !IsHostClientHandshakeComplete(senderId.Value))
-                return true;
-
-            var payload = line["BOSSINTROREADY|".Length..]
-                .Replace("\r", string.Empty, StringComparison.Ordinal)
-                .Replace("\n", string.Empty, StringComparison.Ordinal)
-                .Trim();
-            if (!string.IsNullOrWhiteSpace(payload))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(
-                        _pendingBossIntroReadyStates,
-                        new BossIntroReadyState(senderId.Value, payload),
-                        PendingBossCineLimit);
-                    _hasRemote = true;
                 }
             }
             return true;
@@ -1072,7 +1225,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERCHEST|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERCHEST|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1089,7 +1242,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERVINELADDER|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERVINELADDER|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1106,7 +1259,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERTELEPORT|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERTELEPORT|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1141,7 +1294,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERBREAK|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
+                    forwardLine = $"INTERBREAK|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }
@@ -1158,71 +1311,7 @@ public sealed partial class NetNode
                 }
 
                 if (_role == NetRole.Host && senderId.HasValue)
-                    forwardLine = $"INTERPORTAL|{ev.Action}|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}\n";
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBEVENT|", StringComparison.OrdinalIgnoreCase))
-        {
-            var payload = line["MOBEVENT|".Length..];
-            var parsed = ParseMobEventsPayload(payload);
-            var effectiveUserId = forceSenderId && senderId.HasValue ? senderId.Value : (senderId ?? 0);
-            var hasDieToForward = false;
-            if (parsed.Count > 0)
-            {
-                lock (_sync)
-                {
-                    foreach (var u in parsed)
-                    {
-                        if (u.Events == null)
-                            continue;
-                        foreach (var ev in u.Events)
-                        {
-                            if (string.IsNullOrEmpty(ev))
-                                continue;
-                            if (ev.StartsWith("attack|", StringComparison.Ordinal) && _role != NetRole.Host)
-                            {
-                                if (TryParseMobAttackEvent(ev, u.Index, u.X, u.Y, u.Dir, u.Type, u.Generation, out var attack))
-                                    AddBoundedLocked(_pendingMobAttacks, attack, PendingMobAttackLimit);
-                            }
-                            else if (ev.StartsWith("hit|", StringComparison.Ordinal))
-                            {
-                                if (TryParseMobHitEvent(ev, u.Index, u.X, u.Y, effectiveUserId, u.Type, u.Generation, out var hit))
-                                {
-                                    AddBoundedLocked(_pendingMobHits, hit, PendingMobHitLimit);
-                                }
-                            }
-                            else if (ev == "die")
-                            {
-                                var die = new MobDie(effectiveUserId, u.Index, u.X, u.Y, u.Generation, u.Type);
-                                AddBoundedLocked(_pendingMobDies, die, PendingMobDieLimit);
-                                if (_role == NetRole.Host && senderId.HasValue)
-                                    hasDieToForward = true;
-                            }
-                        }
-                    }
-                    _hasRemote = true;
-                }
-                if (hasDieToForward)
-                    forwardLine = line;
-            }
-            return true;
-        }
-
-        if (line.StartsWith("MOBATK|", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_role == NetRole.Host)
-                return true;
-
-            var payload = line["MOBATK|".Length..];
-            if (TryParseMobAttackPayload(payload, out var attack))
-            {
-                lock (_sync)
-                {
-                    AddBoundedLocked(_pendingMobAttacks, attack, PendingMobAttackLimit);
-                    _hasRemote = true;
-                }
+                    forwardLine = $"INTERPORTAL|{ev.Action}|{ev.X.ToString(CultureInfo.InvariantCulture)}|{ev.Y.ToString(CultureInfo.InvariantCulture)}|{ev.LevelId}\n";
             }
             return true;
         }

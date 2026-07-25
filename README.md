@@ -111,8 +111,10 @@ On the first launch, required configuration files will be generated automaticall
 - [x] Level graph reload (boss cells, transitions)  
 - [x] Multiplayer save slots and continue  
 - [x] Camera spectate mode  
-- [ ] Custom mode  
+- [x] Custom mode  
 - [x] Steam P2P connectivity  
+
+**Note:** Enemy sync uses host-owned NetIds (not native game entity ids). `AdvancedCoop` is lobby heartbeat + permanent unlock progression only — it does not sync enemies.
 
 ---
 

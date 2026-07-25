@@ -62,11 +62,69 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
         {
         }
 
+        /// <summary>
+        /// Multiplayer GhostKing is a live network avatar only. Persisting it into MSave makes
+        /// LoadSave/Continue crash in KingSkin.initGfx (null cd.fastCheck) because Hxbit restore
+        /// cannot rebuild our runtime-only fields.
+        /// </summary>
+        public override bool shouldSave()
+        {
+            return false;
+        }
+
+        public override bool prepareSave()
+        {
+            return false;
+        }
+
+        public override void onReload()
+        {
+            // Never revive a GhostKing from save data — destroy the husk instead of initGfx.
+            try
+            {
+                if (!destroyed)
+                    destroy();
+            }
+            catch
+            {
+            }
+        }
+
         public override void init()
         {
+            if (IsUnsafePersistedInstance())
+            {
+                try
+                {
+                    if (!destroyed)
+                        destroy();
+                }
+                catch
+                {
+                }
+                return;
+            }
+
             EnsureRuntimeDependencies();
             base.init();
             base.initSpeechDeck();
+        }
+
+        private bool IsUnsafePersistedInstance()
+        {
+            try
+            {
+                // Fresh multiplayer kings always have a cooldown map after Entity construction /
+                // EnsureRuntimeDependencies. A Hxbit-restored husk typically has cd == null or a
+                // cooldown without fastCheck, which is exactly what crashes KingSkin.initGfx.
+                if (cd == null)
+                    return true;
+                return cd.fastCheck == null;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static Hero? ResolveLocalHero()
@@ -1029,6 +1087,9 @@ namespace DeadCellsMultiplayerMod.Ghost.GhostBase
 
         public override void initGfx()
         {
+            if (IsUnsafePersistedInstance())
+                return;
+
             base.initGfx();
             var skinInfo = ResolveBodySkinInfo(RemoteSkinId ?? ModEntry.Instance?.remoteSkin, out var resolvedSkinId);
             if (skinInfo == null)
