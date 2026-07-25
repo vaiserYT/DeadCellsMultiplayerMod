@@ -206,6 +206,7 @@ namespace DeadCellsMultiplayerMod
             {
                 return _role == NetRole.Client && _inActualRun;
             }
+<<<<<<< HEAD
         }
 
         internal static bool IsInActualRun()
@@ -214,6 +215,8 @@ namespace DeadCellsMultiplayerMod
             {
                 return _inActualRun;
             }
+=======
+>>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
         }
 
         public static void SetRole(NetRole role)

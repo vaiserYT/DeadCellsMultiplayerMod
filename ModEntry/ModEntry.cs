@@ -856,19 +856,26 @@ namespace DeadCellsMultiplayerMod
         {
             // Never let multiplayer GhostKing / KingSkin avatars enter MSave. A persisted GhostKing
             // reloads through KingSkin.initGfx with a null cooldown map and fatals the game.
+<<<<<<< HEAD
             //
             // IMPORTANT: PurgeGhostKingsFromCurrentGame destroys the runtime GhostKing. Keep the
             // slot table in sync with that destruction or clients[slot] remains non-null and the
             // renderer will never create a replacement after save-triggering sublevel transitions
             // (notably entering/leaving the Giant door).
+=======
+>>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
             try
             {
                 var purged = GhostHero.PurgeGhostKingsFromCurrentGame();
                 if (purged > 0)
+<<<<<<< HEAD
                 {
                     Logger.Information("[NetMod] Purged {Count} GhostKing(s) before save", purged);
                     InvalidateRemoteKingRuntimeSlotsAfterSavePurge("save");
                 }
+=======
+                    Logger.Information("[NetMod] Purged {Count} GhostKing(s) before save", purged);
+>>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
             }
             catch (Exception ex)
             {

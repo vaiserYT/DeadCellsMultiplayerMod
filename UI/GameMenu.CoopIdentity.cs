@@ -331,18 +331,39 @@ namespace DeadCellsMultiplayerMod
                     return false;
                 }
 
+<<<<<<< HEAD
                 // Lobby readiness only needs to know whether a local continue file exists.
                 // Do NOT deserialize the live Dead Cells save here. Repeated Save.readSave calls
                 // from the lobby can instantiate engine-owned cooldown/reference graphs and, on
                 // some saves, fatally cross-cast CdInst/Cooldown before the player even presses
                 // Continue. Vanilla remains responsible for the real load when Continue is chosen.
+=======
+                var bytes = dc.tool.File.Class.getBytes.Invoke(MakeHLString(relativePath));
+                if (bytes == null)
+                {
+                    reason = "No continue save";
+                    return false;
+                }
+
+                var user = dc.tool.Save.Class.readSave.Invoke(bytes);
+                if (user?.mainGameData == null)
+                {
+                    reason = "No continue save";
+                    return false;
+                }
+
+>>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
                 reason = ContinueReasonOk;
                 return true;
             }
             catch (Exception ex)
             {
                 reason = "No continue save";
+<<<<<<< HEAD
                 _log?.Warning("[NetMod] Failed to check multiplayer continue save presence: {Message}", ex.Message);
+=======
+                _log?.Warning("[NetMod] Failed to validate multiplayer continue save: {Message}", ex.Message);
+>>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
                 return false;
             }
         }
