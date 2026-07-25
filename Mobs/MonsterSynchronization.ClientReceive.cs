@@ -2146,18 +2146,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var appliedLife = update.TargetLife;
                 if (update.ReplaySpecialHit)
                 {
-<<<<<<< HEAD
                     // Boss phase scripts remain the one conservative exception: replaying a
                     // reconstructed hit in the middle of a queued boss skill can strand that script.
                     // Normal mobs and elites always use native host damage, even while attacking, so
                     // their armor/invulnerability/elite callbacks stay vanilla-authoritative.
                     if (isHost && update.IsBoss && HasLocalQueuedOrChargingSkill(mob))
-=======
-                    // Mid-charge/attack special-hit replay interrupts skills and can leave the
-                    // authoritative mob AI-locked with no clean unlock. Prefer HP-only apply while
-                    // a skill is queued/charging; vanilla will finish or recover on the host.
-                    if (isHost && HasLocalQueuedOrChargingSkill(mob))
->>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
                     {
                         ApplyAuthoritativeLifeState(mob, update.TargetLife, update.TargetMaxLife);
                         appliedLife = GetMobLifeOrFallback(mob, update.TargetLife);

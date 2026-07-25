@@ -86,7 +86,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
         }
 
-<<<<<<< HEAD
         /// <summary>
         /// Re-arms the MOBREG broadcast after a runtime mob registration, without disturbing a
         /// bootstrap burst that is still in flight.
@@ -103,8 +102,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
         }
 
-=======
->>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
         private static void FlushHostMobRegistry(NetNode net)
         {
             if (!IsHost(net) || IsSyncQuiescedForTransition())
@@ -205,7 +202,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                                 entry.Type ?? string.Empty,
                                 entry.X,
                                 entry.Y);
-<<<<<<< HEAD
                             continue;
                         }
 
@@ -230,8 +226,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                                 entry.Type ?? string.Empty,
                                 entry.X,
                                 entry.Y);
-=======
->>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
                         }
                     }
                 }

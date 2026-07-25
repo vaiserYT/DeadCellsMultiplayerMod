@@ -278,12 +278,9 @@ namespace DeadCellsMultiplayerMod
 
         public static void NotifyRemoteDisconnected(NetRole role)
         {
-<<<<<<< HEAD
             // Clear launch ACK/queued/ready state before any reconnect can reuse this NetNode.
             // This matters when one peer restarts its process while the other peer stays alive.
             try { RunLaunchCoordinator.OnRemoteDisconnected(role); } catch { }
-=======
->>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
             try { ModEntry.Instance?.HandleNetworkDisconnectGhostCleanup(role); } catch { }
 
             if (role == NetRole.Host)
@@ -585,7 +582,6 @@ namespace DeadCellsMultiplayerMod
             try
             {
                 var savePath = GetMultiplayerSaveRelativeFilePath(null);
-<<<<<<< HEAD
                 if (!dc.tool.File.Class.exists.Invoke(MakeHLString(savePath)))
                 {
                     error = "no multiplayer save";
@@ -596,22 +592,6 @@ namespace DeadCellsMultiplayerMod
                 // save throws a HashlinkError that poisons the Haxe VM even though this catch
                 // reports it, and the game fatals on a later tick. Presence is all this validation
                 // needs; vanilla owns the real load when the player actually continues.
-=======
-                var bytes = dc.tool.File.Class.getBytes.Invoke(MakeHLString(savePath));
-                if (bytes == null)
-                {
-                    error = "saved bytes were null";
-                    return false;
-                }
-
-                var loaded = dc.tool.Save.Class.readSave.Invoke(bytes);
-                if (loaded == null)
-                {
-                    error = "readSave returned null";
-                    return false;
-                }
-
->>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
                 return true;
             }
             catch (Exception ex)

@@ -630,7 +630,6 @@ namespace DeadCellsMultiplayerMod
             {
             }
 
-<<<<<<< HEAD
             // Deliberately NOT falling back to Save.tryLoad() here. This resolver only feeds
             // boss-rune and cosmetics packets, but hxbit deserialization of an incompatible or
             // damaged save throws a HashlinkError that the C# catch below cannot actually contain:
@@ -639,17 +638,6 @@ namespace DeadCellsMultiplayerMod
             // packet is a cosmetic problem; a poisoned VM takes down the host and force-drops the
             // client. If neither live user reference exists, do nothing.
             return null;
-=======
-            try
-            {
-                return Save.Class.tryLoad.Invoke();
-            }
-            catch (Exception ex)
-            {
-                _log?.Warning("[NetMod] Failed to load selected save for Continue prerequisites: {Message}", ex.Message);
-                return null;
-            }
->>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
         }
 
         private static void TryLaunchNewGame(TitleScreen? screen, bool custom, bool streamEnabled)

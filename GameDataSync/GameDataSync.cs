@@ -92,7 +92,6 @@ namespace DeadCellsMultiplayerMod
         LaunchMode gdata)
         {
             var sameRunRestart = TryPeekSameRunRestartSeed(out var restartSeed);
-<<<<<<< HEAD
 
             // User.newGame is also used by a few vanilla in-run paths.  Two cases must never be
             // mistaken for a brand-new multiplayer launch:
@@ -157,8 +156,6 @@ namespace DeadCellsMultiplayerMod
                 }
             }
 
-=======
->>>>>>> 885c4abae3de9bd3315c71e50e248e42f6014fac
             var effectiveStreamEnabled = isCustom;
             var effectiveCustomMode = mode;
             var effectiveLaunch = gdata;
