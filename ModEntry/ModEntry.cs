@@ -135,6 +135,12 @@ namespace DeadCellsMultiplayerMod
         private bool? _lastAnimGSent;
         private bool _visualSyncFailureLogged;
         private long _suppressHeroAnimUntilTicks;
+        /// <summary>
+        /// Flint/powered-feedback weapons intentionally skip remote Weapon runtime construction.
+        /// During this short window their safe vanilla body animation is allowed through ANIM so
+        /// peers still see the swing without instantiating the crash-prone detached controller.
+        /// </summary>
+        private long _visualOnlyWeaponAnimUntilTicks;
         private string? _lastSentHeroSkin;
         private string? _lastSentHeroHeadSkin;
 
@@ -854,6 +860,22 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook__Save_save(Hook__Save.orig_save orig, User u, bool onlyGameData)
         {
+            // A connected client is rendering a host-authored world assembled from remote graph,
+            // entity and serializer state. Persisting that reconstruction locally is unsafe: the
+            // client does not own the authoritative run and transient remote identities can be
+            // serialized into MSave. The host remains the only writer while the session is live;
+            // normal local saving resumes after disconnect/role reset.
+            var menuRole = GameMenu.CurrentRole;
+            if (_netRole == NetRole.Client || menuRole == NetRole.Client)
+            {
+                Logger.Debug(
+                    "[NetMod][SaveGuard] blocked non-authoritative client save onlyGameData={OnlyGameData} entryRole={EntryRole} menuRole={MenuRole}",
+                    onlyGameData,
+                    _netRole,
+                    menuRole);
+                return;
+            }
+
             // Never let multiplayer GhostKing / KingSkin avatars enter MSave. A persisted GhostKing
             // reloads through KingSkin.initGfx with a null cooldown map and fatals the game.
             //
@@ -875,28 +897,24 @@ namespace DeadCellsMultiplayerMod
                 Logger.Warning("[NetMod] GhostKing pre-save purge failed: {Message}", ex.Message);
             }
 
-            if (_netRole == NetRole.Host)
+            // The serializer scope is entered for EVERY role, not only NetRole.Client.
+            //
+            // TryApplyRemoteSerializerSync installs the host's hxbit SEQ/UID globally on each client
+            // level generation, and that is global state which outlives role bookkeeping: GameMenu's
+            // _role and this class's _netRole are separate fields, SetRole only swaps back when it
+            // observes a Client->other transition, and SwapToLocalSerializerSync silently returns
+            // false if the serializer class is unavailable. Any of those divergences used to send the
+            // save down the unguarded fall-through below and persist the local user file using the
+            // host's object-id/class-index space - which is what makes a reload resolve the wrong
+            // class index and produce a nonsense cast such as
+            // "Can't cast tool._Cooldown.CdInst to level.SpotFlags".
+            //
+            // The scope decides from the live serializer values rather than from role, so stale role
+            // state cannot bypass it, and it is inert whenever the local identity is already active.
+            using (GameDataSync.BeginLocalSerializerSaveScope("Save.save"))
             {
                 orig(u, onlyGameData);
-                return;
             }
-
-            if (_netRole == NetRole.Client)
-            {
-                var serializerSwapped = GameDataSync.SwapToLocalSerializerSync();
-                try
-                {
-                    orig(u, onlyGameData);
-                }
-                finally
-                {
-                    if (serializerSwapped)
-                        GameDataSync.RestoreRemoteSerializerSync();
-                }
-                return;
-            }
-
-            orig(u, onlyGameData);
         }
 
 
@@ -1014,8 +1032,14 @@ namespace DeadCellsMultiplayerMod
 
                 if (me != null && me.spr?._animManager != null && ReferenceEquals(self, me.spr._animManager))
                 {
+                    var isAttackAnim = IsAttackAnim(play);
+                    var allowVisualOnlyWeaponAnim =
+                        isAttackAnim &&
+                        Stopwatch.GetTimestamp() <= _visualOnlyWeaponAnimUntilTicks &&
+                        !DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.IsUnsafeRemoteGhostAnimation(play);
+
                     if (!DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.IsInKingContext &&
-                        !IsAttackAnim(play))
+                        (!isAttackAnim || allowVisualOnlyWeaponAnim))
                     {
                         SendHeroAnim(play, queueAnim, g);
                     }

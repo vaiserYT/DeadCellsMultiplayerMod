@@ -88,6 +88,19 @@ namespace DeadCellsMultiplayerMod.UI
             }
         }
 
+        public static object? GetMenuItemAt(object? arrObj, int index)
+        {
+            if (arrObj == null || index < 0) return null;
+            try
+            {
+                var getDyn = arrObj.GetType().GetMethod("getDyn", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getDyn == null || index >= GetArrayLength(arrObj)) return null;
+                return getDyn.Invoke(arrObj, new object[] { index });
+            }
+            catch { }
+            return null;
+        }
+
         public static int FindMenuIndexByLabel(object? arrObj, string label)
         {
             if (arrObj == null) return -1;

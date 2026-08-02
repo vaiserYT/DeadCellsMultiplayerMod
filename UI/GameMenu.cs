@@ -39,6 +39,8 @@ namespace DeadCellsMultiplayerMod
             Steam
         }
         private static ConnectionTransport _menuTransport = ConnectionTransport.Lan;
+        private static SteamConnect.SteamLobbyVisibility _steamLobbyVisibility =
+            SteamConnect.SteamLobbyVisibility.FriendsOnly;
         private static ulong _steamLobbyId;
         private static string _steamLobbyCode = string.Empty;
         private static ulong _steamHostSteamId;
@@ -214,6 +216,12 @@ namespace DeadCellsMultiplayerMod
             {
                 return _inActualRun;
             }
+        }
+
+        /// <summary>Read-only current session role, for diagnostics outside this class.</summary>
+        internal static NetRole CurrentRole
+        {
+            get { lock (Sync) { return _role; } }
         }
 
         public static void SetRole(NetRole role)
@@ -724,8 +732,8 @@ namespace DeadCellsMultiplayerMod
                 AddMenuButton(
                     screen,
                     GetText.Instance.GetString("Steam host"),
-                    () => StartSteamHost(screen),
-                    GetText.Instance.GetString("Create Steam lobby and start immediately"));
+                    () => ShowSteamHostModeMenu(screen),
+                    GetText.Instance.GetString("Choose who can discover the Steam lobby"));
 
                 AddMenuButton(
                     screen,
@@ -743,6 +751,52 @@ namespace DeadCellsMultiplayerMod
             catch (Exception ex)
             {
                 _log?.Warning("[NetMod] Failed to open host transport menu: {Message}", ex.Message);
+            }
+            finally
+            {
+                SetIsMainMenu(screen, prevIsMain);
+                _suppressAutoButton = prevSuppress;
+            }
+        }
+
+        private static void ShowSteamHostModeMenu(TitleScreen screen)
+        {
+            var prevSuppress = _suppressAutoButton;
+            _suppressAutoButton = true;
+            var prevIsMain = GetIsMainMenu(screen);
+            try
+            {
+                SetIsMainMenu(screen, false);
+                screen.clearMenu();
+
+                AddMenuButton(
+                    screen,
+                    GetText.Instance.GetString("Steam friends-only host"),
+                    () => StartSteamHost(screen, SteamConnect.SteamLobbyVisibility.FriendsOnly),
+                    GetText.Instance.GetString("Create a Steam lobby visible to friends"));
+
+                AddMenuButton(
+                    screen,
+                    GetText.Instance.GetString("Steam public host"),
+                    () => StartSteamHost(screen, SteamConnect.SteamLobbyVisibility.Public),
+                    GetText.Instance.GetString("Create a public Steam lobby with a shareable code"));
+
+                AddMenuButton(
+                    screen,
+                    GetText.Instance.GetString("Back"),
+                    () => ShowHostTransportMenu(screen),
+                    GetText.Instance.GetString("Back to hosting options"));
+
+                RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
+                RemoveDuplicatesKeepFirst(
+                    screen,
+                    GetText.Instance.GetString("Steam friends-only host"),
+                    GetText.Instance.GetString("Steam public host"),
+                    GetText.Instance.GetString("Back"));
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to open Steam host mode menu: {Message}", ex.Message);
             }
             finally
             {
@@ -769,9 +823,15 @@ namespace DeadCellsMultiplayerMod
 
                 AddMenuButton(
                     screen,
-                    GetText.Instance.GetString("Steam join"),
+                    GetText.Instance.GetString("Join by Steam lobby code"),
                     () => StartSteamJoin(screen),
                     GetText.Instance.GetString("Connect by Steam lobby id/code from clipboard"));
+
+                AddMenuButton(
+                    screen,
+                    GetText.Instance.GetString("Join Steam friend"),
+                    () => OpenSteamFriendsJoinOverlay(screen),
+                    GetText.Instance.GetString("Open Steam friends and choose Join Game"));
 
                 AddMenuButton(
                     screen,
@@ -783,7 +843,8 @@ namespace DeadCellsMultiplayerMod
                 RemoveDuplicatesKeepFirst(
                     screen,
                     GetText.Instance.GetString("Lan join"),
-                    GetText.Instance.GetString("Steam join"),
+                    GetText.Instance.GetString("Join by Steam lobby code"),
+                    GetText.Instance.GetString("Join Steam friend"),
                     GetText.Instance.GetString("Back"));
             }
             catch (Exception ex)
@@ -896,10 +957,13 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void StartSteamHost(TitleScreen screen)
+        private static void StartSteamHost(
+            TitleScreen screen,
+            SteamConnect.SteamLobbyVisibility visibility)
         {
             _menuSelection = NetRole.Host;
             _menuTransport = ConnectionTransport.Steam;
+            _steamLobbyVisibility = visibility;
             _steamLobbyId = 0;
             _steamLobbyCode = string.Empty;
             _steamHostSteamId = 0UL;
@@ -936,6 +1000,8 @@ namespace DeadCellsMultiplayerMod
 
             _steamLobbyId = lobby.LobbyId;
             _steamLobbyCode = SteamConnect.BuildLobbyCodeFromLobbyId(_steamLobbyId);
+            if (!NetRef.TrySetSteamHostRichPresence(_steamLobbyId))
+                _log?.Warning("[NetMod][Steam] Lobby created, but Steam rich presence could not be published");
             ConnectionUI.NotifyConnectionsChanged();
             _log?.Information("[NetMod][Steam] Host lobby ready: id={LobbyId} code={LobbyCode}", _steamLobbyId, _steamLobbyCode);
 
@@ -943,10 +1009,26 @@ namespace DeadCellsMultiplayerMod
             var copied = SteamConnect.TryCopyLobbyCodeToClipboard(_steamLobbyCode)
                          || SteamConnect.TryCopyLobbyIdToClipboard(lobby.LobbyId);
             if (copied)
-                MultiplayerUI.PushSystemMessage("Lobby id copied to clipboard");
+                MultiplayerUI.PushSystemMessage(Localize("Lobby code copied to clipboard"));
 
             ShowHostStatusMenu(screen);
             screen.ShouldAutoHideConnectionUI(true);
+        }
+
+        private static void OpenSteamFriendsJoinOverlay(TitleScreen screen)
+        {
+            if (SteamConnect.TryOpenFriendsOverlay(out var error))
+            {
+                MultiplayerUI.PushSystemMessage(Localize("Choose a friend playing this mod, then select Join Game"));
+                return;
+            }
+
+            _log?.Warning("[NetMod][Steam] Could not open friends overlay: {Error}", error);
+            ShowConnectionErrorPopup(
+                screen,
+                Localize("Steam join failed"),
+                Localize("Could not open the Steam friends overlay. Check console logs."),
+                () => ShowJoinTransportMenu(screen));
         }
 
         private static void StartSteamJoin(TitleScreen screen)
@@ -1142,7 +1224,7 @@ namespace DeadCellsMultiplayerMod
                     PrepareLobbyForNewNetworkSession(clearRemoteCoopState: true);
                     var streamEnabled = TryGetStreamEnabled(screen);
                     if (_menuTransport == ConnectionTransport.Steam)
-                        ModEntry.Instance.StartSteamHostFromMenu(_mpPort);
+                        ModEntry.Instance.StartSteamHostFromMenu(_mpPort, _steamLobbyVisibility);
                     else
                         ModEntry.Instance.StartHostFromMenu(_mpIp, _mpPort);
                     SetAuthoritativePendingNewGameLaunch(custom: false, streamEnabled);
@@ -1197,7 +1279,7 @@ namespace DeadCellsMultiplayerMod
                 PrepareLobbyForNewNetworkSession(clearRemoteCoopState: true);
                 if (_menuTransport == ConnectionTransport.Steam)
                 {
-                    ModEntry.Instance.StartSteamHostFromMenu(_mpPort);
+                    ModEntry.Instance.StartSteamHostFromMenu(_mpPort, _steamLobbyVisibility);
                 }
                 else
                 {

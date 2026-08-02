@@ -14,6 +14,12 @@ namespace DeadCellsMultiplayerMod
 {
     internal static class SteamConnect
     {
+        internal enum SteamLobbyVisibility
+        {
+            FriendsOnly,
+            Public
+        }
+
         private const int DeadCellsAppId = 588650;
         private const int WorkerTimeoutMs = 25000;
         private const int SteamCallTimeoutMs = 15000;
@@ -24,6 +30,11 @@ namespace DeadCellsMultiplayerMod
         private const string ModMarkerLobbyKey = "dccm_mod";
         private const string ModMarkerLobbyValue = "DeadCellsMultiplayerMod";
         private const string LobbyCodeLobbyKey = "dccm_code";
+        private const string LobbyVisibilityLobbyKey = "dccm_visibility";
+        private const string ProtocolLobbyKey = "dccm_protocol";
+        private const string BuildLobbyKey = "dccm_build";
+        private const string HostSteamIdLobbyKey = "dccm_host_steam_id";
+        private const string JoinableLobbyKey = "dccm_joinable";
         private const string LobbyCodePrefix = "dc";
 
         private const string EnvRequestPath = "DCCM_STEAM_CONNECT_REQUEST_PATH";
@@ -85,6 +96,7 @@ namespace DeadCellsMultiplayerMod
             public string HostIp { get; init; } = string.Empty;
             public int HostPort { get; init; }
             public string PersonaName { get; init; } = string.Empty;
+            public SteamLobbyVisibility Visibility { get; init; } = SteamLobbyVisibility.FriendsOnly;
             public string Error { get; init; } = string.Empty;
         }
 
@@ -105,6 +117,7 @@ namespace DeadCellsMultiplayerMod
             public string LobbyCode { get; set; } = string.Empty;
             public string HostIp { get; set; } = string.Empty;
             public int HostPort { get; set; }
+            public string LobbyVisibility { get; set; } = string.Empty;
             public string StopSignalPath { get; set; } = string.Empty;
         }
 
@@ -349,7 +362,8 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
-                SteamMatchmaking.LeaveLobby(new CSteamID(lobbyId));
+                ModEntry.RunSteamNetworkingSerialized(() =>
+                    SteamMatchmaking.LeaveLobby(new CSteamID(lobbyId)));
             }
             catch
             {
@@ -876,8 +890,10 @@ namespace DeadCellsMultiplayerMod
             responseWritten = false;
             var hostPort = NormalizePort(request.HostPort);
             var hostIp = string.IsNullOrWhiteSpace(request.HostIp) ? "127.0.0.1" : request.HostIp.Trim();
+            var visibility = ParseLobbyVisibility(request.LobbyVisibility);
+            var lobbyType = ToSteamLobbyType(visibility);
 
-            var createCall = SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypePublic, 2);
+            var createCall = SteamMatchmaking.CreateLobby(lobbyType, 2);
             if (!TryWaitForCallResult(
                     createCall,
                     out LobbyCreated_t created,
@@ -913,11 +929,13 @@ namespace DeadCellsMultiplayerMod
             var lobby = new CSteamID(lobbyId);
             var lobbyCode = BuildLobbyCodeFromLobbyId(lobbyId);
             SteamMatchmaking.SetLobbyJoinable(lobby, true);
-            SteamMatchmaking.SetLobbyType(lobby, ELobbyType.k_ELobbyTypePublic);
+            SteamMatchmaking.SetLobbyType(lobby, lobbyType);
             SteamMatchmaking.SetLobbyData(lobby, HostIpLobbyKey, hostIp);
             SteamMatchmaking.SetLobbyData(lobby, HostPortLobbyKey, hostPort.ToString(CultureInfo.InvariantCulture));
             SteamMatchmaking.SetLobbyData(lobby, ModMarkerLobbyKey, ModMarkerLobbyValue);
             SteamMatchmaking.SetLobbyData(lobby, LobbyCodeLobbyKey, lobbyCode);
+            SteamMatchmaking.SetLobbyData(lobby, LobbyVisibilityLobbyKey, visibility.ToString());
+            SetCompatibilityLobbyData(lobby);
 
             var response = new WorkerResponse
             {
@@ -943,13 +961,18 @@ namespace DeadCellsMultiplayerMod
         /// Creates a Steam lobby for P2P host. Used by the P2P worker when it runs as host.
         /// The caller must keep SteamAPI.RunCallbacks() running to keep the lobby visible.
         /// </summary>
-        internal static bool TryCreateLobbyForP2PHost(int hostPort, string hostIp, out HostLobbyResult result)
+        internal static bool TryCreateLobbyForP2PHost(
+            int hostPort,
+            string hostIp,
+            SteamLobbyVisibility visibility,
+            out HostLobbyResult result)
         {
             result = new HostLobbyResult { Success = false, Error = "Steam lobby creation failed" };
             var port = NormalizePort(hostPort);
             var ip = string.IsNullOrWhiteSpace(hostIp) ? "127.0.0.1" : hostIp.Trim();
+            var lobbyType = ToSteamLobbyType(visibility);
 
-            var createCall = SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypePublic, 2);
+            var createCall = SteamMatchmaking.CreateLobby(lobbyType, 2);
             if (!TryWaitForCallResult(
                     createCall,
                     out LobbyCreated_t created,
@@ -976,11 +999,13 @@ namespace DeadCellsMultiplayerMod
             var lobby = new CSteamID(lobbyId);
             var lobbyCode = BuildLobbyCodeFromLobbyId(lobbyId);
             SteamMatchmaking.SetLobbyJoinable(lobby, true);
-            SteamMatchmaking.SetLobbyType(lobby, ELobbyType.k_ELobbyTypePublic);
+            SteamMatchmaking.SetLobbyType(lobby, lobbyType);
             SteamMatchmaking.SetLobbyData(lobby, HostIpLobbyKey, ip);
             SteamMatchmaking.SetLobbyData(lobby, HostPortLobbyKey, port.ToString(CultureInfo.InvariantCulture));
             SteamMatchmaking.SetLobbyData(lobby, ModMarkerLobbyKey, ModMarkerLobbyValue);
             SteamMatchmaking.SetLobbyData(lobby, LobbyCodeLobbyKey, lobbyCode);
+            SteamMatchmaking.SetLobbyData(lobby, LobbyVisibilityLobbyKey, visibility.ToString());
+            SetCompatibilityLobbyData(lobby);
 
             result = new HostLobbyResult
             {
@@ -988,9 +1013,46 @@ namespace DeadCellsMultiplayerMod
                 LobbyId = lobbyId,
                 HostIp = ip,
                 HostPort = port,
-                PersonaName = SafeGetPersonaName()
+                PersonaName = SafeGetPersonaName(),
+                Visibility = visibility
             };
             return true;
+        }
+
+        private static ELobbyType ToSteamLobbyType(SteamLobbyVisibility visibility) =>
+            visibility == SteamLobbyVisibility.Public
+                ? ELobbyType.k_ELobbyTypePublic
+                : ELobbyType.k_ELobbyTypeFriendsOnly;
+
+        internal static SteamLobbyVisibility ParseLobbyVisibility(string? value) =>
+            Enum.TryParse(value, ignoreCase: true, out SteamLobbyVisibility parsed)
+                ? parsed
+                : SteamLobbyVisibility.FriendsOnly;
+
+        private static void SetCompatibilityLobbyData(CSteamID lobby)
+        {
+            SteamMatchmaking.SetLobbyData(
+                lobby,
+                ProtocolLobbyKey,
+                BuildInfo.NetworkProtocolVersion.ToString(CultureInfo.InvariantCulture));
+            SteamMatchmaking.SetLobbyData(lobby, BuildLobbyKey, BuildInfo.Version);
+            SteamMatchmaking.SetLobbyData(lobby, JoinableLobbyKey, "1");
+
+            try
+            {
+                var localSteamId = SteamUser.GetSteamID().m_SteamID;
+                if (localSteamId != 0UL)
+                {
+                    SteamMatchmaking.SetLobbyData(
+                        lobby,
+                        HostSteamIdLobbyKey,
+                        localSteamId.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+            catch
+            {
+                // GetLobbyOwner remains the authoritative fallback for joining.
+            }
         }
 
         private static void KeepHostLobbyAlive(string stopSignalPath)
@@ -1094,6 +1156,22 @@ namespace DeadCellsMultiplayerMod
                 };
             }
 
+            try
+            {
+                var localSteamId = SteamUser.GetSteamID().m_SteamID;
+                if (localSteamId != 0UL && hostSteamId == localSteamId)
+                {
+                    return new WorkerResponse
+                    {
+                        Success = false,
+                        Error = "Cannot join your own Steam lobby"
+                    };
+                }
+            }
+            catch
+            {
+            }
+
             return new WorkerResponse
             {
                 Success = true,
@@ -1163,11 +1241,18 @@ namespace DeadCellsMultiplayerMod
                     hostSteamId = 0UL;
                 }
 
+                if (hostSteamId == 0UL)
+                {
+                    var hostSteamIdRaw = SteamMatchmaking.GetLobbyData(lobby, HostSteamIdLobbyKey) ?? string.Empty;
+                    ulong.TryParse(hostSteamIdRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out hostSteamId);
+                }
+
                 hostIp = SteamMatchmaking.GetLobbyData(lobby, HostIpLobbyKey) ?? string.Empty;
                 hostPortRaw = SteamMatchmaking.GetLobbyData(lobby, HostPortLobbyKey) ?? string.Empty;
-                if (hostSteamId != 0UL &&
-                    !string.IsNullOrWhiteSpace(hostIp) &&
-                    !string.IsNullOrWhiteSpace(hostPortRaw))
+                if (!TryValidateLobbyCompatibility(lobby, out var metadataReady, out error))
+                    return false;
+
+                if (metadataReady && hostSteamId != 0UL)
                 {
                     return true;
                 }
@@ -1194,7 +1279,16 @@ namespace DeadCellsMultiplayerMod
                 hostSteamId = 0UL;
             }
 
-            if (hostSteamId != 0UL)
+            if (hostSteamId == 0UL)
+            {
+                var hostSteamIdRaw = SteamMatchmaking.GetLobbyData(lobby, HostSteamIdLobbyKey) ?? string.Empty;
+                ulong.TryParse(hostSteamIdRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out hostSteamId);
+            }
+
+            if (!TryValidateLobbyCompatibility(lobby, out var finalMetadataReady, out error))
+                return false;
+
+            if (hostSteamId != 0UL && finalMetadataReady)
             {
                 hostIp = SteamMatchmaking.GetLobbyData(lobby, HostIpLobbyKey) ?? string.Empty;
                 hostPortRaw = SteamMatchmaking.GetLobbyData(lobby, HostPortLobbyKey) ?? string.Empty;
@@ -1209,6 +1303,55 @@ namespace DeadCellsMultiplayerMod
             }
 
             return false;
+        }
+
+        private static bool TryValidateLobbyCompatibility(
+            CSteamID lobby,
+            out bool metadataReady,
+            out string error)
+        {
+            metadataReady = false;
+            error = string.Empty;
+
+            var marker = SteamMatchmaking.GetLobbyData(lobby, ModMarkerLobbyKey) ?? string.Empty;
+            var protocolRaw = SteamMatchmaking.GetLobbyData(lobby, ProtocolLobbyKey) ?? string.Empty;
+            var build = SteamMatchmaking.GetLobbyData(lobby, BuildLobbyKey) ?? string.Empty;
+            var joinable = SteamMatchmaking.GetLobbyData(lobby, JoinableLobbyKey) ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(marker) ||
+                string.IsNullOrWhiteSpace(protocolRaw) ||
+                string.IsNullOrWhiteSpace(build))
+            {
+                return true; // Lobby data is still propagating; caller keeps pumping callbacks.
+            }
+
+            metadataReady = true;
+            if (!string.Equals(marker, ModMarkerLobbyValue, StringComparison.Ordinal))
+            {
+                error = "Steam lobby does not belong to DeadCellsMultiplayerMod";
+                return false;
+            }
+
+            if (!int.TryParse(protocolRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var protocol) ||
+                protocol != BuildInfo.NetworkProtocolVersion)
+            {
+                error = $"Steam lobby protocol {protocolRaw} is incompatible with {BuildInfo.NetworkProtocolVersion}";
+                return false;
+            }
+
+            if (!string.Equals(build, BuildInfo.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"Steam lobby build {build} does not match {BuildInfo.Version}";
+                return false;
+            }
+
+            if (string.Equals(joinable, "0", StringComparison.Ordinal))
+            {
+                error = "Steam lobby is no longer joinable";
+                return false;
+            }
+
+            return true;
         }
 
         private static bool TryResolveLobbyIdByCode(string lobbyCode, out ulong lobbyId, out string error)
@@ -1379,7 +1522,36 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
-                SteamFriends.ActivateGameOverlayInviteDialog(new CSteamID(lobbyId));
+                if (!ModEntry.EnsureSteamApiForNetworking("Steam lobby invite overlay"))
+                {
+                    error = "SteamAPI is unavailable";
+                    return false;
+                }
+
+                ModEntry.RunSteamNetworkingSerialized(() =>
+                    SteamFriends.ActivateGameOverlayInviteDialog(new CSteamID(lobbyId)));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        internal static bool TryOpenFriendsOverlay(out string error)
+        {
+            error = string.Empty;
+            try
+            {
+                if (!ModEntry.EnsureSteamApiForNetworking("Steam friends overlay"))
+                {
+                    error = "SteamAPI is unavailable";
+                    return false;
+                }
+
+                ModEntry.RunSteamNetworkingSerialized(() =>
+                    SteamFriends.ActivateGameOverlay("friends"));
                 return true;
             }
             catch (Exception ex)

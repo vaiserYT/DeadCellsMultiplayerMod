@@ -410,3 +410,67 @@ msgstr "上一个变异"
 #: SettingsUI.cs
 msgid "Next perk"
 msgstr "下一个变异"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Choose who can discover the Steam lobby"
+msgstr "选择谁可以发现 Steam 大厅"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam friends-only host"
+msgstr "仅限好友的 Steam 主机"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Create a Steam lobby visible to friends"
+msgstr "创建仅好友可见的 Steam 大厅"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam public host"
+msgstr "公开 Steam 主机"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Create a public Steam lobby with a shareable code"
+msgstr "创建带有可分享代码的公开 Steam 大厅"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Back to hosting options"
+msgstr "返回主机选项"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Join by Steam lobby code"
+msgstr "通过 Steam 大厅代码加入"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Join Steam friend"
+msgstr "加入 Steam 好友"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Open Steam friends and choose Join Game"
+msgstr "打开 Steam 好友列表并选择“加入游戏”"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Lobby code copied to clipboard"
+msgstr "大厅代码已复制到剪贴板"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Choose a friend playing this mod, then select Join Game"
+msgstr "选择正在使用此模组的好友，然后点击“加入游戏”"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Could not open the Steam friends overlay. Check console logs."
+msgstr "无法打开 Steam 好友界面。请查看控制台日志。"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Invite Steam friends"
+msgstr "邀请 Steam 好友"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Open the Steam friends invite list"
+msgstr "打开 Steam 好友邀请列表"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam invite failed"
+msgstr "Steam 邀请失败"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Could not open the Steam invite list. Check console logs."
+msgstr "无法打开 Steam 邀请列表。请查看控制台日志。"

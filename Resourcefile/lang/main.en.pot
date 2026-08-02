@@ -406,3 +406,67 @@ msgstr ""
 #: SettingsUI.cs
 msgid "Next perk"
 msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Choose who can discover the Steam lobby"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam friends-only host"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Create a Steam lobby visible to friends"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam public host"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Create a public Steam lobby with a shareable code"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Back to hosting options"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Join by Steam lobby code"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Join Steam friend"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Open Steam friends and choose Join Game"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Lobby code copied to clipboard"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Choose a friend playing this mod, then select Join Game"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Could not open the Steam friends overlay. Check console logs."
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Invite Steam friends"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Open the Steam friends invite list"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam invite failed"
+msgstr ""
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Could not open the Steam invite list. Check console logs."
+msgstr ""

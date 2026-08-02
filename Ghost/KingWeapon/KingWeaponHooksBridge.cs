@@ -81,6 +81,14 @@ public partial class ModEntry
         if(DeadCellsMultiplayerMod.Ghost.KingWeaponSupport.RequiresVisualOnlyRemoteReplay(kindId, self, out var visualOnlyReason))
         {
             LogVisualOnlyLocalWeaponOnce(kindId!, self, visualOnlyReason);
+            _visualOnlyWeaponAnimUntilTicks = Stopwatch.GetTimestamp() +
+                                              (long)(Stopwatch.Frequency * 1.75);
+            // Flint does not send ATK because that would create the unsafe remote weapon runtime.
+            // Clear the body-animation dedupe so the first vanilla charge/swing frame is sent even
+            // when it happens to reuse the last animation name.
+            _lastAnimSent = null;
+            _lastAnimQueueSent = null;
+            _lastAnimGSent = null;
             return;
         }
 

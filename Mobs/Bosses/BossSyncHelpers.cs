@@ -22,7 +22,14 @@ public static class BossSyncHelpers
         "Giant",
         "Gardener",
         "GardenerBoss",
-        "Scarecrow",
+        // "Scarecrow" is deliberately NOT listed. dc.en.mob.Scarecrow is an ordinary enemy - it
+        // derives from Mob rather than dc.en.mob.Boss and ships in the mob database as a weighted,
+        // spawnable entry ("id":"Scarecrow","weight":500) - so listing it promoted a normal mob to
+        // full boss authority: boss HP multiplier, boss keyframe cadence, boss identity/death
+        // watchdogs and the boss-only "restore life after a client hit" path. The actual Scarecrow
+        // ENCOUNTER is GardenerBoss, which is already covered above and by the Boss base type. If a
+        // future build ever makes Scarecrow the arena boss, the Level.boss check below still
+        // classifies it correctly without this entry.
         "KingsHand",
         "HandOfTheKing",
         "Collector",
@@ -143,6 +150,14 @@ public static class BossSyncHelpers
         catch { runtimeName = string.Empty; }
         try { typeId = mob.type?.ToString() ?? string.Empty; }
         catch { }
+
+        // A name that resolves to a known encounter boss is never a boss-owned component, even when
+        // it contains a component token. KingsHand contains "Hand" and its type id "kingsHand" trips
+        // the same test. IsKnownBossRuntimeType only inspects the runtime type NAME, so a boss whose
+        // runtime type is a Boss Rush/DLC wrapper reaches this method with only its type id intact -
+        // and without this guard it is demoted to a helper and loses boss authority entirely.
+        if (IsKnownBossProxyKey(runtimeName) || IsKnownBossProxyKey(typeId))
+            return false;
 
         for (var i = 0; i < NonEncounterBossComponentTokens.Length; i++)
         {

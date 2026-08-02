@@ -573,6 +573,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (consumeMs >= RuntimeHitchWatch.MobSyncConsumeSlowThresholdMs)
                     RuntimeHitchWatch.LogSlow(modEntry.Logger, "MobsSynchronization.HostConsume", consumeMs, BuildRuntimeQueueDetails());
 
+                // Must run before the dirty flush: vanilla culls enemies against the HOST's hero, so
+                // this is the only thing that keeps a mob standing next to the second player awake
+                // and able to acquire it. Anything it activates streams out on this same frame.
+                RunHostRemotePlayerActivationPass(net);
+
                 var flushStart = RuntimeHitchWatch.Start();
                 FlushHostDirtyMobQueue(net);
                 ScanHostBossPartDespawns(net);
@@ -1313,6 +1318,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 preSyncOk = TryGetMobSyncId(self, out cachedMobSyncId);
             }
 
+            // Read the attack's construction input before vanilla resolves the hit: resolution
+            // rewrites the per-target damage fields, and AttackData instances are recycled.
+            var attackIntentDamage = ReadAttackIntentDamage(i);
+
             orig(self, i);
 
             try
@@ -1362,7 +1371,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 // value (usually 1) was the source of elites becoming permanently unkillable.
                 var life = suppressedClientLethal ? 0 : GetMobLifeOrFallback(self, 0);
                 var damageHint = isClient && shouldReport
-                    ? EstimateClientAttackDamageHint(i, preDamageLife, life, suppressedClientLethal)
+                    ? EstimateClientAttackDamageHint(attackIntentDamage, preDamageLife, life, suppressedClientLethal)
                     : 0.0;
                 var x = GetSyncX(self);
                 var y = GetSyncY(self);
@@ -1593,83 +1602,94 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
         }
 
-        private static double EstimateClientAttackDamageHint(AttackData attack, int previousLife, int reportedLife, bool suppressedLethal)
+        /// <summary>
+        /// Reads the pre-target-resolution damage the attack was built from.
+        /// <c>AttackUtils.createFromHero(source, baseDmg, tier)</c> takes exactly this value, so it
+        /// is the only scalar the host can feed back into the native hit path without re-deriving a
+        /// number that was already derived once. <c>finalDmg</c>/<c>inflictedDmg</c> are produced by
+        /// <c>updateDamages(attack, target)</c> and <c>applyHitResult</c>: they are per-target and
+        /// already contain this replica's armour, resistances and invulnerability, so transmitting
+        /// them would let a client-side outcome dictate the authoritative result.
+        /// </summary>
+        private static double ReadAttackIntentDamage(AttackData? attack)
         {
-            var observedDelta = System.Math.Max(0, previousLife - reportedLife);
-            if (suppressedLethal && previousLife > 0)
-                observedDelta = System.Math.Max(observedDelta, previousLife);
-            if (observedDelta > 0)
-                return observedDelta;
-
             if (attack == null)
                 return 0.0;
 
-            // Hashlink AttackData layouts vary by game/core version. Reflection keeps this source
-            // compatible while still recovering the common dmg/damage fields when local stale
-            // invulnerability prevented the client copy from losing HP.
-            var names = new[] { "dmg", "damage", "finalDamage", "baseDamage", "hitDamage" };
             try
             {
-                var type = attack.GetType();
-                const System.Reflection.BindingFlags flags =
-                    System.Reflection.BindingFlags.Instance |
-                    System.Reflection.BindingFlags.Public |
-                    System.Reflection.BindingFlags.NonPublic |
-                    System.Reflection.BindingFlags.IgnoreCase;
-
-                for (int i = 0; i < names.Length; i++)
-                {
-                    object? raw = null;
-                    try
-                    {
-                        var property = type.GetProperty(names[i], flags);
-                        if (property != null && property.GetIndexParameters().Length == 0)
-                            raw = property.GetValue(attack);
-                    }
-                    catch { }
-
-                    if (raw == null)
-                    {
-                        try
-                        {
-                            var field = type.GetField(names[i], flags);
-                            if (field != null)
-                                raw = field.GetValue(attack);
-                        }
-                        catch { }
-                    }
-
-                    if (raw == null)
-                        continue;
-
-                    try
-                    {
-                        var value = System.Convert.ToDouble(raw, System.Globalization.CultureInfo.InvariantCulture);
-                        if (double.IsFinite(value) && value > 0.0)
-                        {
-                            var safeUpper = System.Math.Max(1.0, previousLife * 8.0);
-                            return System.Math.Clamp(value, 1.0, safeUpper);
-                        }
-                    }
-                    catch { }
-                }
+                // baseDmg is Haxe Dynamic on the proxy; bind it statically before converting.
+                object? rawBaseDmg = attack.baseDmg;
+                if (TryConvertAttackDamageScalar(rawBaseDmg, out var baseDmg))
+                    return baseDmg;
             }
             catch
             {
             }
 
-            // No local HP delta and no readable damage field. Returning a fabricated 1.0 here was
-            // the cause of the client needing 20-30 hits for a mob the host two-shots: any
-            // DamageHint > 0 makes the host IGNORE the client's absolute HP and replay exactly that
-            // number as native damage, so every unresolved hit landed for 1 point. The client's
-            // replica HP is continuously overwritten by the authoritative stream, so the observed
-            // delta above is frequently 0 through no fault of the attack.
-            //
-            // Reporting 0 instead routes the host through its absolute-HP path, where
-            // ShouldReplayIncomingHitWithoutLifeDelta decides whether the mob was genuinely
-            // invulnerable. That is the same "let the host decide" intent, without inventing a
-            // damage number the host is contractually obliged to honour.
+            // Dots, environmental relays and a few scripted sources build the attack without a
+            // baseDmg. rawFinalDmg is the rolled attacker-side figure; unlike inflictedDmg it is not
+            // the post-mitigation result, but it is computed with the target known, so treat it only
+            // as an approximation used to keep the hit alive instead of reporting "no damage".
+            try
+            {
+                if (TryConvertAttackDamageScalar(attack.rawFinalDmg, out var rawFinalDmg))
+                    return rawFinalDmg;
+            }
+            catch
+            {
+            }
+
             return 0.0;
+        }
+
+        private static bool TryConvertAttackDamageScalar(object? raw, out double value)
+        {
+            value = 0.0;
+            if (raw == null)
+                return false;
+
+            try
+            {
+                value = System.Convert.ToDouble(raw, System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (!double.IsFinite(value) || value <= 0.0)
+            {
+                value = 0.0;
+                return false;
+            }
+
+            return true;
+        }
+
+        private static double EstimateClientAttackDamageHint(double attackIntentDamage, int previousLife, int reportedLife, bool suppressedLethal)
+        {
+            // The attack's own construction input is the authoritative intent: it does not depend on
+            // what this replica happened to absorb, so it stays correct even while the host stream is
+            // continuously rewriting local HP. Preferring it over the observed delta is what stops a
+            // client hit from being reported as "no damage" and dropped by the host.
+            //
+            // No upper bound is applied here on purpose. Clamping against this replica's HP would
+            // put the client's own (frequently stale) life back into a value whose whole point is to
+            // be independent of it, and would silently under-report every hit landed while the
+            // replica showed less HP than the host. The sanity bound belongs on the authority:
+            // TryReplayIncomingSpecialHitReaction already clamps against the host mob's real life.
+            if (attackIntentDamage > 0.0)
+                return System.Math.Max(1.0, attackIntentDamage);
+
+            // Last resort for attacks that expose no readable input. A local delta has already passed
+            // through this replica's mitigation, so it is a lower bound on the real intent, never the
+            // truth - the host still resolves it natively against its own mob.
+            var observedDelta = System.Math.Max(0, previousLife - reportedLife);
+            if (suppressedLethal && previousLife > 0)
+                observedDelta = System.Math.Max(observedDelta, previousLife);
+
+            return observedDelta > 0 ? observedDelta : 0.0;
         }
 
         private static bool IsDamageFromLocalPlayer(AttackData attack)

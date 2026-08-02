@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using dc.en;
 using dc.en.mob;
@@ -11,6 +12,7 @@ public static class BossStateSync
     private const string BossMarker = "bb:1";
     private const string PhasePrefix = "bp:";
     private const string ActionPrefix = "ba:";
+    private const string EmergedPrefix = "bemg:";
     private const string ProjectilePrefix = "bproj:";
     private const string TentaclePrefix = "btent:";
     private const string ArenaPrefix = "barena:";
@@ -73,42 +75,9 @@ public static class BossStateSync
                 // ignore
             }
         }
-        else if (mob.GetType().Name.Contains("MamaTick", StringComparison.OrdinalIgnoreCase))
-        {
-            // Mama Tick specific sync - it uses different state fields
-            try
-            {
-                // Try to access emerge state or similar field
-                var emergeValueObj = BossReflection.TryReadMember(mob, "emerge");
-                if (emergeValueObj is bool emergeValue)
-                    parts.Add(PhasePrefix + (emergeValue ? "1" : "0"));
-            }
-            catch
-            {
-                // Fallback to generic phase
-                try
-                {
-                    var phase = GetBossPhase(mob);
-                    if (phase.HasValue)
-                        parts.Add(PhasePrefix + phase.Value.ToString(CultureInfo.InvariantCulture));
-                }
-                catch { }
-            }
-            
-            try
-            {
-                var action = GetBossActionIndex(mob);
-                if (action.HasValue)
-                    parts.Add(ActionPrefix + action.Value.ToString(CultureInfo.InvariantCulture));
-            }
-            catch
-            {
-                // ignore
-            }
-        }
         else
         {
-            // Generic boss phase/action sync for other boss types
+            // Generic boss phase/action sync for every other boss type.
             try
             {
                 var phase = GetBossPhase(mob);
@@ -119,7 +88,7 @@ public static class BossStateSync
             {
                 // ignore
             }
-            
+
             try
             {
                 var action = GetBossActionIndex(mob);
@@ -130,8 +99,22 @@ public static class BossStateSync
             {
                 // ignore
             }
+
+            // Mama Tick's emergence is a separate boolean from her level-up stage: while buried she
+            // is a different encounter shape entirely. The verified proxy member is isEmerged - an
+            // "emerge" member has never existed on the type, so the previous Mama Tick special case
+            // read nothing and wrote nothing, and her phase never crossed the wire at all.
+            try
+            {
+                if (BossReflection.TryReadMember(mob, "isEmerged") is bool emerged)
+                    parts.Add(EmergedPrefix + (emerged ? "1" : "0"));
+            }
+            catch
+            {
+                // ignore
+            }
         }
-        
+
         return parts.Count == 0 ? (basePayload ?? string.Empty) : string.Join(".", parts);
     }
 
@@ -193,6 +176,7 @@ public static class BossStateSync
 
         int? phaseVal = null;
         int? actionVal = null;
+        bool? emergedVal = null;
 
         var parts = payload.Split('.', StringSplitOptions.RemoveEmptyEntries);
         foreach (var token in parts)
@@ -201,7 +185,13 @@ public static class BossStateSync
             if (string.IsNullOrEmpty(t))
                 continue;
 
-            if (t.StartsWith(PhasePrefix, StringComparison.OrdinalIgnoreCase))
+            if (t.StartsWith(EmergedPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var s = t[EmergedPrefix.Length..].Trim();
+                if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var e))
+                    emergedVal = e != 0;
+            }
+            else if (t.StartsWith(PhasePrefix, StringComparison.OrdinalIgnoreCase))
             {
                 var s = t[PhasePrefix.Length..].Trim();
                 if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var p))
@@ -258,64 +248,37 @@ public static class BossStateSync
                 // ignore
             }
         }
-        else if (mob.GetType().Name.Contains("MamaTick", StringComparison.OrdinalIgnoreCase))
-        {
-            // Mama Tick specific state application
-            if (phaseVal.HasValue)
-            {
-                try
-                {
-                    // Try to set emerge state
-                    if (!BossReflection.TryWriteMember(mob, "emerge", phaseVal.Value != 0))
-                    {
-                        // Fallback to generic phase
-                        SetBossPhase(mob, phaseVal.Value);
-                    }
-                }
-                catch
-                {
-                    // Fallback to generic phase
-                    try
-                    {
-                        SetBossPhase(mob, phaseVal.Value);
-                    }
-                    catch { }
-                }
-            }
-            
-            if (actionVal.HasValue)
-            {
-                try
-                {
-                    SetBossAction(mob, actionVal.Value);
-                }
-                catch
-                {
-                    // ignore
-                }
-            }
-        }
         else
         {
-            // Generic boss phase/action application for other boss types
+            // Generic boss phase/action application for every other boss type.
             if (phaseVal.HasValue)
             {
                 try
                 {
-                    var before = GetBossPhase(mob);
-                    if (!before.HasValue || before.Value != phaseVal.Value)
+                    // Compare against the last phase this replica actually consumed, not against a
+                    // fresh read. For bosses whose phase member is read-only to us (bossLevel), a
+                    // re-read still reports the old value after we decline to write it, so a
+                    // re-read comparison would treat every single state packet as a fresh phase
+                    // change and interrupt the boss's skills continuously - which looks exactly
+                    // like a boss that never attacks on the client.
+                    var isFirstObservation = !TryGetLastAppliedBossPhase(mob, out var before);
+                    if (isFirstObservation || before != phaseVal.Value)
                     {
                         SetBossPhase(mob, phaseVal.Value);
-                        // A phase change means the host's boss switched behaviour (e.g.
+                        SetLastAppliedBossPhase(mob, phaseVal.Value);
+
+                        // A phase CHANGE means the host's boss switched behaviour (e.g.
                         // Conjunctivius entering the shield/tentacle stage). The client brain is
                         // locked, so a stale looping action (poison orb barrage) survives the
                         // switch unless it is interrupted here. Alive bosses only — interrupting
                         // a dying boss breaks its native death sequence and stalls the victory
-                        // cinematic.
+                        // cinematic. The first observation only seeds the baseline: there is no
+                        // transition to react to, and interrupting there would cancel whatever the
+                        // replica legitimately started before the first boss state packet landed.
                         bool aliveForInterrupt;
                         try { aliveForInterrupt = !mob.destroyed && mob.life > 0; }
                         catch { aliveForInterrupt = false; }
-                        if (aliveForInterrupt)
+                        if (!isFirstObservation && aliveForInterrupt)
                             BossReflection.TryInterruptMobSkills(mob);
                         BossSyncDiag.Trace("generic boss phase applied phase={Phase} type={Type}", phaseVal.Value, mob.GetType().Name);
                     }
@@ -337,7 +300,28 @@ public static class BossStateSync
                     // ignore
                 }
             }
+
+            if (emergedVal.HasValue)
+            {
+                try
+                {
+                    if (BossReflection.TryReadMember(mob, "isEmerged") is bool localEmerged &&
+                        localEmerged != emergedVal.Value)
+                    {
+                        BossReflection.TryWriteMember(mob, "isEmerged", emergedVal.Value);
+                        BossSyncDiag.Trace(
+                            "boss emerged applied emerged={Emerged} type={Type}",
+                            emergedVal.Value,
+                            mob.GetType().Name);
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
         }
+
         
         // Note: Boss-owned entity sync (projectiles, tentacles) requires additional type resolution
         // and is deferred to avoid compilation issues with Entity type references.
@@ -400,16 +384,79 @@ public static class BossStateSync
         try { return (mob.cy + mob.yr) * 24.0; } catch { return 0.0; }
     }
     
-    // Generic boss phase/action helpers for unsupported boss types.
+    // Generic boss phase/action helpers for boss types without a typed branch.
+    //
     // NOTE: these previously used GetField() only, which returns null on Haxe proxy classes
     // (proxy fields are C# properties) — so phase/action sync was a silent no-op for every
-    // boss without a typed branch, Conjunctivius included. BossReflection fixes that.
+    // boss without a typed branch, Conjunctivius included. BossReflection fixed the lookup
+    // mechanism, but the member NAMES were still wrong for almost every boss.
+    //
+    // Verified against dc.en.mob.Boss and all 14 of its subclasses in GameProxy:
+    //   phase       -> Collector, GardenerBoss only
+    //   combatPhase -> KingsHand
+    //   bossLevel   -> dc.en.mob.Boss base, so every boss (the vanilla level-up stage)
+    //   state       -> matched NO boss type; it was dead weight
+    // Without combatPhase/bossLevel the generic path transmitted nothing for 12 of 14 bosses.
+    private static readonly string[] BossPhaseReadMemberNames = { "phase", "combatPhase", "bossLevel" };
+
+    // Writes are deliberately narrower than reads. phase/combatPhase are plain behaviour ints, but
+    // bossLevel is the counter vanilla itself compares against levelUpSteps to fire a level-up:
+    // writing it on a replica risks running a second, local phase transition, which is precisely
+    // the "client advances the boss on its own" failure this sync exists to prevent. Reading it is
+    // still worthwhile — it is what lets the client notice the host's phase change and drop a stale
+    // looping attack.
+    private static readonly string[] BossPhaseWriteMemberNames = { "phase", "combatPhase" };
+
+    // Action member is also per-boss: GardenerBoss/KingsHand use action, Dooku and DookuBeast use
+    // curAction, Death uses currentAction.
+    private static readonly string[] BossActionMemberNames = { "action", "curAction", "currentAction" };
+
+    private static readonly ConditionalWeakTable<Mob, StrongBox<int>> LastAppliedBossPhase = new();
+
+    private static bool TryGetLastAppliedBossPhase(Mob mob, out int phase)
+    {
+        phase = 0;
+        if (mob == null || !LastAppliedBossPhase.TryGetValue(mob, out var box) || box == null)
+            return false;
+
+        phase = box.Value;
+        return true;
+    }
+
+    private static void SetLastAppliedBossPhase(Mob mob, int phase)
+    {
+        if (mob == null)
+            return;
+
+        LastAppliedBossPhase.Remove(mob);
+        LastAppliedBossPhase.Add(mob, new StrongBox<int>(phase));
+    }
+
     private static int? GetBossPhase(Mob mob)
     {
         if (mob == null)
             return null;
 
-        return BossReflection.TryReadInt(mob, "phase") ?? BossReflection.TryReadInt(mob, "state");
+        for (var i = 0; i < BossPhaseReadMemberNames.Length; i++)
+        {
+            var value = BossReflection.TryReadInt(mob, BossPhaseReadMemberNames[i]);
+            if (value.HasValue)
+                return value;
+        }
+
+        return null;
+    }
+
+    private static object? TryGetBossActionMember(Mob mob)
+    {
+        for (var i = 0; i < BossActionMemberNames.Length; i++)
+        {
+            var action = BossReflection.TryReadMember(mob, BossActionMemberNames[i]);
+            if (action != null)
+                return action;
+        }
+
+        return null;
     }
 
     private static int? GetBossActionIndex(Mob mob)
@@ -417,7 +464,7 @@ public static class BossStateSync
         if (mob == null)
             return null;
 
-        var action = BossReflection.TryReadMember(mob, "action");
+        var action = TryGetBossActionMember(mob);
         if (action == null)
             return null;
 
@@ -429,8 +476,11 @@ public static class BossStateSync
         if (mob == null)
             return;
 
-        if (!BossReflection.TryWriteMember(mob, "phase", phase))
-            BossReflection.TryWriteMember(mob, "state", phase);
+        for (var i = 0; i < BossPhaseWriteMemberNames.Length; i++)
+        {
+            if (BossReflection.TryWriteMember(mob, BossPhaseWriteMemberNames[i], phase))
+                return;
+        }
     }
 
     private static void SetBossAction(Mob mob, int actionIndex)
@@ -438,7 +488,7 @@ public static class BossStateSync
         if (mob == null)
             return;
 
-        var action = BossReflection.TryReadMember(mob, "action");
+        var action = TryGetBossActionMember(mob);
         if (action != null)
             BossReflection.TryWriteMember(action, "Index", actionIndex);
     }

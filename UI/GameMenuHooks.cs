@@ -11,6 +11,19 @@ namespace DeadCellsMultiplayerMod
 {
     internal static partial class GameMenu
     {
+        /// <summary>
+        /// Accent colour for the main-menu "Play multiplayer" entry, and for that entry only.
+        /// </summary>
+        /// <remarks>
+        /// 0x59D5FF is already used by this mod's in-game UI (LevelExitSync's circle marker), so it
+        /// sits in the Dead Cells palette and stays legible against the dark title background in both
+        /// the dimmed unselected state and the brightened selected state. It is applied through
+        /// <see cref="ApplyMultiplayerMenuAccent"/> and the opt-in colour argument of AddMenuButton
+        /// rather than by changing that helper's default, because the helper also builds Host game,
+        /// Join game, Ready, Disconnect, OK and Back.
+        /// </remarks>
+        internal const int MultiplayerMenuAccentColor = 0x59D5FF;
+
         private static void InitializeMenuUiHooks()
         {
             if (_menuHooksAttached) return;
@@ -105,10 +118,10 @@ namespace DeadCellsMultiplayerMod
                 var count = TitleScreenReflection.GetArrayLength(items);
                 if (count == 1)
                 {
-                    int white = 0xFFFFFF;
+                    int accent = MultiplayerMenuAccentColor;
                     var label = GetText.Instance.GetString("Play multiplayer").AsHaxeString();
                     var helpStr = GetText.Instance.GetString("Host or join a multiplayer session").AsHaxeString();
-                    var colorHl = Ref<int>.From(ref white);
+                    var colorHl = Ref<int>.From(ref accent);
                     var cbHl = new HlAction(() => ShowMultiplayerMenu(self));
                     orig(self, label, cbHl, helpStr, null, colorHl);
                     _mainMenuButtonAdded = true;
@@ -173,15 +186,57 @@ namespace DeadCellsMultiplayerMod
                 var existingIdx = TitleScreenReflection.FindMenuIndexByLabel(arr, playMultiplayer);
                 if (existingIdx < 0)
                 {
-                    TryAddMenuButton(screen, playMultiplayer, () => ShowMultiplayerMenu(screen), playHelp);
+                    TryAddMenuButton(
+                        screen,
+                        playMultiplayer,
+                        () => ShowMultiplayerMenu(screen),
+                        playHelp,
+                        MultiplayerMenuAccentColor);
                     arr = TitleScreenReflection.GetMemberValue(screen, "menuItems", true);
                 }
                 _mainMenuButtonAdded = true;
                 MoveButtonAfterPlay(arr, playMultiplayer, playLabel);
+
+                // Re-assert last, after any reordering, and regardless of which path inserted the
+                // entry. This is what makes the accent survive a menu rebuild, a return from
+                // gameplay and a language change, without needing every insertion site to remember.
+                ApplyMultiplayerMenuAccent(arr, playMultiplayer);
             }
             catch (Exception ex)
             {
                 _log?.Warning("[NetMod] Failed to ensure main menu button order: {Message}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Applies <see cref="MultiplayerMenuAccentColor"/> to the live "Play multiplayer" menu item.
+        /// </summary>
+        /// <remarks>
+        /// The entry can be created by either <c>AddMenuHook</c> or the fallback in
+        /// <see cref="EnsureMainMenuMultiplayerButton"/>, and the TitleScreen menu is rebuilt every
+        /// time the main menu is shown. Colouring the existing item makes the result independent of
+        /// which path won the race. Lookup is by the localized label, so exactly one entry is
+        /// touched and no unrelated menu item changes colour.
+        /// </remarks>
+        private static void ApplyMultiplayerMenuAccent(object? menuItemsArray, string playMultiplayerLabel)
+        {
+            try
+            {
+                var index = TitleScreenReflection.FindMenuIndexByLabel(menuItemsArray, playMultiplayerLabel);
+                if (index < 0)
+                    return;
+
+                var item = TitleScreenReflection.GetMenuItemAt(menuItemsArray, index);
+                // menuItem.t is dc.ui.Text, which inherits dc.h2d.Text.textColor (settable Int32).
+                var text = TitleScreenReflection.GetMemberValue(item, "t", true);
+                if (text == null)
+                    return;
+
+                TitleScreenReflection.TrySetMember(text, "textColor", MultiplayerMenuAccentColor);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to apply multiplayer menu accent: {Message}", ex.Message);
             }
         }
 

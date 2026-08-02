@@ -395,6 +395,23 @@ public partial class InteractionSync
         return FindInteractByPos<PressurePlate>(level, x, y, PlatePosTolerance);
     }
 
+    /// <summary>
+    /// Resolves a button/switch activator. Matches ATSwitch and BossRushTierButton too, since both
+    /// derive from Button. Same tolerance as plates: both are grid-aligned level fixtures.
+    /// </summary>
+    private static dc.en.inter.button.Button? FindButtonByPos(Level level, double x, double y)
+    {
+        var entityButton = FindInteractByPos<dc.en.inter.button.Button>(level, x, y, PlatePosTolerance);
+        if (entityButton != null)
+            return entityButton;
+
+        return FindNearestTriggerByPos<dc.en.inter.button.Button>(
+            level,
+            x,
+            y,
+            PlatePosTolerance * PlatePosTolerance * 4);
+    }
+
     private void ApplyRemoteTreasureChestEvents(List<InterTreasureChestEvent> events)
     {
         var level = ModEntry.me?._level;

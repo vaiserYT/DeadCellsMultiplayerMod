@@ -140,8 +140,100 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         }
 
         /// <summary>
+        /// Finds a usable replica constructor.
+        /// </summary>
+        /// <remarks>
+        /// Concrete mobs do NOT expose <c>dc.Entity</c>'s <c>(Level, int, int)</c> shape. The real
+        /// signatures are <c>dc.en.Mob(Level, int x, int y, string kind, int dmgTier, int lifeTier)</c>
+        /// and, for typical subclasses such as Zombie or MamaTick,
+        /// <c>(Level, int x, int y, int dmgTier, int lifeTier)</c>. Only the base Entity declares the
+        /// three-argument form, so demanding it matched essentially no real mob type and every
+        /// dynamic spawn failed with "no_ctor" - which is why malaise/summoned enemies existed on the
+        /// host only. Accept any constructor that begins with (Level, int, int) and whose remaining
+        /// parameters can be defaulted, preferring the one with fewest extras.
+        /// </remarks>
+        private static ConstructorInfo? ResolveMobReplicaConstructor(Type mobType)
+        {
+            ConstructorInfo? best = null;
+            var bestExtraCount = int.MaxValue;
+
+            ConstructorInfo[] ctors;
+            try
+            {
+                ctors = mobType.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            }
+            catch
+            {
+                return null;
+            }
+
+            foreach (var ctor in ctors)
+            {
+                var parameters = ctor.GetParameters();
+                if (parameters.Length < 3)
+                    continue;
+                if (parameters[0].ParameterType != typeof(Level))
+                    continue;
+                if (parameters[1].ParameterType != typeof(int) || parameters[2].ParameterType != typeof(int))
+                    continue;
+
+                var usable = true;
+                for (var i = 3; i < parameters.Length; i++)
+                {
+                    var parameterType = parameters[i].ParameterType;
+                    if (parameterType.IsValueType || parameterType == typeof(string))
+                        continue;
+
+                    usable = false;
+                    break;
+                }
+
+                if (!usable)
+                    continue;
+
+                var extraCount = parameters.Length - 3;
+                if (extraCount >= bestExtraCount)
+                    continue;
+
+                bestExtraCount = extraCount;
+                best = ctor;
+            }
+
+            return best;
+        }
+
+        private static object?[] BuildMobReplicaConstructorArgs(ConstructorInfo ctor, Level level, int cx, int cy)
+        {
+            var parameters = ctor.GetParameters();
+            var args = new object?[parameters.Length];
+            args[0] = level;
+            args[1] = cx;
+            args[2] = cy;
+
+            for (var i = 3; i < parameters.Length; i++)
+            {
+                // Tier/kind arguments only seed local stats and visuals. The replica's AI is locked
+                // and the host overwrites life/maxLife on the first authoritative state, so defaults
+                // never decide anything the second player can observe.
+                var parameter = parameters[i];
+                if (parameter.HasDefaultValue)
+                {
+                    args[i] = parameter.DefaultValue;
+                    continue;
+                }
+
+                var parameterType = parameter.ParameterType;
+                args[i] = parameterType.IsValueType ? Activator.CreateInstance(parameterType) : null;
+            }
+
+            return args;
+        }
+
+        /// <summary>
         /// Creates a client replica for a host-only mob. Returns null when the type cannot be built.
         /// </summary>
+        /// <param name="x">Host world position in PIXELS, as carried by MOBREG.</param>
+        /// <param name="y">Host world position in PIXELS, as carried by MOBREG.</param>
         private static Mob? TryCreateClientMobReplica(string? typeSignature, double x, double y)
         {
             System.Threading.Interlocked.Increment(ref s_clientSpawnAttempts);
@@ -175,15 +267,21 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             try
             {
-                // Same shape the mod already uses for GhostKing: (Level, int, int).
-                var ctor = mobType.GetConstructor(new[] { typeof(Level), typeof(int), typeof(int) });
+                var ctor = ResolveMobReplicaConstructor(mobType);
                 if (ctor == null)
                 {
                     MobSyncTrace.LogClientSpawn(runtimeClass, false, "no_ctor");
                     return null;
                 }
 
-                var created = ctor.Invoke(new object[] { level, (int)x, (int)y }) as Mob;
+                // Entity constructors take GRID CELL coordinates (see Entity.setPosCase versus
+                // Entity.setPosPixel, and dc.level.Mob storing spawns as cx/cy), but MOBREG carries
+                // world pixels. Feeding pixels straight in placed every replica 24x too far out,
+                // usually outside the level entirely.
+                var cx = (int)System.Math.Floor(x / PixelsPerCase);
+                var cy = (int)System.Math.Floor(y / PixelsPerCase);
+
+                var created = ctor.Invoke(BuildMobReplicaConstructorArgs(ctor, level, cx, cy)) as Mob;
                 if (created == null)
                 {
                     MobSyncTrace.LogClientSpawn(runtimeClass, false, "ctor_null");
@@ -196,6 +294,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 // be a compile error rather than a graceful no-op.
                 TryInvokeNoArgMember(created, "init");
                 TryInvokeLevelMember(created, "set_level", level);
+
+                // Land exactly on the host's position rather than the rounded cell, so the first
+                // interpolation step starts from the authoritative point instead of dragging the
+                // replica up to half a tile.
+                try { created.setPosPixel(x, y); } catch { }
 
                 // The replica must never run its own AI; the host drives it like every other
                 // client mob. Position is corrected by the normal authoritative stream.

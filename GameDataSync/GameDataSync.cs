@@ -539,10 +539,7 @@ namespace DeadCellsMultiplayerMod
             if (clearRemote)
             {
                 _hasRemoteBossRune = false;
-                _hasRemoteSerializerSync = false;
-                _hasRemoteSerializerValues = false;
-                _remoteSerializerSeq = 0;
-                _remoteSerializerUid = 0;
+                ClearRemoteSerializerState(restoreLocal: true, "restore_original_user");
                 lock (_bossRuneLock)
                 {
                     _remoteBossRune = null;
@@ -695,7 +692,9 @@ namespace DeadCellsMultiplayerMod
                 _remoteSerializerSeq = seq;
                 _remoteSerializerUid = uid;
                 _hasRemoteSerializerSync = true;
-                _hasRemoteSerializerValues = true;
+                // This flag means the remote identity is LIVE in dc.hxbit.Serializer.Class.
+                // Receiving a packet does not install it yet; setting the flag here caused save
+                // guards and disconnect cleanup to reason about state that was never applied.
             }
         }
 
@@ -710,7 +709,6 @@ namespace DeadCellsMultiplayerMod
 
                 seq = _remoteSerializerSeq;
                 uid = _remoteSerializerUid;
-                _hasRemoteSerializerSync = false;
             }
 
             try
@@ -719,20 +717,36 @@ namespace DeadCellsMultiplayerMod
                 if (serializerClass == null)
                     return false;
 
-                if (!_localSerializerCaptured)
+                lock (_serializerSyncLock)
                 {
-                    _localSerializerSeq = serializerClass.SEQ;
-                    _localSerializerUid = serializerClass.UID;
-                    _localSerializerCaptured = true;
+                    if (!_localSerializerCaptured)
+                    {
+                        _localSerializerSeq = serializerClass.SEQ;
+                        _localSerializerUid = serializerClass.UID;
+                        _localSerializerCaptured = true;
+                    }
+
+                    serializerClass.SEQ = seq;
+                    serializerClass.UID = uid;
+                    _hasRemoteSerializerValues = true;
+
+                    // Consume only the packet that was actually applied. If a newer packet arrived
+                    // while the serializer class was being resolved, leave it pending for the next
+                    // level-generation pass instead of silently dropping it.
+                    if (_hasRemoteSerializerSync &&
+                        _remoteSerializerSeq == seq &&
+                        _remoteSerializerUid == uid)
+                    {
+                        _hasRemoteSerializerSync = false;
+                    }
                 }
 
-                serializerClass.SEQ = seq;
-                serializerClass.UID = uid;
-                _hasRemoteSerializerValues = true;
                 return true;
             }
             catch
             {
+                // Keep the packet pending. Serializer.Class can be temporarily unavailable during
+                // startup/teardown and the next safe generation point may still apply it.
                 return false;
             }
         }
@@ -764,23 +778,180 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        public static void RestoreRemoteSerializerSync()
+        /// <summary>
+        /// Scope that forces the global hxbit serializer identity to THIS machine's captured local
+        /// SEQ/UID for the duration of a local persistent save, then restores exactly whatever was
+        /// active before - including after an exception, a cancelled launch, a death or a failed
+        /// level load, because the restore runs from <see cref="Dispose"/>.
+        /// </summary>
+        /// <remarks>
+        /// Supersedes the manual SwapToLocal/RestoreRemote pair. That pair was correct in itself, but
+        /// its callers gated it on the session ROLE, while the remote SEQ/UID installed by
+        /// <c>TryApplyRemoteSerializerSync</c> is global and outlives any role bookkeeping. Whenever
+        /// role state and serializer state diverge - a disconnect, a kicked host, a failed launch, a
+        /// swap that returned false because the serializer class was unavailable, or an exception
+        /// during a role transition - the save fell through to the unguarded path and was written
+        /// with the host's object-id space.
+        ///
+        /// This scope keys off the LIVE serializer values instead of role, so it cannot be bypassed
+        /// by stale role state, and it is completely inert when the local identity is already active
+        /// (host and single-player pay nothing). The previous values are read back from the
+        /// serializer itself, so restore is exact regardless of what was installed, and nesting is
+        /// harmless.
+        /// </remarks>
+        public readonly struct LocalSerializerSaveScope : IDisposable
         {
-            if (!_hasRemoteSerializerValues)
-                return;
+            private readonly bool _applied;
+            private readonly int _previousSeq;
+            private readonly int _previousUid;
+            private readonly bool _restorePrevious;
+            private readonly string _reason;
+
+            internal LocalSerializerSaveScope(
+                bool applied,
+                int previousSeq,
+                int previousUid,
+                bool restorePrevious,
+                string reason)
+            {
+                _applied = applied;
+                _previousSeq = previousSeq;
+                _previousUid = previousUid;
+                _restorePrevious = restorePrevious;
+                _reason = reason ?? string.Empty;
+            }
+
+            public void Dispose()
+            {
+                if (!_applied)
+                    return;
+
+                try
+                {
+                    var serializerClass = dc.hxbit.Serializer.Class;
+                    if (serializerClass == null)
+                        return;
+
+                    var net = GameMenu.NetRef;
+                    var canRestorePrevious =
+                        _restorePrevious &&
+                        GameMenu.CurrentRole == NetRole.Client &&
+                        net != null &&
+                        net.IsAlive &&
+                        !net.IsHost &&
+                        _hasRemoteSerializerValues;
+
+                    if (canRestorePrevious)
+                    {
+                        serializerClass.SEQ = _previousSeq;
+                        serializerClass.UID = _previousUid;
+                        _log?.Information(
+                            "[NetMod][Save] serializer scope end reason={Reason} action=restore_remote seq={Seq} uid={Uid}",
+                            _reason,
+                            _previousSeq,
+                            _previousUid);
+                    }
+                    else
+                    {
+                        // The session ended while the save was running (or stale remote values were
+                        // found outside a live client session). Never reinstall those values after a
+                        // persistent write; make local identity the permanent post-save state.
+                        serializerClass.SEQ = _localSerializerSeq;
+                        serializerClass.UID = _localSerializerUid;
+                        lock (_serializerSyncLock)
+                        {
+                            _hasRemoteSerializerSync = false;
+                            _hasRemoteSerializerValues = false;
+                            _remoteSerializerSeq = 0;
+                            _remoteSerializerUid = 0;
+                        }
+                        _log?.Information(
+                            "[NetMod][Save] serializer scope end reason={Reason} action=keep_local seq={Seq} uid={Uid}",
+                            _reason,
+                            _localSerializerSeq,
+                            _localSerializerUid);
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        /// <summary>
+        /// Enters a <see cref="LocalSerializerSaveScope"/>. Returns an inert scope when there is
+        /// nothing to correct (no remote identity was ever installed, or the local identity is
+        /// already active), so the common single-player and host paths cost nothing.
+        /// </summary>
+        public static LocalSerializerSaveScope BeginLocalSerializerSaveScope(string reason)
+        {
+            if (!_localSerializerCaptured)
+                return default;
 
             try
             {
                 var serializerClass = dc.hxbit.Serializer.Class;
                 if (serializerClass == null)
-                    return;
+                    return default;
 
-                serializerClass.SEQ = _remoteSerializerSeq;
-                serializerClass.UID = _remoteSerializerUid;
+                var previousSeq = serializerClass.SEQ;
+                var previousUid = serializerClass.UID;
+                if (previousSeq == _localSerializerSeq && previousUid == _localSerializerUid)
+                    return default;
+
+                var net = GameMenu.NetRef;
+                var restorePrevious =
+                    GameMenu.CurrentRole == NetRole.Client &&
+                    net != null &&
+                    net.IsAlive &&
+                    !net.IsHost &&
+                    _hasRemoteSerializerValues;
+
+                serializerClass.SEQ = _localSerializerSeq;
+                serializerClass.UID = _localSerializerUid;
+                _log?.Information(
+                    "[NetMod][Save] serializer scope begin reason={Reason} role={Role} fromSeq={FromSeq} fromUid={FromUid} toSeq={ToSeq} toUid={ToUid}",
+                    reason,
+                    GameMenu.CurrentRole,
+                    previousSeq,
+                    previousUid,
+                    _localSerializerSeq,
+                    _localSerializerUid);
+                return new LocalSerializerSaveScope(
+                    true,
+                    previousSeq,
+                    previousUid,
+                    restorePrevious,
+                    reason);
             }
             catch
             {
+                return default;
             }
+        }
+
+        /// <summary>
+        /// Clears all remote serializer bookkeeping and optionally restores the captured local
+        /// identity. This is called by every network/session reset, not only by user-data restore,
+        /// because level-graph state can be discarded when no User object is available.
+        /// </summary>
+        internal static void ClearRemoteSerializerState(bool restoreLocal, string reason)
+        {
+            if (restoreLocal)
+                RestoreLocalSerializerSyncIfCaptured();
+
+            lock (_serializerSyncLock)
+            {
+                _hasRemoteSerializerSync = false;
+                _hasRemoteSerializerValues = false;
+                _remoteSerializerSeq = 0;
+                _remoteSerializerUid = 0;
+            }
+
+            _log?.Information(
+                "[NetMod][Serializer] cleared remote state reason={Reason} restoreLocal={RestoreLocal}",
+                reason ?? string.Empty,
+                restoreLocal);
         }
 
         public static void SendSerializerSync(NetNode? net)

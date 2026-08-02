@@ -412,6 +412,7 @@ namespace DeadCellsMultiplayerMod
 
             ResetLevelReloadState();
             ClearPendingBossRuneReloadState();
+            ClearRemoteSerializerState(restoreLocal: true, "transient_network_reset");
         }
     }
 }

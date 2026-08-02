@@ -694,8 +694,13 @@ public sealed partial class NetNode : IDisposable
 
     public static NetNode CreateHost(ILogger log, IPEndPoint ep)  => new(log, NetRole.Host,  ep);
     public static NetNode CreateClient(ILogger log, IPEndPoint ep)=> new(log, NetRole.Client, ep);
-    public static NetNode CreateSteamHost(ILogger log, int hostPort) => new(log, NetRole.Host, new CSteamID(0), hostPort);
-    public static NetNode CreateSteamClient(ILogger log, ulong hostSteamId) => new(log, NetRole.Client, new CSteamID(hostSteamId), 0);
+    internal static NetNode CreateSteamHost(
+        ILogger log,
+        int hostPort,
+        SteamConnect.SteamLobbyVisibility visibility) =>
+        new(log, NetRole.Host, new CSteamID(0), hostPort, visibility);
+    public static NetNode CreateSteamClient(ILogger log, ulong hostSteamId) =>
+        new(log, NetRole.Client, new CSteamID(hostSteamId), 0, SteamConnect.SteamLobbyVisibility.FriendsOnly);
 
     internal SteamConnect.HostLobbyResult? HostLobbyResult =>
         _steamBridge?.HostLobbyResult ?? _steamHostStartupResult;
@@ -723,14 +728,21 @@ public sealed partial class NetNode : IDisposable
     }
 
     private readonly int _steamHostPort;
+    private readonly SteamConnect.SteamLobbyVisibility _steamLobbyVisibility;
 
-    private NetNode(ILogger log, NetRole role, CSteamID hostSteamId, int steamHostPort)
+    private NetNode(
+        ILogger log,
+        NetRole role,
+        CSteamID hostSteamId,
+        int steamHostPort,
+        SteamConnect.SteamLobbyVisibility steamLobbyVisibility)
     {
         _log = log;
         _role = role;
         _useSteamTransport = true;
         _steamHostId = hostSteamId;
         _steamHostPort = steamHostPort;
+        _steamLobbyVisibility = steamLobbyVisibility;
         _bindEp = new IPEndPoint(IPAddress.None, 0);
         _destEp = new IPEndPoint(IPAddress.None, 0);
 

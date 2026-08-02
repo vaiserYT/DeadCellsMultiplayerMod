@@ -226,3 +226,67 @@ msgstr "Perk anterior"
 #: SettingsUI.cs
 msgid "Next perk"
 msgstr "Perk siguiente"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Choose who can discover the Steam lobby"
+msgstr "Elige quién puede encontrar el lobby de Steam"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam friends-only host"
+msgstr "Anfitrión de Steam solo para amigos"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Create a Steam lobby visible to friends"
+msgstr "Crear un lobby de Steam visible para amigos"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam public host"
+msgstr "Anfitrión público de Steam"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Create a public Steam lobby with a shareable code"
+msgstr "Crear un lobby público de Steam con un código para compartir"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Back to hosting options"
+msgstr "Volver a las opciones de alojamiento"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Join by Steam lobby code"
+msgstr "Unirse con código de lobby de Steam"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Join Steam friend"
+msgstr "Unirse a un amigo de Steam"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Open Steam friends and choose Join Game"
+msgstr "Abrir amigos de Steam y elegir Unirse a la partida"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Lobby code copied to clipboard"
+msgstr "Código del lobby copiado al portapapeles"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Choose a friend playing this mod, then select Join Game"
+msgstr "Elige un amigo que esté jugando con este mod y selecciona Unirse a la partida"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Could not open the Steam friends overlay. Check console logs."
+msgstr "No se pudo abrir la lista de amigos de Steam. Revisa los registros de la consola."
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Invite Steam friends"
+msgstr "Invitar amigos de Steam"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Open the Steam friends invite list"
+msgstr "Abrir la lista de invitación de amigos de Steam"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Steam invite failed"
+msgstr "Error de invitación de Steam"
+
+#: GameMenu.cs / GameMenu.Connection.cs
+msgid "Could not open the Steam invite list. Check console logs."
+msgstr "No se pudo abrir la lista de invitaciones de Steam. Revisa los registros de la consola."

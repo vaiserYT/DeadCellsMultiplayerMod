@@ -82,6 +82,14 @@ namespace DeadCellsMultiplayerMod
                 AddMenuButton(screen, "Custom Mode", () => OpenHostCustomMode(screen), Localize("Configure and launch multiplayer custom mode"), canLaunch);
                 AddMenuButton(screen, GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
                 AddMenuButton(screen, multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
+                if (_menuTransport == ConnectionTransport.Steam && _steamLobbyId != 0UL)
+                {
+                    AddMenuButton(
+                        screen,
+                        Localize("Invite Steam friends"),
+                        () => OpenSteamHostInviteOverlay(screen),
+                        Localize("Open the Steam friends invite list"));
+                }
                 AddMenuButton(screen, GetText.Instance.GetString("Back"), () =>
                 {
                     StopNetworkFromMenu();
@@ -92,7 +100,15 @@ namespace DeadCellsMultiplayerMod
                 }, GetText.Instance.GetString("Back to host setup"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(screen, continueLabel, startLabel, "Custom Mode", GetReadyButtonLabel(), multiplayerSaveLabel, GetText.Instance.GetString("Back"));
+                RemoveDuplicatesKeepFirst(
+                    screen,
+                    continueLabel,
+                    startLabel,
+                    "Custom Mode",
+                    GetReadyButtonLabel(),
+                    multiplayerSaveLabel,
+                    Localize("Invite Steam friends"),
+                    GetText.Instance.GetString("Back"));
                 _inHostStatusMenu = true;
                 _inClientWaitingMenu = false;
             }
@@ -106,6 +122,19 @@ namespace DeadCellsMultiplayerMod
                 _suppressAutoButton = prevSuppress;
                 _menuRebuildDepth--;
             }
+        }
+
+        private static void OpenSteamHostInviteOverlay(TitleScreen screen)
+        {
+            if (SteamConnect.TryOpenInviteOverlay(_steamLobbyId, out var error))
+                return;
+
+            _log?.Warning("[NetMod][Steam] Could not open lobby invite overlay: {Error}", error);
+            ShowConnectionErrorPopup(
+                screen,
+                Localize("Steam invite failed"),
+                Localize("Could not open the Steam invite list. Check console logs."),
+                () => ShowHostStatusMenu(screen));
         }
 
         private static void ShowClientWaitingMenu(TitleScreen screen)
@@ -541,37 +570,24 @@ namespace DeadCellsMultiplayerMod
                 if (main == null || user == null)
                     return true;
 
+                // The client world is a transient reconstruction of host-owned graph/entity state.
+                // Writing it during a disconnect was the most dangerous possible time: packets may
+                // be incomplete and the host serializer identity may still be installed globally.
+                // Restore the client's real user/serializer state and let the host-owned MSave stay
+                // as the last known-good generation instead of overwriting it with partial state.
                 GameDataSync.SwapToOriginalUserData(user);
-                var serializerSwapped = GameDataSync.SwapToLocalSerializerSync();
-                _forceMultiplayerSaveStore = true;
-                try
-                {
-                    var saved = main.writeSave();
-                    if (saved)
-                    {
-                        if (!TryValidateClientMultiplayerSave(out var validationError))
-                        {
-                            _log?.Warning("[NetMod] Client multiplayer save validation failed before host-disconnect auto-exit ({Reason}): {Error}", reason, validationError);
-                            return false;
-                        }
-
-                        _log?.Information("[NetMod] Saved client multiplayer world before host-disconnect auto-exit ({Reason})", reason);
-                        return true;
-                    }
-
-                    _log?.Warning("[NetMod] Client world save is pending before host-disconnect auto-exit ({Reason})", reason);
-                    return false;
-                }
-                finally
-                {
-                    _forceMultiplayerSaveStore = false;
-                    if (!serializerSwapped)
-                        GameDataSync.SwapToLocalSerializerSync();
-                }
+                GameDataSync.ClearRemoteSerializerState(
+                    restoreLocal: true,
+                    reason: "client_host_disconnect_no_persist");
+                _forceMultiplayerSaveStore = false;
+                _log?.Information(
+                    "[NetMod][SaveGuard] skipped non-authoritative client world write before host-disconnect auto-exit ({Reason})",
+                    reason);
+                return true;
             }
             catch (Exception ex)
             {
-                _log?.Warning("[NetMod] Failed to save client world before host-disconnect auto-exit ({Reason}): {Message}", reason, ex.Message);
+                _log?.Warning("[NetMod] Failed to restore local client state before host-disconnect auto-exit ({Reason}): {Message}", reason, ex.Message);
                 return false;
             }
         }
@@ -1278,11 +1294,11 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void TryAddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null)
+        private static void TryAddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, int? textColor = null)
         {
             try
             {
-                AddMenuButton(screen, label, onClick, help);
+                AddMenuButton(screen, label, onClick, help, isEnabled: null, textColor: textColor);
             }
             catch (Exception ex)
             {
@@ -1290,12 +1306,17 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void AddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, bool? isEnabled = null)
+        /// <summary>
+        /// Shared menu-button helper. <paramref name="textColor"/> is opt-in and defaults to the
+        /// vanilla white: this method builds Host game, Join game, Ready, Disconnect, OK, Back and
+        /// most other entries, so a hardcoded accent here would recolour the entire mod UI.
+        /// </summary>
+        private static void AddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null)
         {
             var cb = new HlAction(onClick);
             var labelStr = MakeHLString(label);
             var helpStr = MakeHLString(help ?? string.Empty);
-            int colorVal = 0xFFFFFF;
+            int colorVal = textColor ?? 0xFFFFFF;
             var color = Ref<int>.From(ref colorVal);
             screen.addMenu(labelStr, cb, helpStr, isEnabled, color);
         }

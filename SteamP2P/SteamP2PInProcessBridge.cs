@@ -20,6 +20,7 @@ namespace DeadCellsMultiplayerMod
         private readonly Callback<P2PSessionConnectFail_t> _sessionFailCallback;
         private readonly ConcurrentQueue<string> _warnings = new();
         private readonly ConcurrentQueue<ulong> _sessionFails = new();
+        private readonly ConcurrentDictionary<ulong, byte> _acceptedPeers = new();
         private byte[] _receiveBuffer = new byte[SteamMinReceiveBufferBytes];
         private int _nextReadChannel;
         private bool _disposed;
@@ -45,6 +46,7 @@ namespace DeadCellsMultiplayerMod
         internal static bool TryStartHost(
             int hostPort,
             string hostIp,
+            SteamConnect.SteamLobbyVisibility visibility,
             out ISteamP2PBridge? bridge,
             out string error)
         {
@@ -65,7 +67,7 @@ namespace DeadCellsMultiplayerMod
                     Error = "Steam lobby creation failed"
                 };
                 var created = ModEntry.RunSteamNetworkingSerialized(() =>
-                    SteamConnect.TryCreateLobbyForP2PHost(hostPort, hostIp, out lobby));
+                    SteamConnect.TryCreateLobbyForP2PHost(hostPort, hostIp, visibility, out lobby));
                 if (!created || !lobby.Success)
                 {
                     error = string.IsNullOrWhiteSpace(lobby.Error) ? "Steam lobby creation failed" : lobby.Error;
@@ -142,6 +144,8 @@ namespace DeadCellsMultiplayerMod
                         channel));
                 if (!sent)
                     error = $"Steam send failed to {steamId} ({sendType}, ch={channel})";
+                else if (_role == NetRole.Host)
+                    _acceptedPeers.TryAdd(steamId, 0);
                 return sent;
             }
             catch (Exception ex)
@@ -274,6 +278,7 @@ namespace DeadCellsMultiplayerMod
             try
             {
                 ModEntry.RunSteamNetworkingSerialized(() => SteamNetworking.AcceptP2PSessionWithUser(remote));
+                _acceptedPeers.TryAdd(remote.m_SteamID, 0);
             }
             catch (Exception ex)
             {
@@ -303,6 +308,18 @@ namespace DeadCellsMultiplayerMod
             }
             else if (_role == NetRole.Host && HostLobbyResult?.LobbyId > 0UL)
             {
+                foreach (var peer in _acceptedPeers.Keys)
+                {
+                    if (peer == 0UL)
+                        continue;
+                    try
+                    {
+                        ModEntry.RunSteamNetworkingSerialized(() =>
+                            SteamNetworking.CloseP2PSessionWithUser(new CSteamID(peer)));
+                    }
+                    catch { }
+                }
+                _acceptedPeers.Clear();
                 try { SteamConnect.LeaveLobby(HostLobbyResult.LobbyId); } catch { }
             }
 

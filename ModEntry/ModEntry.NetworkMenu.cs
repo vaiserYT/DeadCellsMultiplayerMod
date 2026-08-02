@@ -40,9 +40,11 @@ namespace DeadCellsMultiplayerMod
             StartClientWithEndpoint(ep);
         }
 
-        public void StartSteamHostFromMenu(int hostPort)
+        internal void StartSteamHostFromMenu(
+            int hostPort,
+            SteamConnect.SteamLobbyVisibility visibility)
         {
-            StartHostWithSteamTransport(hostPort);
+            StartHostWithSteamTransport(hostPort, visibility);
         }
 
         public void StartSteamClientFromMenu(ulong hostSteamId)
@@ -148,14 +150,16 @@ namespace DeadCellsMultiplayerMod
             Logger.Information($"[NetMod] Client connecting to {ep.Address}:{ep.Port}");
         }
 
-        private void StartHostWithSteamTransport(int hostPort)
+        private void StartHostWithSteamTransport(
+            int hostPort,
+            SteamConnect.SteamLobbyVisibility visibility)
         {
             if (!_ready)
             {
                 Logger.Warning("[NetMod] Steam host start rejected: OnGameEndInit not yet run");
                 return;
             }
-            StartHostCore(() => _net = NetNode.CreateSteamHost(Logger, hostPort));
+            StartHostCore(() => _net = NetNode.CreateSteamHost(Logger, hostPort, visibility));
             var lobby = _net?.HostLobbyResult;
             if (lobby?.Success == true)
             {

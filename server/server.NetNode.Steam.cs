@@ -50,6 +50,7 @@ public sealed partial class NetNode
         if (SteamP2PInProcessBridge.TryStartHost(
                 _steamHostPort,
                 hostIp,
+                _steamLobbyVisibility,
                 out var inProcessBridge,
                 out var inProcessError) &&
             inProcessBridge?.HostLobbyResult?.Success == true)
@@ -75,6 +76,7 @@ public sealed partial class NetNode
                         new CSteamID(0),
                         _steamHostPort,
                         hostIp,
+                        _steamLobbyVisibility,
                         out var workerBridge,
                         out var workerError))
                 {
@@ -148,7 +150,14 @@ public sealed partial class NetNode
             var inProcessFailure = error;
             for (var attempt = 1; attempt <= 2; attempt++)
             {
-                if (SteamP2PWorkerBridge.TryStart(NetRole.Client, _steamHostId, 0, null, out var workerBridge, out var workerError))
+                if (SteamP2PWorkerBridge.TryStart(
+                        NetRole.Client,
+                        _steamHostId,
+                        0,
+                        null,
+                        SteamConnect.SteamLobbyVisibility.FriendsOnly,
+                        out var workerBridge,
+                        out var workerError))
                 {
                     bridge = workerBridge;
                     error = string.Empty;

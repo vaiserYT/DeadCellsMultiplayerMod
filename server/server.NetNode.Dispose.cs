@@ -133,6 +133,8 @@ public sealed partial class NetNode
 
         try
         {
+            if (_useSteamTransport && _role == NetRole.Host && _steamBridge != null)
+                _steamBridge.TryClearRichPresence(out _);
             _steamBridge?.Dispose();
             _steamBridge = null;
         }

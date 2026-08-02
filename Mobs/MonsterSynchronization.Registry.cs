@@ -30,7 +30,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         private static void AssignHostNetIdsForRebuildLocked(IReadOnlyList<Mob> candidateTrackedMobs)
         {
-            nextRuntimeSyncId = 0;
+            // Continue the session-monotonic allocator instead of restarting at 0. See the note in
+            // ResetMobTrackingStateLocked: an id must never be reused for a different enemy, because
+            // a same-level rebuild produces an identical wire generation and cannot fence the reuse.
             for (var i = 0; i < candidateTrackedMobs.Count; i++)
             {
                 var mob = candidateTrackedMobs[i];

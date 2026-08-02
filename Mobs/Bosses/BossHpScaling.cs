@@ -74,7 +74,11 @@ public static class BossHpScaling
             }
 
             state.BaseMaxLife = baseMaxLife;
-            state.AppliedMaxLife = newMaxLife;
+            // Record what the boss actually ends up carrying rather than what was requested.
+            // initLife may clamp or re-derive maxLife, and storing the requested value would make
+            // the next call miss the "already scaled" check above, treat an already-scaled maxLife
+            // as a fresh vanilla baseline, and multiply it a second time.
+            state.AppliedMaxLife = System.Math.Max(1, mob.maxLife);
             state.AppliedMultiplier = mult;
         }
         catch

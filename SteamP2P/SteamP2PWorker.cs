@@ -21,6 +21,7 @@ namespace DeadCellsMultiplayerMod
         public const string EnvEventPipe = "DCCM_STEAM_P2P_EVENT_PIPE";
         public const string EnvHostPort = "DCCM_STEAM_P2P_HOST_PORT";
         public const string EnvHostIp = "DCCM_STEAM_P2P_HOST_IP";
+        public const string EnvLobbyVisibility = "DCCM_STEAM_P2P_LOBBY_VISIBILITY";
         public const string EnvDebugP2P = "DCCM_STEAM_P2P_DEBUG";
 
         // Reuse SteamConnect bootstrap error path to capture startup failures before pipes are ready.
@@ -123,7 +124,14 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        public static bool TryStart(NetRole role, CSteamID hostSteamId, int hostPort, string? hostIp, out SteamP2PWorkerBridge? bridge, out string error)
+        public static bool TryStart(
+            NetRole role,
+            CSteamID hostSteamId,
+            int hostPort,
+            string? hostIp,
+            SteamConnect.SteamLobbyVisibility lobbyVisibility,
+            out SteamP2PWorkerBridge? bridge,
+            out string error)
         {
             bridge = null;
             error = "Steam P2P worker failed to start";
@@ -167,6 +175,7 @@ namespace DeadCellsMultiplayerMod
                 {
                     startInfo.Environment[SteamP2PWorkerEnvironment.EnvHostPort] = hostPort.ToString(CultureInfo.InvariantCulture);
                     startInfo.Environment[SteamP2PWorkerEnvironment.EnvHostIp] = hostIp ?? string.Empty;
+                    startInfo.Environment[SteamP2PWorkerEnvironment.EnvLobbyVisibility] = lobbyVisibility.ToString();
                 }
 
                 var assemblyPath = typeof(SteamP2PWorkerBridge).Assembly.Location;
@@ -221,7 +230,8 @@ namespace DeadCellsMultiplayerMod
                         LobbyId = ready.LobbyId,
                         HostIp = ready.HostIp ?? string.Empty,
                         HostPort = ready.HostPort,
-                        PersonaName = ready.PersonaName ?? string.Empty
+                        PersonaName = ready.PersonaName ?? string.Empty,
+                        Visibility = lobbyVisibility
                     };
                 }
 
@@ -787,9 +797,11 @@ namespace DeadCellsMultiplayerMod
                     {
                         var hostPortRaw = Environment.GetEnvironmentVariable(SteamP2PWorkerEnvironment.EnvHostPort);
                         var hostIp = Environment.GetEnvironmentVariable(SteamP2PWorkerEnvironment.EnvHostIp) ?? string.Empty;
+                        var lobbyVisibility = SteamConnect.ParseLobbyVisibility(
+                            Environment.GetEnvironmentVariable(SteamP2PWorkerEnvironment.EnvLobbyVisibility));
                         if (!string.IsNullOrWhiteSpace(hostPortRaw) && int.TryParse(hostPortRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hostPort) && hostPort > 0)
                         {
-                            if (SteamConnect.TryCreateLobbyForP2PHost(hostPort, hostIp, out var lobby))
+                            if (SteamConnect.TryCreateLobbyForP2PHost(hostPort, hostIp, lobbyVisibility, out var lobby))
                             {
                                 hostLobbyId = lobby.LobbyId;
                                 readyEvt.LobbyId = lobby.LobbyId;

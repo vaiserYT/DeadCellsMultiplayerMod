@@ -157,6 +157,9 @@ public partial class InteractionSync
                     case PressurePlate pressurePlate:
                         CachedInteractionLevelData.PressurePlates.Add(pressurePlate);
                         break;
+                    case dc.en.inter.button.Button button:
+                        CachedInteractionLevelData.Buttons.Add(button);
+                        break;
                     case TreasureChest treasureChest:
                         CachedInteractionLevelData.TreasureChests.Add(treasureChest);
                         break;
@@ -183,6 +186,9 @@ public partial class InteractionSync
                 case Portal portal:
                     CachedInteractionLevelData.TriggerPortals.Add(portal);
                     break;
+                case dc.en.inter.button.Button button:
+                    CachedInteractionLevelData.TriggerButtons.Add(button);
+                    break;
             }
         }
     }
@@ -202,6 +208,8 @@ public partial class InteractionSync
             return (IReadOnlyList<T>)(object)cache.Portals;
         if (typeof(T) == typeof(PressurePlate))
             return (IReadOnlyList<T>)(object)cache.PressurePlates;
+        if (typeof(T) == typeof(dc.en.inter.button.Button))
+            return (IReadOnlyList<T>)(object)cache.Buttons;
         if (typeof(T) == typeof(TreasureChest))
             return (IReadOnlyList<T>)(object)cache.TreasureChests;
         if (typeof(T) == typeof(SwitchBossRune))
@@ -218,6 +226,8 @@ public partial class InteractionSync
             return (IReadOnlyList<T>)(object)cache.TriggerTeleports;
         if (typeof(T) == typeof(Portal))
             return (IReadOnlyList<T>)(object)cache.TriggerPortals;
+        if (typeof(T) == typeof(dc.en.inter.button.Button))
+            return (IReadOnlyList<T>)(object)cache.TriggerButtons;
         return null;
     }
 

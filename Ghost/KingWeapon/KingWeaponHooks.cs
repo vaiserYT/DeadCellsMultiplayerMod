@@ -416,7 +416,16 @@ internal static class KingWeaponHooks
             return;
         }
 
-        ModEntry.Instance?.NotifyLocalWeaponPrepareFromKingWeaponHooks(self);
+        // Network visual replay is optional. A reflection/proxy failure here must never prevent the
+        // real local weapon from entering vanilla prepare (the historic Flint crash path).
+        try
+        {
+            ModEntry.Instance?.NotifyLocalWeaponPrepareFromKingWeaponHooks(self);
+        }
+        catch (Exception ex)
+        {
+            LogKingWeaponHookEx(ex, nameof(Hook_Weapon_prepare) + ".NotifyLocal");
+        }
         orig(self, attackSpeed);
     }
 
@@ -455,7 +464,16 @@ internal static class KingWeaponHooks
         try { wasCharging = self != null && self.isCharging(); } catch { }
         orig(self);
         if(wasCharging && self != null)
-            ModEntry.Instance?.NotifyLocalWeaponInterruptFromKingWeaponHooks(self);
+        {
+            try
+            {
+                ModEntry.Instance?.NotifyLocalWeaponInterruptFromKingWeaponHooks(self);
+            }
+            catch (Exception ex)
+            {
+                LogKingWeaponHookEx(ex, nameof(Hook_Weapon_interrupt) + ".NotifyLocal");
+            }
+        }
     }
 
     private static void Hook_Weapon_dynOnInterrupt(Hook_Weapon.orig_dynOnInterrupt orig, Weapon self, WeaponSkill s, double r)

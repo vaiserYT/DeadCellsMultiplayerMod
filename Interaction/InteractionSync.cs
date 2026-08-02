@@ -26,11 +26,13 @@ public partial class InteractionSync :
         public readonly List<Teleport> Teleports = new();
         public readonly List<Portal> Portals = new();
         public readonly List<PressurePlate> PressurePlates = new();
+        public readonly List<dc.en.inter.button.Button> Buttons = new();
         public readonly List<TreasureChest> TreasureChests = new();
         public readonly List<SwitchBossRune> SwitchBossRunes = new();
         public readonly List<Elevator> TriggerElevators = new();
         public readonly List<Teleport> TriggerTeleports = new();
         public readonly List<Portal> TriggerPortals = new();
+        public readonly List<dc.en.inter.button.Button> TriggerButtons = new();
 
         public void Clear()
         {
@@ -40,11 +42,13 @@ public partial class InteractionSync :
             Teleports.Clear();
             Portals.Clear();
             PressurePlates.Clear();
+            Buttons.Clear();
             TreasureChests.Clear();
             SwitchBossRunes.Clear();
             TriggerElevators.Clear();
             TriggerTeleports.Clear();
             TriggerPortals.Clear();
+            TriggerButtons.Clear();
         }
     }
 
@@ -110,6 +114,13 @@ public partial class InteractionSync :
 
     private bool _applyingRemotePressurePlateEvents;
 
+    /// <summary>
+    /// Generated GameProxy builds do not expose Hook_Button/Hook_ATSwitch consistently. Track each
+    /// button's activation edge from the hero update instead, which keeps this compatible with the
+    /// proxy shipped by the current DCCM/game build.
+    /// </summary>
+    private readonly Dictionary<dc.en.inter.button.Button, bool> _buttonActivationState = new();
+
     private bool _applyingRemoteVineLadderEvents;
 
     private bool _applyingRemoteTeleportEvents;
@@ -127,7 +138,11 @@ public partial class InteractionSync :
 
     private readonly Dictionary<(Elevator Elevator, int UserId), long> _elevatorLastAppliedSequence = new();
 
-    private readonly Dictionary<(PressurePlate Plate, int UserId), long> _pressurePlateLastAppliedSequence = new();
+    /// <summary>
+    /// Keyed on Entity rather than PressurePlate: the same INTERPLATE pulse now also carries button
+    /// activations, and a button is a different Interactive subclass.
+    /// </summary>
+    private readonly Dictionary<(Entity Activator, int UserId), long> _pressurePlateLastAppliedSequence = new();
 
     private readonly Dictionary<Door, string> _lastAuthoritativeDoorState = new();
 
@@ -156,6 +171,8 @@ public partial class InteractionSync :
         Hook_Door.onDie += Hook_Door_onDie;
         Hook_Elevator.onStep += Hook_Elevator_onStep;
         Hook_PressurePlate.trigger += Hook_PressurePlate_trigger;
+        // Button/ATSwitch generated hook classes are not present in every GameProxy build. Their
+        // activation edges are detected in PollLocalButtonActivations from IOnHeroUpdate instead.
         // Don't hook executeOn - it fires every frame when standing, causing infinite event flood
         Hook_TreasureChest.open += Hook_TreasureChest_open;
         Hook_VineLadder.activate += Hook_VineLadder_activate;
@@ -255,6 +272,9 @@ public partial class InteractionSync :
 
         GameDataSync.PumpBossRuneHudRefresh();
 
+        EnsureInteractionRuntimeLevel(ModEntry.me?._level);
+        PollLocalButtonActivations(ModEntry.me?._level);
+
         if (net.TryConsumeInterDoorEvents(out var doorEvents))
             ApplyAndRelease(doorEvents, ApplyRemoteDoorEvents);
 
@@ -279,7 +299,6 @@ public partial class InteractionSync :
         if (net.TryConsumeInterPortalEvents(out var portalEvents))
             ApplyAndRelease(portalEvents, ApplyRemotePortalEvents);
 
-        EnsureInteractionRuntimeLevel(ModEntry.me?._level);
         if (net.IsHost)
         {
             CheckAndCloseDoorsWhenNoOneNearby();
@@ -334,6 +353,7 @@ public partial class InteractionSync :
         _elevatorLastInterSendTickMs.Clear();
         _elevatorLastAppliedSequence.Clear();
         _pressurePlateLastAppliedSequence.Clear();
+        _buttonActivationState.Clear();
     }
 
 }

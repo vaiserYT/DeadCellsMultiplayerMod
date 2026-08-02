@@ -585,7 +585,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             s_mobSyncAliases = new ConditionalWeakTable<Mob, MobSyncAlias>();
             ClearHostMobStallRecoveryLocked();
             ResetPlayerCombatStateRepairLocked();
-            nextRuntimeSyncId = 0;
+            // nextRuntimeSyncId is deliberately NOT reset here. It is the host's NetId allocator and
+            // must stay monotonic for the whole session: the wire generation is a pure hash of map
+            // id + seed, so two rebuilds of the SAME level carry the same generation and restarting
+            // the counter would hand id 0..N to a different set of mobs while packets addressed to
+            // the previous set are still in flight. Monotonic ids make that mis-binding impossible;
+            // a stale id simply resolves to nothing instead of resolving to the wrong enemy.
             s_pendingCulledMobDeaths.Clear();
             s_pendingCulledMobDeathFirstFrame.Clear();
             clientMobTargets.Clear();
