@@ -208,7 +208,12 @@ namespace DeadCellsMultiplayerMod
             return result;
         }
 
-        private static LevelGraphGenDataSync? CaptureLevelGraphGenData(virtual_altarItemGroup_brLegendaryMultiTreasure_broken_cells_doorCost_doorCurse_flaskRefill_forcedMerchantType_forcePauseTimer_isCliffPath_itemInWall_itemLevelBonus_killsMultiTreasure_locked_maxPerks_mins_noHealingShop_shouldBeFlipped_specificBiome_subTeleportTo_timedMultiTreasure_zDoorLock_zDoorType_? genData)
+        // RoomNode.genData is exposed through a generated Haxe virtual proxy whose CLR type name
+        // can change when the game's proxy metadata changes. Keeping that generated type in this
+        // method signature made otherwise-compatible builds fail at compile time (CS0246). Use
+        // dynamic here so capture remains tied to the member contract rather than one proxy name;
+        // every optional read below is already isolated by try/catch for version tolerance.
+        private static LevelGraphGenDataSync? CaptureLevelGraphGenData(dynamic genData)
         {
             if (genData == null)
                 return null;
