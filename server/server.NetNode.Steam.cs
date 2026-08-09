@@ -120,10 +120,11 @@ public sealed partial class NetNode
         _steamBridge = bridge;
         _steamHostStartupResult = bridge.HostLobbyResult;
         _log.Information(
-            "[NetNode] Host started with Steam P2P transport ({Transport}), lobbyId={LobbyId}",
+            "[NetNode][Steam] Host started with Steam P2P transport ({Transport}), lobbyId={LobbyId}",
             bridge is SteamP2PInProcessBridge ? "in-process" : "worker fallback",
             bridge.HostLobbyResult?.LobbyId ?? 0UL);
         _steamTransportTask = Task.Run(() => SteamBridgeLoop(_cts.Token));
+        _steamKeepAliveTask = Task.Run(() => SteamKeepAliveLoop(_cts.Token));
     }
 
     private void StartSteamClient()
@@ -190,10 +191,68 @@ public sealed partial class NetNode
 
         _steamBridge = bridge;
         _log.Information(
-            "[NetNode] Client started with Steam P2P transport ({Transport})",
+            "[NetNode][Steam] Client started with Steam P2P transport ({Transport})",
             bridge is SteamP2PInProcessBridge ? "in-process" : "worker fallback");
         _steamTransportTask = Task.Run(() => SteamBridgeLoop(_cts.Token));
+        _steamKeepAliveTask = Task.Run(() => SteamKeepAliveLoop(_cts.Token));
         _ = Task.Run(() => ConnectWithRetrySteamBridgeAsync(_cts.Token));
+    }
+
+    /// <summary>
+    /// Sends the transport heartbeat independently of both the receive loop and the game main
+    /// thread, so "my peer is loading a level" can never be mistaken for "my peer is gone".
+    /// </summary>
+    private async Task SteamKeepAliveLoop(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested && !_disposed)
+            {
+                if (_useSteamTransport)
+                    TrySendSteamKeepAlive();
+                else
+                    TrySendTcpKeepAlive();
+                await Task.Delay(SteamKeepAlivePollMs, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _log.Warning("[NetNode] keep-alive loop stopped: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Application-level heartbeat for the direct IP / LAN / virtual-LAN transport.
+    /// </summary>
+    /// <remarks>
+    /// A lobby that is merely sitting at the menu produces no protocol traffic at all, and neither
+    /// does a peer that is loading. Home routers, CGNAT and virtual-LAN adapters (Radmin, Hamachi,
+    /// ZeroTier and friends) all expire idle TCP mappings, so a port-forwarded session could be torn
+    /// down between "both players ready" and "host presses Start" without either side doing anything
+    /// wrong. A periodic PING keeps the path warm and, together with the socket-level keep-alive set
+    /// on accept/connect, makes a genuinely dead peer surface as a read failure instead of a silent
+    /// stall. PING is already an accepted no-op line on both roles, so this needs no protocol change.
+    /// </remarks>
+    private void TrySendTcpKeepAlive()
+    {
+        if (!HasAnyConnection())
+            return;
+
+        var now = Stopwatch.GetTimestamp();
+        var minTicks = (long)(Stopwatch.Frequency * SteamKeepAliveSeconds);
+        if (_lastSteamKeepAliveSentTicks != 0 && now - _lastSteamKeepAliveSentTicks < minTicks)
+            return;
+
+        _lastSteamKeepAliveSentTicks = now;
+        try
+        {
+            _ = SendLineSafe("PING\n");
+        }
+        catch (Exception ex)
+        {
+            _log.Debug("[NetNode] keep-alive send failed: {Message}", ex.Message);
+        }
     }
 
     private async Task ConnectWithRetrySteamBridgeAsync(CancellationToken ct)
@@ -294,20 +353,46 @@ public sealed partial class NetNode
 
     private async Task SteamBridgeLoop(CancellationToken ct)
     {
+        // The loop body awaits the main-thread channel and Task.Delay, both of which throw on
+        // cancellation, and HandleLine dispatch can surface a malformed-packet exception. Letting
+        // any of those escape turns this into a faulted, unobserved Task - noise during normal play
+        // and one more background fault racing the runtime during shutdown.
+        try
+        {
+            await SteamBridgeLoopCore(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("[NetNode][Steam] transport loop stopped: {Message}", ex.Message);
+        }
+    }
+
+    private async Task SteamBridgeLoopCore(CancellationToken ct)
+    {
         var bridge = _steamBridge;
         if (bridge == null)
             return;
 
         _lastSteamPacketReceivedTicks = Stopwatch.GetTimestamp();
         var expectedChannel = _role == NetRole.Host ? SteamP2PChannelClientToHost : SteamP2PChannelHostToClient;
+        var drained = new List<(string Payload, int SenderId, SteamClientConnection? Connection)>();
 
         while (!ct.IsCancellationRequested && !_disposed)
         {
             var hasPacket = false;
 
+            // Drain everything Steam currently holds BEFORE any main-thread hand-off. Reading and
+            // dispatching in the same step meant a busy game thread also stopped us from emptying
+            // Steam's receive queue, so liveness bookkeeping went stale even though the peer was
+            // transmitting normally.
+            drained.Clear();
             while (bridge.TryReadPacket(out var packet))
             {
                 hasPacket = true;
+                _lastSteamPacketReceivedTicks = Stopwatch.GetTimestamp();
                 if (packet.Channel != expectedChannel)
                     continue;
 
@@ -315,21 +400,27 @@ public sealed partial class NetNode
                 {
                     if (_steamHostId.m_SteamID != 0UL && packet.RemoteSteamId != _steamHostId.m_SteamID)
                         continue;
-                    _lastSteamPacketReceivedTicks = Stopwatch.GetTimestamp();
-                    await ProcessIncomingSteamPayloadAsync(packet.Payload, 1, null, ct).ConfigureAwait(false);
+                    drained.Add((packet.Payload, 1, null));
                 }
                 else
                 {
                     var remoteSteamId = new CSteamID(packet.RemoteSteamId);
                     if (!TryGetOrRegisterSteamClient(remoteSteamId, out var connection) || connection == null)
                         continue;
-                    await ProcessIncomingSteamPayloadAsync(packet.Payload, connection.AssignedId, connection, ct).ConfigureAwait(false);
+                    drained.Add((packet.Payload, connection.AssignedId, connection));
                 }
+            }
+
+            for (var i = 0; i < drained.Count; i++)
+            {
+                var entry = drained[i];
+                await ProcessIncomingSteamPayloadAsync(entry.Payload, entry.SenderId, entry.Connection, ct)
+                    .ConfigureAwait(false);
             }
 
             while (bridge.TryReadWarning(out var warning))
             {
-                _log.Warning("[NetNode] Steam P2P worker: {Warning}", warning);
+                _log.Warning("[NetNode][Steam] P2P worker: {Warning}", warning);
             }
 
             while (bridge.TryReadSessionFail(out var failedSteamId))
@@ -368,16 +459,26 @@ public sealed partial class NetNode
                 }
             }
 
-            if (!hasPacket)
-                TrySendSteamKeepAlive();
+            // Keep-alive is owned by SteamKeepAliveLoop; sending it from here as well would make
+            // heartbeat delivery depend on this loop's main-thread hand-off again.
 
             if (_role == NetRole.Client && !hasPacket && _hasRemote)
             {
                 var now = Stopwatch.GetTimestamp();
                 var elapsed = (double)(now - _lastSteamPacketReceivedTicks) / Stopwatch.Frequency;
-                if (elapsed >= SteamReceiveTimeoutSeconds)
+                // A non-empty dispatch backlog means the host IS talking to us and only our own
+                // game thread is behind. Dropping the session there turned a slow local load into
+                // a false disconnect.
+                var localBacklog = Volatile.Read(ref _steamMainThreadDispatchBacklog);
+                // Hard ceiling so a leaked backlog entry (queue drained by a session reset without
+                // running the action) can never suppress disconnect detection indefinitely.
+                var backlogGraceExpired = elapsed >= SteamReceiveTimeoutSeconds * 3.0;
+                if (elapsed >= SteamReceiveTimeoutSeconds && (localBacklog == 0 || backlogGraceExpired))
                 {
-                    _log.Warning("[NetNode] Steam client receive timeout ({Elapsed:F1}s)", elapsed);
+                    _log.Warning(
+                        "[NetNode][Steam] client receive timeout after {Elapsed:F1}s (limit {Limit:F1}s) - closing session",
+                        elapsed,
+                        SteamReceiveTimeoutSeconds);
                     GameMenu.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
                     {
                         if (IsCurrentNetworkSession())
@@ -520,8 +621,9 @@ public sealed partial class NetNode
         int? cachedSerializerSeq;
         int? cachedSerializerUid;
         string? cachedLevelDescPayload;
-        string? cachedLevelSeedPayload;
-        string? cachedLevelGraphPayload;
+        List<string> cachedLevelSeedPayloads;
+        List<string> cachedLevelGraphPayloads;
+        string? cachedGeneratePayload;
         string? cachedCustomGameDataPayload;
         string? cachedHeroSkin;
         string? cachedHeroHeadSkin;
@@ -541,8 +643,10 @@ public sealed partial class NetNode
             cachedSerializerSeq = _cachedHostSerializerSeq;
             cachedSerializerUid = _cachedHostSerializerUid;
             cachedLevelDescPayload = _cachedHostLevelDescPayload;
-            cachedLevelSeedPayload = _cachedHostLevelSeedPayload;
-            cachedLevelGraphPayload = _cachedHostLevelGraphPayload;
+            // See the TCP replay: every generated level, not just the newest.
+            cachedLevelSeedPayloads = new List<string>(_cachedHostLevelSeedsByLevelId.Values);
+            cachedLevelGraphPayloads = new List<string>(_cachedHostLevelGraphsByLevelId.Values);
+            cachedGeneratePayload = _cachedHostGeneratePayload;
             cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
             cachedHeroSkin = _cachedHostHeroSkin;
             cachedHeroHeadSkin = _cachedHostHeroHeadSkin;
@@ -560,6 +664,9 @@ public sealed partial class NetNode
             await SendLineToSteamClientSafe(connection, BuildCoopStateLine(1, cachedCoopId, cachedHasContinueSave)).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedCustomGameDataPayload))
             await SendLineToSteamClientSafe(connection, $"CGDATA|{cachedCustomGameDataPayload}\n").ConfigureAwait(false);
+        // See the TCP replay: GEN is a launch prerequisite and must arrive before RUNCOMMIT.
+        if (!string.IsNullOrWhiteSpace(cachedGeneratePayload))
+            await SendLineToSteamClientSafe(connection, $"GEN|{cachedGeneratePayload}\n").ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedRunCommitPayload))
             await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.CommitTag}|{cachedRunCommitPayload}\n").ConfigureAwait(false);
         if (cachedSeed.HasValue && cachedRunSeedSequence.HasValue)
@@ -570,10 +677,10 @@ public sealed partial class NetNode
             await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
         if (cachedLevelDescPayload != null)
             await SendLineToSteamClientSafe(connection, $"LDESC|{cachedLevelDescPayload}\n").ConfigureAwait(false);
-        if (cachedLevelSeedPayload != null)
-            await SendLineToSteamClientSafe(connection, $"LSEED|{cachedLevelSeedPayload}\n").ConfigureAwait(false);
-        if (cachedLevelGraphPayload != null)
-            await SendLineToSteamClientSafe(connection, $"LGRAPH|{cachedLevelGraphPayload}\n").ConfigureAwait(false);
+        for (var i = 0; i < cachedLevelSeedPayloads.Count; i++)
+            await SendLineToSteamClientSafe(connection, $"LSEED|{cachedLevelSeedPayloads[i]}\n").ConfigureAwait(false);
+        for (var i = 0; i < cachedLevelGraphPayloads.Count; i++)
+            await SendLineToSteamClientSafe(connection, $"LGRAPH|{cachedLevelGraphPayloads[i]}\n").ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedHeroSkin))
             await SendLineToSteamClientSafe(connection, BuildTaggedLine("SKIN", 1, cachedHeroSkin)).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedHeroHeadSkin))
@@ -618,30 +725,50 @@ public sealed partial class NetNode
             if (TryHandleFastPathLine(lineCopy, senderId))
                 continue;
 
-            await GameMenu.EnqueueNetworkMainThreadAsync(() =>
+            Interlocked.Increment(ref _steamMainThreadDispatchBacklog);
+            var accepted = false;
+            try
             {
-                if (!IsCurrentNetworkSession())
-                    return;
-
-                try
+                await GameMenu.EnqueueNetworkMainThreadAsync(() =>
                 {
-                    if (!HandleLine(lineCopy, senderId, out var forwardLine))
+                    try
                     {
-                        if (_role == NetRole.Host && senderConnection != null)
-                            CleanupHostSteamClient(senderConnection);
-                        else
-                            CleanupClient();
-                        return;
-                    }
+                        if (!IsCurrentNetworkSession())
+                            return;
 
-                    if (_role == NetRole.Host && senderConnection != null && forwardLine != null)
-                        ForwardLineToOtherSteamClients(senderConnection, forwardLine);
-                }
-                catch (Exception ex)
-                {
-                    _log.Warning("[NetNode] Steam HandleLine(main-thread) failed: {msg}", ex.Message);
-                }
-            }, cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            if (!HandleLine(lineCopy, senderId, out var forwardLine))
+                            {
+                                if (_role == NetRole.Host && senderConnection != null)
+                                    CleanupHostSteamClient(senderConnection);
+                                else
+                                    CleanupClient();
+                                return;
+                            }
+
+                            if (_role == NetRole.Host && senderConnection != null && forwardLine != null)
+                                ForwardLineToOtherSteamClients(senderConnection, forwardLine);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warning("[NetNode][Steam] HandleLine(main-thread) failed: {msg}", ex.Message);
+                        }
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref _steamMainThreadDispatchBacklog);
+                    }
+                }, cancellationToken).ConfigureAwait(false);
+                accepted = true;
+            }
+            finally
+            {
+                // The queue write itself can fail or be cancelled; the action then never runs and
+                // must not leave a phantom backlog entry that suppresses the receive timeout forever.
+                if (!accepted)
+                    Interlocked.Decrement(ref _steamMainThreadDispatchBacklog);
+            }
         }
     }
     private void ForwardLineToOtherSteamClients(SteamClientConnection sender, string line)

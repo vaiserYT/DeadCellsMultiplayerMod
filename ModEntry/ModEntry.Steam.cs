@@ -360,11 +360,52 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        /// <summary>
+        /// Idempotent multiplayer teardown safe to call from a shutdown hook. It only touches
+        /// managed network state - never Dead Cells objects - because by the time this runs the
+        /// game's own objects may already be destroyed.
+        /// </summary>
+        internal static void ShutdownMultiplayerForProcessExit(string reason)
+        {
+            if (Interlocked.Exchange(ref s_multiplayerShutdownStarted, 1) != 0)
+                return;
+
+            try
+            {
+                var node = GameMenu.NetRef ?? _net;
+                GameMenu.NetRef = null;
+                _net = null;
+                node?.Dispose();
+            }
+            catch
+            {
+                // Never let shutdown cleanup throw out of a ProcessExit handler.
+            }
+
+            try { GameMenu.ClearPendingNetworkMainThreadActions(); } catch { }
+
+            try
+            {
+                Instance?.Logger.Information("[NetMod][Session] multiplayer shutdown complete ({Reason})", reason);
+            }
+            catch
+            {
+            }
+        }
+
+        private static int s_multiplayerShutdownStarted;
+
         private static void OnSteamProcessExit(object? sender, EventArgs e)
         {
             Interlocked.Exchange(ref s_steamCallbackShutdown, 1);
             var timer = Interlocked.Exchange(ref s_steamCallbackPumpTimer, null);
             try { timer?.Dispose(); } catch { }
+
+            // Tear the network node down BEFORE the Steam callback wrappers are released.
+            // Without this the receive/keep-alive tasks were still live when the runtime began
+            // unloading: they could call into a disposed Steam pipe or a destroyed game object,
+            // which on Linux/Proton surfaces as a crash report on an otherwise normal exit.
+            ShutdownMultiplayerForProcessExit("process_exit");
 
             // Do not dispose callback wrappers while another timer/game-thread pump is inside
             // SteamAPI.RunCallbacks. That shutdown race can execute managed callback code after

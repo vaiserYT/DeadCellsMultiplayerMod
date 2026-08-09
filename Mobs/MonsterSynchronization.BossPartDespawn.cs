@@ -173,12 +173,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             catch { return string.Empty; }
         }
 
-        private static void ResetHostBossPartWatch()
+        /// <summary>
+        /// Clears the boss-part despawn watch. Call from the level reset path, which already holds
+        /// <see cref="Sync"/>.
+        /// </summary>
+        private static void ResetHostBossPartWatchLocked()
         {
-            lock (Sync)
-            {
-                s_hostBossPartWatch.Clear();
-            }
+            s_hostBossPartWatch.Clear();
         }
 
         private static readonly HashSet<int> s_bossPartSeenScratch = new();

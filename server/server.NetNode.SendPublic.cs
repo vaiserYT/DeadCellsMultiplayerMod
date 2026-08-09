@@ -358,16 +358,35 @@ public sealed partial class NetNode
         _log.Information("[NetNode] Sent LevelDesc payload");
     }
 
+    /// <summary>Drops the oldest entry once a per-level cache exceeds its bound.</summary>
+    private static void TrimHostLevelPayloadCacheLocked(Dictionary<string, string> cache)
+    {
+        while (cache.Count > MaxCachedHostLevelPayloads)
+        {
+            var oldest = default(string);
+            foreach (var key in cache.Keys)
+            {
+                oldest = key;
+                break;
+            }
+
+            if (oldest == null)
+                break;
+            cache.Remove(oldest);
+        }
+    }
+
     public void SendLevelSeed(string levelId, double seed)
     {
         var safeSeed = seed.ToString(CultureInfo.InvariantCulture);
         var safeId = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
         var payload = $"{safeId}|{safeSeed}";
-        if (_role == NetRole.Host)
+        if (_role == NetRole.Host && !string.IsNullOrWhiteSpace(safeId))
         {
             lock (_hostCacheSync)
             {
-                _cachedHostLevelSeedPayload = string.IsNullOrWhiteSpace(safeId) ? null : payload;
+                _cachedHostLevelSeedsByLevelId[safeId] = payload;
+                TrimHostLevelPayloadCacheLocked(_cachedHostLevelSeedsByLevelId);
             }
         }
 
@@ -386,38 +405,109 @@ public sealed partial class NetNode
 
     public void SendLevelGraph(string levelId, string json)
     {
-        if (!HasAnyConnection())
+        var safeId = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (!string.IsNullOrWhiteSpace(json) && !string.IsNullOrWhiteSpace(safeId))
         {
-            _log.Information("[NetNode] Skip sending level graph: no connected client");
             lock (_hostCacheSync)
             {
-                _cachedHostLevelGraphPayload = string.IsNullOrWhiteSpace(json) ? null : json;
+                _cachedHostLevelGraphsByLevelId[safeId] = json;
+                TrimHostLevelPayloadCacheLocked(_cachedHostLevelGraphsByLevelId);
             }
+        }
+
+        if (!HasAnyConnection())
+        {
+            _log.Information("[NetNode] Cached level graph for {LevelId}: no connected client", safeId);
             return;
         }
 
         if (string.IsNullOrWhiteSpace(json))
             return;
 
-        lock (_hostCacheSync)
-        {
-            _cachedHostLevelGraphPayload = json;
-        }
-
         SendRaw("LGRAPH|" + json);
-        _log.Information("[NetNode] Sent level graph ({Length} bytes)", json.Length);
+        _log.Information("[NetNode] Sent level graph for {LevelId} ({Length} bytes)", safeId, json.Length);
     }
 
     public void SendGeneratePayload(string json)
     {
+        var safeJson = (json ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (_role == NetRole.Host)
+        {
+            lock (_hostCacheSync)
+            {
+                _cachedHostGeneratePayload = string.IsNullOrWhiteSpace(safeJson) ? null : safeJson;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(safeJson))
+            return;
+
         if (!HasAnyConnection())
         {
-            _log.Information("[NetNode] Skip sending generate payload: no connected client");
+            _log.Information("[NetNode][RunLaunch] Cached generate payload: no connected client");
             return;
         }
 
-        SendRaw("GEN|" + json);
-        _log.Information("[NetNode] Sent Generate payload ({Length} bytes)", json.Length);
+        SendRaw("GEN|" + safeJson);
+        _log.Information("[NetNode][RunLaunch] Sent Generate payload ({Length} bytes)", safeJson.Length);
+    }
+
+    /// <summary>
+    /// Re-publishes the cached authoritative launch (GEN, boss rune, custom-mode data, RUNCOMMIT,
+    /// SEED, RUNEXEC) to every connected client. Driven by the host launch beacon so a launch that
+    /// was lost, arrived before the receiver was ready, or was rejected by a transient state race
+    /// is repaired by the next beat instead of stranding the client in the lobby.
+    /// Returns false when there is nothing committed to replay.
+    /// </summary>
+    internal bool TryResendCachedHostRunLaunch(out int sequence)
+    {
+        sequence = 0;
+        if (_role != NetRole.Host)
+            return false;
+
+        string? generatePayload;
+        int? bossRune;
+        string? customGameData;
+        string? commitPayload;
+        string? executePayload;
+        int? seed;
+        int? seedSequence;
+        string? launchKind;
+        lock (_hostCacheSync)
+        {
+            generatePayload = _cachedHostGeneratePayload;
+            bossRune = _cachedHostBossRune;
+            customGameData = _cachedHostCustomGameDataPayload;
+            commitPayload = _cachedHostRunCommitPayload;
+            executePayload = _cachedHostRunExecutePayload;
+            seed = _cachedHostSeed;
+            seedSequence = _cachedHostRunSeedSequence;
+            launchKind = _cachedHostLaunchKind;
+            sequence = _cachedHostRunLaunchSequence ?? 0;
+        }
+
+        if (string.IsNullOrWhiteSpace(commitPayload))
+            return false;
+        if (!HasAnyConnection())
+            return true;
+
+        // Order matches the host's own first-time send order (GEN announces the launch mode, then
+        // CGDATA delivers the rules that mode needs), so replaying it can only move the client
+        // forward. Sending CGDATA first would let the GEN handler clear the custom-mode readiness
+        // flag that the CGDATA handler had just satisfied, and the client would never arm.
+        if (bossRune.HasValue)
+            SendRaw($"BOSSRUNE|{bossRune.Value.ToString(CultureInfo.InvariantCulture)}");
+        if (!string.IsNullOrWhiteSpace(generatePayload))
+            SendRaw("GEN|" + generatePayload);
+        if (!string.IsNullOrWhiteSpace(customGameData))
+            SendRaw("CGDATA|" + customGameData);
+        SendRaw($"{RunLaunchWireCodec.CommitTag}|{commitPayload}");
+        if (seed.HasValue && seedSequence.HasValue)
+            SendRaw($"SEED|{seedSequence.Value}|{seed.Value}|{launchKind ?? string.Empty}");
+        if (!string.IsNullOrWhiteSpace(executePayload))
+            SendRaw($"{RunLaunchWireCodec.ExecuteTag}|{executePayload}");
+
+        return true;
     }
 
     public void SendCustomGameData(string json)
@@ -801,16 +891,70 @@ public sealed partial class NetNode
         _ = SendLineSafe(line);
     }
 
-    public void SendExitReady(int doorCx, int doorCy, bool pressed, bool insideCircle, bool isOutOfGame, bool isOnScreen)
+    public void SendExitReady(int doorCx, int doorCy, bool pressed, bool insideCircle, bool isOutOfGame, bool isOnScreen, string? levelId = null)
     {
         if (!HasAnyConnection())
             return;
         if (ID <= 0)
             return;
 
-        var state = new ExitReadyState(ID, doorCx, doorCy, pressed, insideCircle, isOutOfGame, isOnScreen);
+        var state = new ExitReadyState(ID, doorCx, doorCy, pressed, insideCircle, isOutOfGame, isOnScreen, levelId);
         var line = BuildExitReadyLine(state);
         _ = SendLineSafe(line);
+    }
+
+    /// <summary>Host only: publish where a mid-run joiner should be placed (the host's own cell).</summary>
+    public void SendHostSpawnAnchor(int cx, int cy, string? levelId)
+    {
+        if (_role != NetRole.Host)
+            return;
+        if (!HasAnyConnection())
+            return;
+        if (string.IsNullOrWhiteSpace(levelId))
+            return;
+
+        var safeLevel = levelId
+            .Replace("|", "/", StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
+        SendRaw(string.Create(CultureInfo.InvariantCulture, $"SPAWNANCHOR|{cx}|{cy}|{safeLevel}"));
+    }
+
+    /// <summary>Client: newest host spawn anchor, if one has arrived.</summary>
+    public bool TryGetHostSpawnAnchor(out HostSpawnAnchor anchor)
+    {
+        lock (_sync)
+        {
+            if (_latestHostSpawnAnchor.HasValue)
+            {
+                anchor = _latestHostSpawnAnchor.Value;
+                return true;
+            }
+        }
+
+        anchor = default;
+        return false;
+    }
+
+    /// <summary>Host only: publish the authoritative decision to run one level transition.</summary>
+    public void SendExitTransitionCommit(long sequence, int doorCx, int doorCy, string? fromLevelId, string? destinationLevelId)
+    {
+        if (_role != NetRole.Host)
+            return;
+        if (!HasAnyConnection())
+            return;
+        if (sequence <= 0)
+            return;
+
+        var commit = new ExitTransitionCommit(sequence, doorCx, doorCy, fromLevelId, destinationLevelId);
+        _ = SendLineSafe(BuildExitCommitLine(commit));
+        _log.Information(
+            "[NetNode][ExitSync] Sent transition commit seq={Sequence} door={DoorCx}:{DoorCy} from={From} to={To}",
+            sequence,
+            doorCx,
+            doorCy,
+            fromLevelId ?? string.Empty,
+            destinationLevelId ?? string.Empty);
     }
 
     public void SendBossCine(string levelId)

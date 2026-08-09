@@ -133,6 +133,20 @@ public partial class InteractionSync
                 {
                     if (plate != null)
                     {
+                        // Pressure plates are momentary, so unlike buttons they are NOT idempotent:
+                        // re-running trigger() re-runs its effect. The host re-asserts latched
+                        // button state on a heartbeat, and a button that happens to sit within
+                        // plate tolerance would otherwise resolve to this plate and pulse it every
+                        // beat. A real plate cannot meaningfully re-fire this fast, so suppressing
+                        // repeats inside a short window costs nothing and removes the hazard.
+                        var nowTicks = System.Environment.TickCount64;
+                        if (_lastRemotePlateTriggerTickMs.TryGetValue(plate, out var lastTrigger) &&
+                            nowTicks - lastTrigger < RemotePlateRetriggerGuardMs)
+                        {
+                            continue;
+                        }
+
+                        _lastRemotePlateTriggerTickMs[plate] = nowTicks;
                         plate.trigger(localHero);
                     }
                     else

@@ -1063,6 +1063,46 @@ public sealed partial class NetNode
             return true;
         }
 
+        if (line.StartsWith("SPAWNANCHOR|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_role == NetRole.Host)
+                return true;
+
+            var parts = line["SPAWNANCHOR|".Length..].Split('|');
+            if (parts.Length >= 3 &&
+                int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var anchorCx) &&
+                int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var anchorCy))
+            {
+                var anchorLevel = ClampProtocolText(parts[2], MaxIdentityFieldChars);
+                lock (_sync)
+                {
+                    _latestHostSpawnAnchor = new HostSpawnAnchor(anchorCx, anchorCy, anchorLevel);
+                    _hasRemote = true;
+                }
+            }
+            return true;
+        }
+
+        if (line.StartsWith("EXITCOMMIT|", StringComparison.OrdinalIgnoreCase))
+        {
+            // Host-authored transition decision. A client must never originate one, and the host
+            // must never adopt one: accepting a client-origin commit would let a peer drag the
+            // whole party through a door it alone decided on.
+            if (_role == NetRole.Host)
+                return true;
+
+            var payload = line["EXITCOMMIT|".Length..];
+            if (TryParseExitCommitPayload(payload, out var commit))
+            {
+                lock (_sync)
+                {
+                    AddBoundedLocked(_pendingExitTransitionCommits, commit, PendingControlStateLimit);
+                    _hasRemote = true;
+                }
+            }
+            return true;
+        }
+
         if (line.StartsWith("EXITREADY|", StringComparison.OrdinalIgnoreCase))
         {
             var payload = line["EXITREADY|".Length..];

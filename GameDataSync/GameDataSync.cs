@@ -58,8 +58,18 @@ namespace DeadCellsMultiplayerMod
         private static bool _hasRemoteBossRune;
         private static bool _suppressDeathBroadcast;
         private static readonly object _levelSeedLock = new();
-        private static string? _remoteLevelId;
-        private static double? _remoteLevelSeed;
+        /// <summary>
+        /// Authoritative per-level generation seeds, keyed by level id.
+        /// </summary>
+        /// <remarks>
+        /// This was a single (id, seed) pair, so it could only ever hold the most recent level the
+        /// host generated. One run generates several — a biome plus its challenge rooms and
+        /// sublevels — and the host's late-join replay sends all of them, so a single pair kept only
+        /// the last and the joiner had no seed for the level it was actually loading. Keyed by level
+        /// id, each level keeps its own seed and consumption stays per level.
+        /// </remarks>
+        private static readonly Dictionary<string, double> _remoteLevelSeedsByLevelId = new(StringComparer.Ordinal);
+        private const int MaxRemoteLevelSeeds = 16;
         private static readonly object _serializerSyncLock = new();
         private static int _remoteSerializerSeq;
         private static int _remoteSerializerUid;
@@ -253,7 +263,29 @@ namespace DeadCellsMultiplayerMod
 
                     // Commit/ACK/execute is now the authoritative launch barrier. The legacy seed
                     // remains as a migration/debug packet, but cannot make a v0.8.90 client load by itself.
-                    GameMenu.CommitHostRunLaunchFromHook(Seed, seedSequence, launchKind);
+                    //
+                    // This runs inside Dead Cells' native User.newGame. Nothing above us catches, so
+                    // an exception here does not "fail the co-op launch" - it kills the host process
+                    // in the middle of starting or restarting a run, which also force-drops the
+                    // client. Degrade to an un-synchronized local launch and say so loudly instead.
+                    try
+                    {
+                        GameMenu.CommitHostRunLaunchFromHook(Seed, seedSequence, launchKind);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log?.Error(
+                            "[NetMod][RunLaunch] Host launch commit failed seq={Sequence} seed={Seed} launch={LaunchKind}: {Message}",
+                            seedSequence,
+                            Seed,
+                            launchKind,
+                            ex.Message);
+                        DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI.MultiplayerUI.PushSystemMessage(
+                            GameMenu.Localize("Run failed to synchronize with your friend. Please return to the menu and retry."),
+                            8.0,
+                            1.0);
+                    }
+
                     // Resending the same precommitted sequence is intentional: it refreshes the
                     // host cache and covers a client that completed its handshake during the intro.
                     net.SendSeed(seedSequence, Seed, launchKind);
@@ -637,8 +669,20 @@ namespace DeadCellsMultiplayerMod
 
             lock (_levelSeedLock)
             {
-                _remoteLevelId = levelId;
-                _remoteLevelSeed = seed;
+                _remoteLevelSeedsByLevelId[levelId] = seed;
+                while (_remoteLevelSeedsByLevelId.Count > MaxRemoteLevelSeeds)
+                {
+                    var oldest = default(string);
+                    foreach (var key in _remoteLevelSeedsByLevelId.Keys)
+                    {
+                        oldest = key;
+                        break;
+                    }
+
+                    if (oldest == null)
+                        break;
+                    _remoteLevelSeedsByLevelId.Remove(oldest);
+                }
             }
         }
 
@@ -649,13 +693,12 @@ namespace DeadCellsMultiplayerMod
 
             lock (_levelSeedLock)
             {
-                if (_remoteLevelSeed.HasValue && string.Equals(_remoteLevelId, levelId, StringComparison.Ordinal))
+                if (_remoteLevelSeedsByLevelId.TryGetValue(levelId, out var seed))
                 {
-                    rng.seed = _remoteLevelSeed.Value;
+                    rng.seed = seed;
                     // One level-seed packet belongs to one graph generation. Leaving it cached made
                     // a later visit to the same biome reuse an old seed before the new packet arrived.
-                    _remoteLevelId = null;
-                    _remoteLevelSeed = null;
+                    _remoteLevelSeedsByLevelId.Remove(levelId);
                     return true;
                 }
             }

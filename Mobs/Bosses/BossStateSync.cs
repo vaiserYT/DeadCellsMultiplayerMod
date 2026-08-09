@@ -13,9 +13,18 @@ public static class BossStateSync
     private const string PhasePrefix = "bp:";
     private const string ActionPrefix = "ba:";
     private const string EmergedPrefix = "bemg:";
-    private const string ProjectilePrefix = "bproj:";
-    private const string TentaclePrefix = "btent:";
-    private const string ArenaPrefix = "barena:";
+    // NOTE: there are deliberately no "bproj:" / "btent:" / "barena:" payload fields.
+    //
+    // Boss-owned entities — Conjunctivius' tentacles, Death's scythe, spawner projectiles and the
+    // arena objects a fight creates — are NOT special-cased here. They are ordinary Mobs in
+    // dc.en.mob.*, so IsSyncMobByType already admits them to the normal authoritative registry and
+    // they inherit the full pipeline: a host-assigned sync id, MOBREG (re-armed for runtime spawns
+    // by QueueInitialMobSync), authoritative HP, authoritative death with tombstone resends, and
+    // ScanHostBossPartDespawns for parts that vanish without dying. Duplicating that state into the
+    // boss payload would create a second, competing description of the same entities.
+    //
+    // This file therefore carries only state that belongs to the boss ENTITY ITSELF and has no
+    // entity of its own: phase, action and emergence.
     // Phase 2: stable host-assigned boss identity token. Carried alongside the boss marker so the
     // client can rebind the boss by identity across native phase/proxy rebuilds and sync-id churn
     // instead of guessing by proximity. Absent (id <= 0) => pre-Phase-2 behaviour.
@@ -115,6 +124,10 @@ public static class BossStateSync
             }
         }
 
+        // Boss-specific arena state that has no entity of its own (Conjunctivius vulnerability and
+        // arena platforms). Appended last so it never interferes with the generic fields above.
+        BeholderArenaSync.AppendState(parts, mob);
+
         return parts.Count == 0 ? (basePayload ?? string.Empty) : string.Join(".", parts);
     }
 
@@ -177,6 +190,8 @@ public static class BossStateSync
         int? phaseVal = null;
         int? actionVal = null;
         bool? emergedVal = null;
+        bool? vulnerableVal = null;
+        bool? platformsVal = null;
 
         var parts = payload.Split('.', StringSplitOptions.RemoveEmptyEntries);
         foreach (var token in parts)
@@ -185,7 +200,19 @@ public static class BossStateSync
             if (string.IsNullOrEmpty(t))
                 continue;
 
-            if (t.StartsWith(EmergedPrefix, StringComparison.OrdinalIgnoreCase))
+            if (t.StartsWith(BeholderArenaSync.VulnerablePrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var s = t[BeholderArenaSync.VulnerablePrefix.Length..].Trim();
+                if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v))
+                    vulnerableVal = v != 0;
+            }
+            else if (t.StartsWith(BeholderArenaSync.PlatformsPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var s = t[BeholderArenaSync.PlatformsPrefix.Length..].Trim();
+                if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var p))
+                    platformsVal = p != 0;
+            }
+            else if (t.StartsWith(EmergedPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 var s = t[EmergedPrefix.Length..].Trim();
                 if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var e))
@@ -322,9 +349,13 @@ public static class BossStateSync
             }
         }
 
-        
-        // Note: Boss-owned entity sync (projectiles, tentacles) requires additional type resolution
-        // and is deferred to avoid compilation issues with Entity type references.
+        // Conjunctivius vulnerability / arena platforms. Applied for every boss type branch above,
+        // because it is keyed on the concrete Beholder type and is a no-op for anything else.
+        BeholderArenaSync.ApplyState(mob, vulnerableVal, platformsVal);
+
+        // Boss-owned entities (tentacles, projectiles, arena parts) are intentionally not applied
+        // here — see the note on the payload prefixes above: they are synchronized as ordinary
+        // authoritative registry mobs, not as fields of the boss payload.
     }
 
     private static int? TryGetBossActionIndex(BossAction? action)

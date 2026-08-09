@@ -649,6 +649,31 @@ public sealed partial class NetNode
         return true;
     }
 
+    private static bool TryParseExitCommitPayload(string payload, out ExitTransitionCommit commit)
+    {
+        commit = default;
+        if (string.IsNullOrWhiteSpace(payload))
+            return false;
+
+        var parts = payload.Split('|');
+        if (parts.Length < 5)
+            return false;
+
+        if (!long.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sequence) || sequence <= 0)
+            return false;
+        if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var doorCx))
+            return false;
+        if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var doorCy))
+            return false;
+
+        // payload = sequence | doorCx | doorCy | fromLevelId | destinationLevelId
+        var fromLevelId = ClampProtocolText(parts[3], MaxIdentityFieldChars);
+        var destLevelId = ClampProtocolText(parts[4], MaxIdentityFieldChars);
+
+        commit = new ExitTransitionCommit(sequence, doorCx, doorCy, fromLevelId, destLevelId);
+        return true;
+    }
+
     private static bool TryParseExitReadyPayload(string payload, int? senderId, bool forceSenderId, out ExitReadyState state)
     {
         state = default;
@@ -681,7 +706,11 @@ public sealed partial class NetNode
         if (!TryParseBool(parts[6], out var isOnScreen))
             return false;
 
-        state = new ExitReadyState(parsedUserId, doorCx, doorCy, pressed, insideCircle, isOutOfGame, isOnScreen);
+        // Field 7 (level id) is optional so a peer that omits it still parses; the consumer treats
+        // an empty level id as "unknown, assume current".
+        var levelId = parts.Length >= 8 ? ClampProtocolText(parts[7], MaxIdentityFieldChars) : string.Empty;
+
+        state = new ExitReadyState(parsedUserId, doorCx, doorCy, pressed, insideCircle, isOutOfGame, isOnScreen, levelId);
         return true;
     }
 

@@ -16,6 +16,14 @@ namespace DeadCellsMultiplayerMod
 
         private const string MultiplayerSaveGuardSentinelName = "launch_guard.txt";
 
+        // Backup rotation copies the whole slot file twice. It runs on the game main thread from
+        // the session state machine at every LoadingLevel transition, i.e. once per biome, so
+        // repeating it when the save has not changed since the last rotation is pure stall for no
+        // added protection. Identity is (length, last write time) of the live file.
+        private static long _lastRotatedSaveLength = -1;
+        private static long _lastRotatedSaveWriteTicks = -1;
+        private static int _lastRotatedSaveSlot = -1;
+
         private static string GetMultiplayerSaveGuardSentinelPath()
             => GetAbsoluteSavePath(MultiplayerSaveFolderName + "/" + MultiplayerSaveGuardSentinelName);
 
@@ -58,11 +66,26 @@ namespace DeadCellsMultiplayerMod
                     var bak2 = live + ".bak2";
                     try
                     {
-                        // Two generations: if the live file is ALREADY corrupt when we rotate,
-                        // the previous good copy survives in .bak2.
-                        if (System.IO.File.Exists(bak))
-                            System.IO.File.Copy(bak, bak2, overwrite: true);
-                        System.IO.File.Copy(live, bak, overwrite: true);
+                        var info = new System.IO.FileInfo(live);
+                        var length = info.Length;
+                        var writeTicks = info.LastWriteTimeUtc.Ticks;
+                        var unchanged = slot == _lastRotatedSaveSlot &&
+                                        length == _lastRotatedSaveLength &&
+                                        writeTicks == _lastRotatedSaveWriteTicks &&
+                                        System.IO.File.Exists(bak);
+
+                        if (!unchanged)
+                        {
+                            // Two generations: if the live file is ALREADY corrupt when we rotate,
+                            // the previous good copy survives in .bak2.
+                            if (System.IO.File.Exists(bak))
+                                System.IO.File.Copy(bak, bak2, overwrite: true);
+                            System.IO.File.Copy(live, bak, overwrite: true);
+
+                            _lastRotatedSaveSlot = slot;
+                            _lastRotatedSaveLength = length;
+                            _lastRotatedSaveWriteTicks = writeTicks;
+                        }
                     }
                     catch (System.Exception ex)
                     {

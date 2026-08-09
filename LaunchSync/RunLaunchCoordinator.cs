@@ -105,6 +105,16 @@ internal static class RunLaunchCoordinator
     {
         lock (Sync)
         {
+            // Same reasoning as EnsureClientRoleForIncomingLaunch: the caller has already verified a
+            // live host NetNode. Throwing here would escape into Dead Cells' native User.newGame
+            // hook, which has no handler - the host process dies mid-launch and force-drops the
+            // client. Adopt the role instead; only a genuine host/client contradiction still throws.
+            if (_role == NetRole.None && GameMenu.NetRef is { IsAlive: true, IsHost: true })
+            {
+                ResetLocked(NetRole.Host, "adopt_host_role_for_local_launch");
+                _log?.Information("[NetMod][RunLaunch] Adopted host role for a local launch commit");
+            }
+
             if (_role != NetRole.Host)
                 throw new InvalidOperationException("Only the host can create a run launch descriptor.");
 
@@ -336,38 +346,13 @@ internal static class RunLaunchCoordinator
         }
     }
 
-    internal static bool WaitForHostAck(
-        RunLaunchDescriptor descriptor,
-        int timeoutMs,
-        out string error)
-    {
-        var deadline = Environment.TickCount64 + Math.Max(1, timeoutMs);
-        lock (Sync)
-        {
-            while (!AckMatchesLocked(descriptor))
-            {
-                var remaining = deadline - Environment.TickCount64;
-                if (remaining <= 0)
-                {
-                    error = "client acknowledgement timed out";
-                    return false;
-                }
-
-                Monitor.Wait(Sync, (int)Math.Min(remaining, 100));
-            }
-
-            if (!_ackAccepted)
-            {
-                error = string.IsNullOrWhiteSpace(_ackError)
-                    ? "client rejected the launch"
-                    : _ackError;
-                return false;
-            }
-
-            error = string.Empty;
-            return true;
-        }
-    }
+    // Removed: WaitForHostAck / WaitForClientQueued.
+    //
+    // Both were blocking rendezvous helpers with no call sites. Launch synchronization is now
+    // non-blocking end to end: the host publishes and keeps re-publishing (GameMenu's launch
+    // beacon) while the client arms itself from received state, so nothing needs to park a thread
+    // waiting for a peer. Keeping unused blocking waits around invited exactly the main-thread
+    // stall this design exists to avoid.
 
     /// <summary>
     /// Client side: build the RUNQUEUED message once the client holds the authoritative seed and has
@@ -445,40 +430,6 @@ internal static class RunLaunchCoordinator
         }
     }
 
-    /// <summary>
-    /// Host side: block a worker thread (never the game main thread) until the client confirms it has
-    /// queued the identical launch, so both native loaders consume the same seed and configuration.
-    /// </summary>
-    internal static bool WaitForClientQueued(RunLaunchDescriptor descriptor, int timeoutMs, out string error)
-    {
-        var deadline = Environment.TickCount64 + Math.Max(1, timeoutMs);
-        lock (Sync)
-        {
-            while (!QueuedMatchesLocked(descriptor))
-            {
-                var remaining = deadline - Environment.TickCount64;
-                if (remaining <= 0)
-                {
-                    error = "client did not queue the launch in time";
-                    return false;
-                }
-
-                Monitor.Wait(Sync, (int)Math.Min(remaining, 100));
-            }
-
-            if (!_queuedAccepted)
-            {
-                error = string.IsNullOrWhiteSpace(_queuedError)
-                    ? "client rejected the queued launch"
-                    : _queuedError;
-                return false;
-            }
-
-            error = string.Empty;
-            return true;
-        }
-    }
-
     /// <summary>Non-blocking host check used by the in-world door coordinator (polled per frame).</summary>
     internal static bool HasClientQueued(int sequence)
     {
@@ -486,11 +437,66 @@ internal static class RunLaunchCoordinator
             return sequence > 0 && _queuedSequence == sequence && _queuedAccepted;
     }
 
-    private static bool QueuedMatchesLocked(RunLaunchDescriptor descriptor)
+    /// <summary>
+    /// Host side: has the remote peer positively committed to this launch? Only RUNQUEUED ("I am
+    /// invoking the native loader now") and RUNREADY ("I am in the level") count. A bare RUNACK is
+    /// deliberately excluded: the client can accept a commit and still never arm its auto-start,
+    /// which is precisely the failure the launch beacon exists to repair.
+    /// </summary>
+    internal static bool IsRemoteLaunchConfirmed(int sequence)
     {
-        return _queuedSessionId == descriptor.SessionId &&
-               _queuedRunId == descriptor.RunId &&
-               _queuedSequence == descriptor.Sequence;
+        if (sequence <= 0)
+            return false;
+
+        lock (Sync)
+        {
+            if (_queuedSequence == sequence && _queuedAccepted)
+                return true;
+            return _remoteReadySequence >= sequence;
+        }
+    }
+
+    /// <summary>Single-line host launch state for beacon diagnostics; no per-frame use.</summary>
+    internal static string DescribeHostLaunchState()
+    {
+        lock (Sync)
+        {
+            var descriptor = _hostDescriptor;
+            return descriptor == null
+                ? "none"
+                : $"seq={descriptor.Sequence} seed={descriptor.RunSeed} kind={descriptor.LaunchKind} " +
+                  $"phase={_state.Phase} ack={(_ackSequence == descriptor.Sequence ? (_ackAccepted ? "ok" : "rejected") : "-")} " +
+                  $"queued={(_queuedSequence == descriptor.Sequence && _queuedAccepted ? "yes" : "no")} " +
+                  $"remoteReady={_remoteReadySequence}";
+        }
+    }
+
+    /// <summary>
+    /// Adopts the Client role when a live client NetNode receives host launch traffic before the
+    /// role transition has propagated here.
+    /// </summary>
+    /// <remarks>
+    /// The coordinator's role is only ever set from <see cref="OnRoleChanged"/>, which is driven by
+    /// the transport handshake on the game main thread. Launch messages are parsed on that same
+    /// queue but can be dispatched by a different path, so a RUNCOMMIT could legitimately arrive
+    /// while the coordinator still believed it was role None. Every validation then failed with
+    /// "local peer is not a client", the host got a negative ACK, and nothing ever retried: the
+    /// client sat in the lobby permanently. Adopting the role here is safe because the caller has
+    /// already proven a live non-host NetNode exists.
+    /// </remarks>
+    internal static bool EnsureClientRoleForIncomingLaunch()
+    {
+        lock (Sync)
+        {
+            if (_role == NetRole.Client)
+                return true;
+            if (_role == NetRole.Host)
+                return false;
+
+            ResetLocked(NetRole.Client, "adopt_client_role_for_incoming_launch");
+            _log?.Information("[NetMod][RunLaunch] Adopted client role for an incoming host launch");
+            return true;
+        }
     }
 
     internal static RunLaunchExecute MarkHostExecute(RunLaunchDescriptor descriptor)
@@ -864,13 +870,6 @@ internal static class RunLaunchCoordinator
         }
 
         return string.Empty;
-    }
-
-    private static bool AckMatchesLocked(RunLaunchDescriptor descriptor)
-    {
-        return _ackSessionId == descriptor.SessionId &&
-               _ackRunId == descriptor.RunId &&
-               _ackSequence == descriptor.Sequence;
     }
 
     private static void ResetLocked(NetRole role, string reason)

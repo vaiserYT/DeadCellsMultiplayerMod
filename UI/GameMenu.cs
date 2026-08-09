@@ -197,9 +197,16 @@ namespace DeadCellsMultiplayerMod
                 _inActualRun = true;
                 _continueLaunchInProgress = false;
                 _continueLaunchStartedAt = DateTime.MinValue;
+                _clientLevelGraphWaitStartedTicks = 0;
+                _clientLevelGraphWaitExpired = false;
                 MarkClientLaunchInRunLocked();
             }
             ClearClientRestartPending();
+
+            // Terminal launch signal, outside the lock because it performs a network send.
+            // On the client this also stops the host's launch beacon; on the host it publishes the
+            // run-live state that a late joiner replays.
+            SendRunReadyFromHero();
         }
 
         internal static bool IsClientInActualRun()
@@ -226,13 +233,21 @@ namespace DeadCellsMultiplayerMod
 
         public static void SetRole(NetRole role)
         {
-            var previous = _role;
+            NetRole previous;
             lock (Sync)
             {
+                // Read the previous role INSIDE the lock. Reading it outside let two concurrent
+                // transitions observe the same "previous" value, so one of them reported a no-op
+                // change to the coordinator and its launch state was never reset for the new role.
+                previous = _role;
                 _role = role;
                 if (role == NetRole.None)
                     ClearStructuredLaunchFlagsLocked();
             }
+
+            if (role != NetRole.Host)
+                StopHostRunLaunchBeacon($"role_changed_to_{role}");
+
             RunLaunchCoordinator.OnRoleChanged(previous, role);
             if (previous == NetRole.Client && role != NetRole.Client)
             {
@@ -383,6 +398,12 @@ namespace DeadCellsMultiplayerMod
 
         private static void PrepareCurrentWorldForRestartTransition(dc.pr.Game game)
         {
+            // A restart tears the world down exactly like a biome transition does, so it needs the
+            // same fence: freeze mob sync mutation before the old registries are destroyed, and let
+            // the new level's registry commit reopen it. Without this, packets addressed to the
+            // run being discarded were still applied while it was being disposed.
+            try { DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.QuiesceForLevelTransition(); } catch { }
+
             try { ModEntry.Instance?.DisposeCoopGhostRuntimeForWorldTeardown(game); } catch { }
 
             try
@@ -595,65 +616,61 @@ namespace DeadCellsMultiplayerMod
             if (!shouldStart)
                 return;
 
+            // A missing TitleScreen reference must not block the launch. TryAutoStartPendingLaunch
+            // falls back to Main.launchGame, which is the same entry point the title screen would
+            // reach anyway; refusing to start here left the client stranded in the menu holding a
+            // complete, valid authoritative launch.
             var ts = GetTitleScreen();
-            if (ts != null)
+            try
             {
+                Mutex? mutex = null;
+                bool hasHandle = false;
                 try
                 {
-                    Mutex? mutex = null;
-                    bool hasHandle = false;
+                    mutex = new Mutex(false, AutoStartMutexName);
                     try
                     {
-                        mutex = new Mutex(false, AutoStartMutexName);
-                        try
-                        {
-                            hasHandle = mutex.WaitOne(0);
-                        }
-                        catch (AbandonedMutexException)
-                        {
-                            hasHandle = true;
-                        }
+                        hasHandle = mutex.WaitOne(0);
+                    }
+                    catch (AbandonedMutexException)
+                    {
+                        hasHandle = true;
+                    }
 
-                        if (!hasHandle)
+                    if (!hasHandle)
+                    {
+                        lock (Sync)
                         {
-                            lock (Sync)
-                            {
-                                ReleaseClientAutoStartClaimLocked();
-                            }
-                            _autoStartRetryAt = DateTime.UtcNow.AddMilliseconds(250);
-                            return;
+                            ReleaseClientAutoStartClaimLocked();
                         }
+                        _autoStartRetryAt = DateTime.UtcNow.AddMilliseconds(250);
+                        return;
+                    }
 
-                        TryAutoStartPendingLaunch(ts);
-                    }
-                    finally
-                    {
-                        if (hasHandle)
-                            mutex?.ReleaseMutex();
-                        mutex?.Dispose();
-                    }
-                    _log?.Information("[NetMod] Auto-started new game after seed");
+                    TryAutoStartPendingLaunch(ts);
                 }
-                catch (IOException ioEx)
+                finally
                 {
-                    _log?.Warning("[NetMod] Auto-start blocked by config lock: {Message}", ioEx.Message);
-                    lock (Sync)
-                    {
-                        ReleaseClientAutoStartClaimLocked();
-                    }
-                    _autoStartRetryAt = DateTime.UtcNow.AddSeconds(1.5);
+                    if (hasHandle)
+                        mutex?.ReleaseMutex();
+                    mutex?.Dispose();
                 }
-                catch (Exception ex)
-                {
-                    _log?.Warning("[NetMod] Failed to auto-start new game: {Message}", ex.Message);
-                    lock (Sync)
-                    {
-                        ReleaseClientAutoStartClaimLocked();
-                    }
-                }
+                _log?.Information(
+                    "[NetMod][RunLaunch] Client auto-started the authoritative run (titleScreen={HasScreen})",
+                    ts != null);
             }
-            else
+            catch (IOException ioEx)
             {
+                _log?.Warning("[NetMod][RunLaunch] Auto-start blocked by config lock: {Message}", ioEx.Message);
+                lock (Sync)
+                {
+                    ReleaseClientAutoStartClaimLocked();
+                }
+                _autoStartRetryAt = DateTime.UtcNow.AddSeconds(1.5);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod][RunLaunch] Failed to auto-start new game: {Message}", ex.Message);
                 lock (Sync)
                 {
                     ReleaseClientAutoStartClaimLocked();

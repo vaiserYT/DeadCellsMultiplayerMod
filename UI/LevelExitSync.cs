@@ -45,6 +45,8 @@ public class LevelExitSync :
         public bool IsOutOfGame;
         public bool IsOnScreen;
         public long LastTick;
+        /// <summary>Level this readiness was reported for; empty means unknown/legacy.</summary>
+        public string LevelId = string.Empty;
     }
 
     private const double ExitCircleRadiusPx = 84.0;
@@ -95,6 +97,34 @@ public class LevelExitSync :
     private string _bossRushGateDoorKey = string.Empty;
     private long _bossRushGateStartTicks;
     private const double BossRushLaunchGateTimeoutSeconds = 15.0;
+
+    /// <summary>
+    /// Diagnostics for a rendezvous that never completes. The exit is a mutual "everyone at the
+    /// same door" gate with no timeout by design (leaving alone would strand the other player), so
+    /// when it does not resolve the game simply appears frozen at the doorway with the run timer
+    /// paused. The overwhelmingly common cause is a WORLD DESYNC: the peers generated different
+    /// layouts, so their exits sit at different grid coordinates and the door keys can never match.
+    /// Naming that out loud is the difference between an unexplained hang and an actionable report.
+    /// </summary>
+    private string _exitStallDoorKey = string.Empty;
+    private long _exitStallStartedTicks;
+    private long _nextExitStallLogTicks;
+    private const double ExitStallReportAfterSeconds = 12.0;
+    private const double ExitStallReportIntervalSeconds = 10.0;
+
+    /// <summary>Host-side monotonic id for transition decisions; 0 = none issued this session.</summary>
+    private long _nextExitTransitionSequence;
+
+    /// <summary>Highest transition sequence this peer has acted on. Rejects duplicates and replays.</summary>
+    private long _lastAppliedExitTransitionSequence;
+
+    /// <summary>
+    /// Client fallback deadline. The host owns the decision, but a client that has satisfied the
+    /// rendezvous and never receives a commit must not be stranded at the door forever, so after
+    /// this long it proceeds on its own and says so. This is a recovery path, not the normal one.
+    /// </summary>
+    private long _clientAwaitingCommitSinceTicks;
+    private const double ClientTransitionCommitFallbackSeconds = 6.0;
 
     /// <summary>Exit/portal/boss-door entities only — avoids scanning <c>level.entities</c> every hero frame.</summary>
     private readonly List<Entity?> _exitTargetCandidates = new();
@@ -308,13 +338,18 @@ public class LevelExitSync :
         if (!wasReadyHere)
             PushReachedExitMessage(net!.id, target, net!);
 
-        if (AreAllPlayersReadyForDoor(_localDoorKey, net!))
+        if (AreAllPlayersReadyForDoor(_localDoorKey, net!) &&
+            TryBeginCoordinatedTransition(net!, target, localHero))
         {
             ApplyLocalTimerPause(false);
             TriggerExitTransition(target, localHero, origActivate);
             return;
         }
 
+        // Either a teammate is not here yet, or (on a client) the host has not committed the
+        // transition. Deliberately do NOT call origActivate: letting the native activation run
+        // would take this player through alone. The hero-update coordinator retries every frame
+        // and performs the transition as soon as the commit lands.
         ApplyLocalTimerPause(true);
     }
 
@@ -366,6 +401,9 @@ public class LevelExitSync :
         RefreshDoorVisuals(net);
         TryDelayedDownedExitFollow(hero, currentLevel, net);
 
+        // A host-issued commit always wins over the local rendezvous evaluation.
+        ConsumeExitTransitionCommits(net, hero, currentLevel);
+
         if (_localPressed &&
             _localInsideCircle &&
             nearestTarget != null &&
@@ -373,10 +411,243 @@ public class LevelExitSync :
             !string.Equals(_transitionDoorKey, _localDoorKey, StringComparison.Ordinal) &&
             AreAllPlayersReadyForDoor(_localDoorKey, net))
         {
-            TriggerExitTransition(nearestTarget, hero, null);
+            if (TryBeginCoordinatedTransition(net, nearestTarget, hero))
+                TriggerExitTransition(nearestTarget, hero, null);
+        }
+        else
+        {
+            _clientAwaitingCommitSinceTicks = 0;
         }
 
+        ReportStalledExitRendezvous(net);
         UpdateExitPointer(net);
+    }
+
+    /// <summary>
+    /// Gate between "the rendezvous is satisfied" and "actually go through the door".
+    /// </summary>
+    /// <remarks>
+    /// The host decides and publishes; the client waits for that decision. This is what makes the
+    /// transition a transaction with an identity instead of two peers independently reacting to the
+    /// same readiness state — which is what allowed a duplicated or replayed readiness burst to
+    /// start a second transition. The client keeps a bounded fallback so a lost commit degrades to
+    /// the old behaviour with a warning rather than stranding it at the door.
+    /// </remarks>
+    private bool TryBeginCoordinatedTransition(NetNode net, Entity target, Hero hero)
+    {
+        if (!net.IsAlive)
+            return true;
+
+        var levelId = SafeRead(() => hero._level?.map?.id?.ToString() ?? string.Empty, string.Empty);
+
+        if (net.IsHost)
+        {
+            // Only commit to something we are actually going to do. TriggerExitTransition refuses a
+            // fresh Boss Rush entry until its launch gate is synchronized, and that refusal can last
+            // seconds. Minting the commit first meant two failures at once: EXITCOMMIT was
+            // re-published every frame for the whole hold, and the client — which has no such gate —
+            // would act on it and walk through the door alone while the host stayed behind.
+            if (target is BossRushDoor && !TryPassBossRushLaunchGate(target))
+                return false;
+
+            var sequence = ++_nextExitTransitionSequence;
+            _lastAppliedExitTransitionSequence = sequence;
+            _clientAwaitingCommitSinceTicks = 0;
+            try
+            {
+                net.SendExitTransitionCommit(
+                    sequence,
+                    target.cx,
+                    target.cy,
+                    levelId,
+                    ResolveExitDestinationLevelId(target));
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "[ExitSync] Failed to publish transition commit");
+            }
+            return true;
+        }
+
+        // Client: hold for the host's decision.
+        if (_clientAwaitingCommitSinceTicks == 0)
+        {
+            _clientAwaitingCommitSinceTicks = Stopwatch.GetTimestamp();
+            return false;
+        }
+
+        if (Stopwatch.GetElapsedTime(_clientAwaitingCommitSinceTicks).TotalSeconds < ClientTransitionCommitFallbackSeconds)
+            return false;
+
+        _clientAwaitingCommitSinceTicks = 0;
+        _log.Warning(
+            "[ExitSync] No host transition commit after {Seconds:F0}s at door={DoorKey}; transitioning on the local rendezvous instead",
+            ClientTransitionCommitFallbackSeconds,
+            _localDoorKey);
+        return true;
+    }
+
+    /// <summary>Client: apply the host's authoritative transition decision.</summary>
+    private void ConsumeExitTransitionCommits(NetNode net, Hero hero, Level? currentLevel)
+    {
+        if (!net.TryConsumeExitTransitionCommits(out var commits))
+            return;
+
+        try
+        {
+            if (net.IsHost || currentLevel == null)
+                return;
+
+            var localLevelId = SafeRead(() => currentLevel.map?.id?.ToString() ?? string.Empty, string.Empty);
+
+            // Act on the NEWEST valid commit in the batch, not the first. Applying a commit performs
+            // a level transition, so acting on an older one and dropping a newer would send this
+            // peer through a door the host has already superseded.
+            var hasSelected = false;
+            var selected = default(NetNode.ExitTransitionCommit);
+            for (var i = 0; i < commits.Count; i++)
+            {
+                var candidate = commits[i];
+
+                // Stale/duplicate rejection by identity, not by timing.
+                if (candidate.Sequence <= _lastAppliedExitTransitionSequence)
+                    continue;
+
+                // Level fence: a commit authored for a level we are no longer in must never move us.
+                if (candidate.FromLevelId.Length > 0 &&
+                    localLevelId.Length > 0 &&
+                    !string.Equals(candidate.FromLevelId, localLevelId, StringComparison.Ordinal))
+                {
+                    _log.Warning(
+                        "[ExitSync] Ignoring transition commit seq={Sequence} for level={From} while in level={Local}",
+                        candidate.Sequence,
+                        candidate.FromLevelId,
+                        localLevelId);
+                    continue;
+                }
+
+                if (!hasSelected || candidate.Sequence > selected.Sequence)
+                {
+                    hasSelected = true;
+                    selected = candidate;
+                }
+            }
+
+            if (hasSelected)
+            {
+                var commit = selected;
+                var target = FindExitTargetByCoordinates(currentLevel, commit.DoorCx, commit.DoorCy);
+                if (target == null)
+                {
+                    // The host committed to a door this peer does not have. That is a world
+                    // divergence, and silently ignoring it would strand this player behind.
+                    _log.Error(
+                        "[ExitSync] WORLD DESYNC: host committed transition seq={Sequence} at door {DoorCx}:{DoorCy} in {Level}, " +
+                        "but no exit exists there on this client",
+                        commit.Sequence,
+                        commit.DoorCx,
+                        commit.DoorCy,
+                        localLevelId);
+                    MultiplayerUI.PushSystemMessage(
+                        Localize("Level failed to synchronize with the host. Return to the menu and rejoin."),
+                        8.0,
+                        1.0);
+                    // Consume the sequence anyway: the host has moved on, and re-evaluating this
+                    // same unusable commit on every later batch would only repeat the error.
+                    _lastAppliedExitTransitionSequence = commit.Sequence;
+                    return;
+                }
+
+                _lastAppliedExitTransitionSequence = commit.Sequence;
+                _clientAwaitingCommitSinceTicks = 0;
+                _log.Information(
+                    "[ExitSync] Applying host transition commit seq={Sequence} door={DoorCx}:{DoorCy} to={Dest}",
+                    commit.Sequence,
+                    commit.DoorCx,
+                    commit.DoorCy,
+                    commit.DestinationLevelId);
+
+                TriggerExitTransition(target, hero, null);
+            }
+        }
+        finally
+        {
+            NetNode.ReleaseConsumedList(commits);
+        }
+    }
+
+    /// <summary>Destination level id of an exit, for cross-peer validation. Empty when unknown.</summary>
+    private static string ResolveExitDestinationLevelId(Entity? target)
+    {
+        if (target is not Exit exit)
+            return string.Empty;
+
+        return SafeRead(() => exit.destLevel?.ToString() ?? string.Empty, string.Empty);
+    }
+
+    /// <summary>
+    /// Emits a rate-limited explanation when the local player has been waiting at an exit far
+    /// longer than a teammate could plausibly take to walk over. Reports every peer's door key so a
+    /// coordinate mismatch (i.e. divergent world generation) is immediately visible in the log.
+    /// </summary>
+    private void ReportStalledExitRendezvous(NetNode net)
+    {
+        var waiting = _localPressed &&
+                      _localInsideCircle &&
+                      !string.IsNullOrEmpty(_localDoorKey) &&
+                      !string.Equals(_transitionDoorKey, _localDoorKey, StringComparison.Ordinal);
+
+        if (!waiting)
+        {
+            _exitStallDoorKey = string.Empty;
+            _exitStallStartedTicks = 0;
+            _nextExitStallLogTicks = 0;
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        if (!string.Equals(_exitStallDoorKey, _localDoorKey, StringComparison.Ordinal))
+        {
+            _exitStallDoorKey = _localDoorKey;
+            _exitStallStartedTicks = now;
+            _nextExitStallLogTicks = 0;
+            return;
+        }
+
+        if (Stopwatch.GetElapsedTime(_exitStallStartedTicks).TotalSeconds < ExitStallReportAfterSeconds)
+            return;
+        if (_nextExitStallLogTicks != 0 && now < _nextExitStallLogTicks)
+            return;
+
+        _nextExitStallLogTicks = now + (long)(Stopwatch.Frequency * ExitStallReportIntervalSeconds);
+
+        var builder = new System.Text.StringBuilder();
+        foreach (var state in _playerStates.Values)
+        {
+            if (state == null || state.UserId <= 0)
+                continue;
+            if (builder.Length > 0)
+                builder.Append(", ");
+            builder.Append(CultureInfo.InvariantCulture, $"#{state.UserId}");
+            builder.Append(state.Pressed && state.InsideCircle ? "@" : "~");
+            builder.Append(string.IsNullOrEmpty(state.DoorKey) ? "none" : state.DoorKey);
+            if (!string.IsNullOrEmpty(state.LevelId))
+                builder.Append(CultureInfo.InvariantCulture, $"[{state.LevelId}]");
+        }
+
+        _log.Warning(
+            "[ExitSync] Exit rendezvous stalled for {Seconds:F0}s at door={DoorKey} level={LevelId} expected={Expected} peers=[{Peers}]. " +
+            "Door keys that never match usually mean the players generated different worlds.",
+            Stopwatch.GetElapsedTime(_exitStallStartedTicks).TotalSeconds,
+            _localDoorKey,
+            SafeRead(() => ModEntry.me?._level?.map?.id?.ToString() ?? string.Empty, string.Empty),
+            _cachedExpectedPlayerCount,
+            builder.ToString());
+
+        MultiplayerUI.PushSystemMessage(
+            Localize("Still waiting for your friend at this exit."),
+            5.0,
+            1.0);
     }
 
 
@@ -461,6 +732,16 @@ public class LevelExitSync :
             ModEntry.ApplyLocalDownedExitPenaltyIfNeeded();
 
         _transitionDoorKey = BuildDoorKey(target.cx, target.cy);
+
+        // Arm the level-boundary fence for the whole transition: from this activation until the new
+        // level's registry commit, mob sync applies nothing and sends nothing. Every consumer of
+        // this fence was already implemented and checked, but nothing ever armed it, so in-flight
+        // packets for the level being torn down kept mutating mobs during the load — the source of
+        // stale old-level state bleeding into the next biome. The commit
+        // (ClearSyncQuiesceAfterRebuild) reopens it, and it also self-expires so a transition that
+        // never completes cannot leave sync disabled forever.
+        DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.QuiesceForLevelTransition();
+
         ModEntry.PrepareRemoteKingsForLevelTransition(
             string.Create(
                 CultureInfo.InvariantCulture,
@@ -589,6 +870,31 @@ public class LevelExitSync :
                                prev.DoorCy == state.DoorCy;
                 var isReady = state.Pressed && state.InsideCircle;
 
+                // Level boundary: a door key is only meaningful inside the level it came from.
+                // A peer that has already moved on (or has not arrived yet) must not be counted as
+                // "ready at this door" just because the grid coordinates happen to collide.
+                var reportedLevelId = state.LevelId ?? string.Empty;
+                var localLevelId = SafeRead(() => currentLevel?.map?.id?.ToString() ?? string.Empty, string.Empty);
+                if (reportedLevelId.Length > 0 &&
+                    localLevelId.Length > 0 &&
+                    !string.Equals(reportedLevelId, localLevelId, StringComparison.Ordinal))
+                {
+                    // Record presence (so the player still counts as connected) but never as ready.
+                    var otherLevelState = GetOrCreatePlayerState(state.UserId);
+                    anyChanged |= ApplyPlayerState(
+                        otherLevelState,
+                        string.Empty,
+                        0,
+                        0,
+                        pressed: false,
+                        insideCircle: false,
+                        state.IsOutOfGame,
+                        state.IsOnScreen);
+                    otherLevelState.LevelId = reportedLevelId;
+                    otherLevelState.LastTick = Stopwatch.GetTimestamp();
+                    continue;
+                }
+
                 var trackedState = GetOrCreatePlayerState(state.UserId);
                 anyChanged |= ApplyPlayerState(
                     trackedState,
@@ -599,6 +905,7 @@ public class LevelExitSync :
                     state.InsideCircle,
                     state.IsOutOfGame,
                     state.IsOnScreen);
+                trackedState.LevelId = reportedLevelId;
                 trackedState.LastTick = Stopwatch.GetTimestamp();
 
                 if (!wasReady && isReady)
@@ -694,7 +1001,14 @@ public class LevelExitSync :
         if (!forceSend && !changed && !timedOut)
             return;
 
-        net.SendExitReady(_localDoorCx, _localDoorCy, _localPressed, _localInsideCircle, _localDoorOutOfGame, _localDoorOnScreen);
+        net.SendExitReady(
+            _localDoorCx,
+            _localDoorCy,
+            _localPressed,
+            _localInsideCircle,
+            _localDoorOutOfGame,
+            _localDoorOnScreen,
+            SafeRead(() => ModEntry.me?._level?.map?.id?.ToString() ?? string.Empty, string.Empty));
         _hasLastSentState = true;
         _lastSentDoorCx = _localDoorCx;
         _lastSentDoorCy = _localDoorCy;
@@ -1490,6 +1804,16 @@ public class LevelExitSync :
         _lastSentDoorCy = 0;
         _lastSentStateFlags = 0;
         _transitionDoorKey = string.Empty;
+        // Must reset per level. A stale non-zero value carried into the next biome would already be
+        // older than the fallback window, so the client's very first rendezvous there would skip
+        // waiting for the host commit entirely and transition on its own.
+        _clientAwaitingCommitSinceTicks = 0;
+        _exitStallDoorKey = string.Empty;
+        _exitStallStartedTicks = 0;
+        _nextExitStallLogTicks = 0;
+        // NOTE: _nextExitTransitionSequence / _lastAppliedExitTransitionSequence are deliberately
+        // NOT reset here. They are session-monotonic: resetting them per level would let a stale
+        // commit from the previous level pass the "newer than last applied" test.
         _downedExitFollowDoorKey = string.Empty;
         _downedExitFollowStartedTicks = 0;
         _readyStateCacheDirty = true;

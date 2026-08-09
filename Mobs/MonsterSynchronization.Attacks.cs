@@ -629,6 +629,18 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             s_lastHostBossReliableKeyframeToken = 0;
             s_ghostHitMissBySyncId.Clear();
             s_ghostHitMissGeneration = 0;
+            // Sync ids are re-issued per level, so a retained rate-limit entry would suppress the
+            // first reconcile for an unrelated mob in the new level.
+            s_lastHitReconcileTicksBySyncId.Clear();
+            // Boss-part despawn watch is keyed by sync id, and sync ids are re-issued per level.
+            // Carrying entries across a level change let a stale watch for the OLD level fire a
+            // despawn MOBDIE against whatever now owns that id in the NEW level. (The client's
+            // generation fence rejected it, so it never killed anything - but the host was emitting
+            // bogus deaths and the watch grew without bound.) Its reset existed and was never
+            // called; this is that call site.
+            ResetHostBossPartWatchLocked();
+            // Per-encounter boss arena state must not survive into the next level/fight.
+            BeholderArenaSync.Reset();
             s_hostDeathTombstonesBySyncId.Clear();
             s_lastHostAuthoritativeFullResyncFrame = -99999.0;
             s_lastHostAuthoritativeFullResyncToken = 0;

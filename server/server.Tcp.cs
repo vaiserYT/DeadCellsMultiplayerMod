@@ -21,9 +21,10 @@ public sealed partial class NetNode
         _listener.Start();
 
         var lep = (IPEndPoint)_listener.LocalEndpoint;
-        _log.Information("[NetNode] Host started OK. Bound to {0}:{1}", lep.Address, lep.Port);
+        _log.Information("[NetNode][Net] Host started OK. Bound to {0}:{1}", lep.Address, lep.Port);
 
         _acceptTask = Task.Run(() => AcceptLoop(_cts.Token));
+        _steamKeepAliveTask = Task.Run(() => SteamKeepAliveLoop(_cts.Token));
     }
 
     // ================= TCP CLIENT =================
@@ -31,6 +32,32 @@ public sealed partial class NetNode
     {
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ConnectWithRetryAsync(_cts.Token));
+        _steamKeepAliveTask = Task.Run(() => SteamKeepAliveLoop(_cts.Token));
+    }
+
+    /// <summary>
+    /// Enables OS-level TCP keep-alive probes. Complements the application PING: this one also
+    /// keeps the mapping alive inside routers/VPN adapters that only watch the transport layer, and
+    /// makes a half-open connection fail fast instead of hanging in a read forever.
+    /// </summary>
+    private void ConfigureTcpSocketKeepAlive(TcpClient tcp)
+    {
+        try
+        {
+            var socket = tcp.Client;
+            if (socket == null)
+                return;
+
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 15);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 5);
+        }
+        catch (Exception ex)
+        {
+            // Per-option support varies by OS/runtime; the application PING is the portable path.
+            _log.Debug("[NetNode][Net] TCP keep-alive options unavailable: {Message}", ex.Message);
+        }
     }
 
     private async Task ConnectWithRetryAsync(CancellationToken ct)
@@ -57,6 +84,7 @@ public sealed partial class NetNode
                 timeoutCts.CancelAfter(TimeSpan.FromSeconds(3));
 
                 await tcp.ConnectAsync(_destEp.Address, _destEp.Port, timeoutCts.Token).ConfigureAwait(false);
+                ConfigureTcpSocketKeepAlive(tcp);
                 _client = tcp;
                 _stream = tcp.GetStream();
 
@@ -109,6 +137,7 @@ public sealed partial class NetNode
                     continue;
                 }
                 tcp.NoDelay = true;
+                ConfigureTcpSocketKeepAlive(tcp);
                 var connection = new ClientConnection(tcp, assignedId);
                 lock (_clientsLock)
                 {
@@ -119,6 +148,15 @@ public sealed partial class NetNode
                 _log.Information("[NetNode] Host accepted {ep}", connection.RemoteEndPoint);
 
                 await SendLineToClientSafe(connection, BuildWelcomeLine()).ConfigureAwait(false);
+
+                // Identity BEFORE state. Handling "ID|" is what makes the joining peer adopt the
+                // Client role, and the launch coordinator refuses a RUNCOMMIT from a peer whose role
+                // it has not yet observed. Sending the cached launch first therefore raced: the
+                // client rejected a perfectly valid launch it would never be offered again, and sat
+                // in the lobby. (The Steam path already sent WELCOME+ID before its cached state,
+                // which is why this reproduced far more readily over direct IP.)
+                await SendLineToClientSafe(connection, $"ID|{assignedId}\n").ConfigureAwait(false);
+
                 if (_role == NetRole.Host)
                 {
                     int? cachedBossRune;
@@ -131,8 +169,9 @@ public sealed partial class NetNode
                     int? cachedSerializerSeq;
                     int? cachedSerializerUid;
                     string? cachedLevelDescPayload;
-                    string? cachedLevelSeedPayload;
-                    string? cachedLevelGraphPayload;
+                    List<string> cachedLevelSeedPayloads;
+                    List<string> cachedLevelGraphPayloads;
+                    string? cachedGeneratePayload;
                     string? cachedCustomGameDataPayload;
                     string? cachedCoopId;
                     bool cachedHasContinueSave;
@@ -150,8 +189,12 @@ public sealed partial class NetNode
                         cachedSerializerSeq = _cachedHostSerializerSeq;
                         cachedSerializerUid = _cachedHostSerializerUid;
                         cachedLevelDescPayload = _cachedHostLevelDescPayload;
-                        cachedLevelSeedPayload = _cachedHostLevelSeedPayload;
-                        cachedLevelGraphPayload = _cachedHostLevelGraphPayload;
+                        // Replay EVERY generated level, not just the most recent: the joiner needs
+                        // the one for the level it is about to load, which is rarely the last one
+                        // the host generated.
+                        cachedLevelSeedPayloads = new List<string>(_cachedHostLevelSeedsByLevelId.Values);
+                        cachedLevelGraphPayloads = new List<string>(_cachedHostLevelGraphsByLevelId.Values);
+                        cachedGeneratePayload = _cachedHostGeneratePayload;
                         cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
                         cachedCoopId = _cachedHostCoopId;
                         cachedHasContinueSave = _cachedHostHasContinueSave;
@@ -171,6 +214,12 @@ public sealed partial class NetNode
                     if (!string.IsNullOrWhiteSpace(cachedCustomGameDataPayload))
                         await SendLineToClientSafe(connection, $"CGDATA|{cachedCustomGameDataPayload}\n").ConfigureAwait(false);
 
+                    // GEN carries the pending launch action the client's auto-start gate waits on.
+                    // It must precede RUNCOMMIT so the client already knows which launch kind the
+                    // committed run belongs to when the commit lands.
+                    if (!string.IsNullOrWhiteSpace(cachedGeneratePayload))
+                        await SendLineToClientSafe(connection, $"GEN|{cachedGeneratePayload}\n").ConfigureAwait(false);
+
                     if (!string.IsNullOrWhiteSpace(cachedRunCommitPayload))
                         await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.CommitTag}|{cachedRunCommitPayload}\n").ConfigureAwait(false);
 
@@ -185,11 +234,11 @@ public sealed partial class NetNode
                     if (cachedLevelDescPayload != null)
                         await SendLineToClientSafe(connection, $"LDESC|{cachedLevelDescPayload}\n").ConfigureAwait(false);
 
-                    if (cachedLevelSeedPayload != null)
-                        await SendLineToClientSafe(connection, $"LSEED|{cachedLevelSeedPayload}\n").ConfigureAwait(false);
+                    for (var i = 0; i < cachedLevelSeedPayloads.Count; i++)
+                        await SendLineToClientSafe(connection, $"LSEED|{cachedLevelSeedPayloads[i]}\n").ConfigureAwait(false);
 
-                    if (cachedLevelGraphPayload != null)
-                        await SendLineToClientSafe(connection, $"LGRAPH|{cachedLevelGraphPayload}\n").ConfigureAwait(false);
+                    for (var i = 0; i < cachedLevelGraphPayloads.Count; i++)
+                        await SendLineToClientSafe(connection, $"LGRAPH|{cachedLevelGraphPayloads[i]}\n").ConfigureAwait(false);
 
                     if (cachedMobsHpMult.HasValue && cachedBossesHpMult.HasValue)
                         await SendLineToClientSafe(connection, $"HPMULT|{cachedMobsHpMult.Value.ToString(CultureInfo.InvariantCulture)}|{cachedBossesHpMult.Value.ToString(CultureInfo.InvariantCulture)}\n").ConfigureAwait(false);
@@ -198,7 +247,6 @@ public sealed partial class NetNode
                         await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.ReadyTag}|{cachedRunReadyPayload}\n").ConfigureAwait(false);
                 }
 
-                await SendLineToClientSafe(connection, $"ID|{assignedId}\n").ConfigureAwait(false);
                 await SendKnownUsersToClientSafe(connection).ConfigureAwait(false);
                 if (_role == NetRole.Host && TryBuildLocalHpLine(out var localHpLine))
                     await SendLineToClientSafe(connection, localHpLine).ConfigureAwait(false);

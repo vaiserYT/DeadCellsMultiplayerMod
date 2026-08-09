@@ -162,6 +162,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly Dictionary<int, GhostHitMissRecord> s_ghostHitMissBySyncId = new();
         private static readonly List<NetNode.MobStateSnapshot> s_ghostDespawnEchoScratch = new();
 
+        // Host-side rate limit for republishing authoritative state after an unresolvable client
+        // hit (see RequestAuthoritativeHitReconcileLocked). Guarded by Sync.
+        private static readonly Dictionary<int, long> s_lastHitReconcileTicksBySyncId = new();
+        private const double HitReconcileMinIntervalSeconds = 1.0;
+
         private sealed class HostDeathTombstone
         {
             public int SyncId;
@@ -518,6 +523,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             Hook_Entity.addTimeToAffect += Hook_Entity_addTimeToAffect_MobSync;
             Hook_Entity.removeAffects += Hook_Entity_removeAffects_MobSync;
             Hook_Entity.removeAllAffects += Hook_Entity_removeAllAffects_MobSync;
+
+            // Boss-specific adapters for state the generic mob/boss pipeline structurally cannot
+            // carry (see BeholderArenaSync). Installed last and self-guarded, so a binding mismatch
+            // for one boss cannot prevent the generic hooks above from being active.
+            BeholderArenaSync.InstallHooks();
         }
 
         void IOnFrameUpdate.OnFrameUpdate(double dt)

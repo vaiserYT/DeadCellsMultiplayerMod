@@ -303,6 +303,10 @@ public partial class InteractionSync :
         {
             CheckAndCloseDoorsWhenNoOneNearby();
             BroadcastAuthoritativeDoorStates(net);
+            // Same cadence, same reasoning as the door broadcast: keep re-asserting the mechanisms
+            // that DRIVE those doors so a missed activation packet, a peer that was still loading,
+            // or a late joiner all converge instead of staying permanently out of sync.
+            BroadcastAuthoritativePersistentInteractions(net);
         }
         if (net.TryConsumeInterBreakableGroundEvents(out var breakableGroundEvents))
             ApplyAndRelease(breakableGroundEvents, ApplyRemoteBreakableGroundEvents);
@@ -354,6 +358,7 @@ public partial class InteractionSync :
         _elevatorLastAppliedSequence.Clear();
         _pressurePlateLastAppliedSequence.Clear();
         _buttonActivationState.Clear();
+        ClearPersistentInteractionStateForLevel();
     }
 
 }

@@ -2487,9 +2487,40 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         hit.Type ?? string.Empty,
                         BuildMobStateTypeSignature(registryMob),
                         "position_mismatch");
+                    // The host DOES own this identity, so the client is not hitting a ghost - the
+                    // two simulations have drifted apart far enough that the position no longer
+                    // corroborates. Dropping and saying nothing left the client hitting a mob that
+                    // could never take damage. Force an authoritative keyframe so the client snaps
+                    // back onto the host's position and the NEXT hit corroborates.
+                    RequestAuthoritativeHitReconcileLocked(registryMob, hit.MobIndex, "position_mismatch");
                     return null;
                 }
 
+                return registryMob;
+            }
+
+            // A type-signature disagreement on a sync id the host still owns is NOT proof that the
+            // client is hitting the wrong thing. The sync id is the authoritative identity; the type
+            // string is only a bind hint, and it legitimately changes under the host's feet when an
+            // elite transforms, a boss swaps in a phase proxy, or a mob is replaced in place. Vetoing
+            // the damage there produced exactly the reported symptom: an enemy the client can hit
+            // forever and never kill, with the host seeing full HP.
+            //
+            // Position is what actually disambiguates, so require that instead and let the host's
+            // native damage path decide the rest.
+            if (registryMob != null && MobHitRegistryStillTrustworthyLocked(registryMob, hit))
+            {
+                MobSyncTrace.LogFallbackMatchResolved(
+                    "hit_type_mismatch_accepted_by_position",
+                    hit.MobIndex,
+                    hit.Type ?? string.Empty,
+                    hit.X,
+                    hit.Y,
+                    candidateCount: 1,
+                    rebound: false);
+                // The client's bind hint is stale; a fresh authoritative state carries the new
+                // signature so later packets stop mismatching.
+                RequestAuthoritativeHitReconcileLocked(registryMob, hit.MobIndex, "type_mismatch_accepted");
                 return registryMob;
             }
 
@@ -2526,8 +2557,47 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // echoing a death then could kill a legitimate mob.)
             if (registryMob == null)
                 RecordGhostHitMissLocked(hit);
+            else
+                RequestAuthoritativeHitReconcileLocked(registryMob, hit.MobIndex, "type_and_position_mismatch");
 
             return null;
+        }
+
+        /// <summary>
+        /// Host side: a client reported damage against a sync id we own but could not corroborate.
+        /// Republish that mob's authoritative state so the client's mapping (position, type
+        /// signature, HP) is repaired and its next hit resolves.
+        /// </summary>
+        /// <remarks>
+        /// This is the missing half of the ghost-despawn echo. That echo covers "the host has
+        /// nothing at this id, kill the client's ghost"; this covers "the host DOES have something,
+        /// but the client's picture of it is stale". Without it, an unresolvable hit was a pure
+        /// dead end and the mismatch persisted for the lifetime of the mob, which is what turns a
+        /// transient desync into a permanently unkillable enemy. Rate-limited per sync id so a
+        /// client spamming hits on a genuinely wrong id cannot amplify into a packet storm.
+        /// </remarks>
+        private static void RequestAuthoritativeHitReconcileLocked(Mob? mob, int syncId, string reason)
+        {
+            if (mob == null || syncId < 0)
+                return;
+            if (!IsHost(GameMenu.NetRef))
+                return;
+
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            var minTicks = (long)(System.Diagnostics.Stopwatch.Frequency * HitReconcileMinIntervalSeconds);
+            if (s_lastHitReconcileTicksBySyncId.TryGetValue(syncId, out var last) &&
+                last != 0 &&
+                now - last < minTicks)
+            {
+                return;
+            }
+
+            s_lastHitReconcileTicksBySyncId[syncId] = now;
+            EnqueueHostMobDirtyLocked(syncId, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
+            Log.Information(
+                "[MobSync] host hit reconcile syncId={SyncId} reason={Reason}: republishing authoritative state",
+                syncId,
+                reason);
         }
 
         private static bool TryResolveHostMissingHitMobLocked(NetNode.MobHit hit, out Mob? uniqueMob, out int candidateCount)

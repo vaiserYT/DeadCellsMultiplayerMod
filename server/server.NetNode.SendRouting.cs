@@ -48,6 +48,12 @@ public sealed partial class NetNode
         if (IsPositionLine(trimmed))
             return true;
 
+        // A keep-alive whose predecessor is still in flight carries no information: the write that
+        // is already queued proves the same thing. Queuing another behind a wedged socket would
+        // just accumulate tasks on the send semaphore.
+        if (trimmed.StartsWith("PING", StringComparison.OrdinalIgnoreCase))
+            return true;
+
         // Only packets that are superseded by a newer frame may be dropped when TCP is
         // congested. Full MOBSTATE bootstrap/resync chunks, HP, hits, deaths and control
         // messages must remain reliable and ordered.

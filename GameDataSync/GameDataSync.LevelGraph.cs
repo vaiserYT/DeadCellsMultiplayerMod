@@ -19,7 +19,6 @@ namespace DeadCellsMultiplayerMod
         private const int MaxRemoteLevelGraphPayloadChars = 1_000_000;
         private const int MaxRemoteLevelGraphNodes = 4096;
         private const int MaxCachedRemoteLevelGraphs = 8;
-        private const int RemoteLevelGraphTtlMs = 60_000;
 
         private sealed class LevelGraphSync
         {
@@ -113,7 +112,6 @@ namespace DeadCellsMultiplayerMod
                 graph.ReceivedAtTick = Environment.TickCount64;
                 lock (_levelGraphLock)
                 {
-                    PruneRemoteLevelGraphsLocked(graph.ReceivedAtTick);
                     if (graph.Seq > 0 && graph.Seq <= _lastReceivedLevelGraphSequence)
                     {
                         _log?.Debug(
@@ -154,28 +152,17 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void PruneRemoteLevelGraphsLocked(long now)
-        {
-            if (_remoteLevelGraphs.Count == 0)
-                return;
-
-            List<string>? expired = null;
-            foreach (var pair in _remoteLevelGraphs)
-            {
-                var receivedAt = pair.Value?.ReceivedAtTick ?? 0;
-                if (receivedAt > 0 && now - receivedAt > RemoteLevelGraphTtlMs)
-                {
-                    expired ??= new List<string>();
-                    expired.Add(pair.Key);
-                }
-            }
-
-            if (expired == null)
-                return;
-            foreach (var key in expired)
-                _remoteLevelGraphs.Remove(key);
-        }
-
+        /// <summary>
+        /// The received graph is the ONLY way a client can reproduce the host's procedural layout;
+        /// the run seed alone does not determine it. Expiring it on a wall-clock TTL (it used to be
+        /// 60s, and the expiry also ran from inside the wait loop) silently converted "the client
+        /// took a while to reach LevelGen" into "the client generated an unrelated map with
+        /// different rooms, passages and exits" - the mid-run-join and slow-client desync.
+        ///
+        /// Cache pressure is therefore bounded by count (LRU) only, never by age: entries are
+        /// consumed on apply, replaced per level generation, and cleared wholesale by
+        /// <see cref="ResetTransientNetworkState"/>, so a stale entry cannot outlive its session.
+        /// </summary>
         private static void TrimRemoteLevelGraphCacheLocked()
         {
             while (_remoteLevelGraphs.Count > MaxCachedRemoteLevelGraphs)
@@ -364,7 +351,6 @@ namespace DeadCellsMultiplayerMod
                 while (true)
                 {
                     var now = Environment.TickCount64;
-                    PruneRemoteLevelGraphsLocked(now);
                     if (_remoteLevelGraphs.TryGetValue(levelId, out var found))
                     {
                         graph = found;
@@ -398,8 +384,7 @@ namespace DeadCellsMultiplayerMod
         {
             lock (_levelSeedLock)
             {
-                _remoteLevelId = null;
-                _remoteLevelSeed = null;
+                _remoteLevelSeedsByLevelId.Clear();
             }
 
             lock (_levelGraphLock)

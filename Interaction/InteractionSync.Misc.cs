@@ -93,6 +93,8 @@ public partial class InteractionSync
     private void Hook_VineLadder_activate(Hook_VineLadder.orig_activate orig, VineLadder self)
     {
         orig(self);
+        // Latched: remember it so the host keeps re-asserting it for peers that missed the event.
+        RememberHostLatchedVineLadder(self);
         TrySendVineLadderEvent(self);
     }
 
@@ -106,6 +108,7 @@ public partial class InteractionSync
     private void Hook_Teleport_open(Hook_Teleport.orig_open orig, Teleport self)
     {
         orig(self);
+        RememberHostLatchedTeleport(self);
         TrySendTeleportEvent(self);
     }
 
@@ -225,6 +228,11 @@ public partial class InteractionSync
                 if (vineLadder == null)
                     continue;
 
+                // The host re-asserts latched vine ladders on a heartbeat; activate() is not
+                // idempotent natively, so apply each one exactly once per level.
+                if (!TryClaimPersistentInteractionApply(vineLadder))
+                    continue;
+
                 try
                 {
                     vineLadder.activate();
@@ -297,6 +305,10 @@ public partial class InteractionSync
                 {
                     continue;
                 }
+
+                // See the vine ladder path: open() is re-asserted by the host heartbeat.
+                if (!TryClaimPersistentInteractionApply(teleport))
+                    continue;
 
                 try
                 {

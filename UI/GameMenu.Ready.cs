@@ -23,6 +23,12 @@ namespace DeadCellsMultiplayerMod
 
         private static void ResetLobbyLaunchStateLocked()
         {
+            StopHostRunLaunchBeacon("lobby_launch_state_reset");
+            _clientLevelGraphWaitStartedTicks = 0;
+            _clientLevelGraphWaitExpired = false;
+            // A pending join spawn belongs to the session that observed the host playing; it must
+            // not survive into a fresh lobby/launch.
+            _midRunJoinSpawnPending = false;
             _inActualRun = false;
             _pendingAutoStart = false;
             _autoStartTriggered = false;

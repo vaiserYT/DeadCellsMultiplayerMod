@@ -99,11 +99,27 @@ public sealed partial class NetNode
         }
     }
 
-    private static string BuildExitReadyLine(ExitReadyState state)
+    private static string BuildExitCommitLine(ExitTransitionCommit commit)
     {
+        static string Safe(string? value) => (value ?? string.Empty)
+            .Replace("|", "/", StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
+
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"EXITREADY|{state.UserId}|{state.DoorCx}|{state.DoorCy}|{(state.Pressed ? 1 : 0)}|{(state.InsideCircle ? 1 : 0)}|{(state.IsOutOfGame ? 1 : 0)}|{(state.IsOnScreen ? 1 : 0)}\n");
+            $"EXITCOMMIT|{commit.Sequence}|{commit.DoorCx}|{commit.DoorCy}|{Safe(commit.FromLevelId)}|{Safe(commit.DestinationLevelId)}\n");
+    }
+
+    private static string BuildExitReadyLine(ExitReadyState state)
+    {
+        var safeLevelId = (state.LevelId ?? string.Empty)
+            .Replace("|", "/", StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"EXITREADY|{state.UserId}|{state.DoorCx}|{state.DoorCy}|{(state.Pressed ? 1 : 0)}|{(state.InsideCircle ? 1 : 0)}|{(state.IsOutOfGame ? 1 : 0)}|{(state.IsOnScreen ? 1 : 0)}|{safeLevelId}\n");
     }
 
     private static string BuildPlayerDownLine(PlayerDownState state)

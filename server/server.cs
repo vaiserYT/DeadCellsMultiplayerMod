@@ -471,8 +471,15 @@ public sealed partial class NetNode : IDisposable
         public readonly bool InsideCircle;
         public readonly bool IsOutOfGame;
         public readonly bool IsOnScreen;
+        /// <summary>
+        /// Level this readiness belongs to. Door keys are level-local grid coordinates, so without
+        /// it a peer standing on an exit at the same cx/cy in a DIFFERENT biome satisfies the
+        /// rendezvous for a level it already left — an old-level packet changing new-level state.
+        /// Empty means "peer predates this field"; treated as matching for compatibility.
+        /// </summary>
+        public readonly string LevelId;
 
-        public ExitReadyState(int userId, int doorCx, int doorCy, bool pressed, bool insideCircle, bool isOutOfGame, bool isOnScreen)
+        public ExitReadyState(int userId, int doorCx, int doorCy, bool pressed, bool insideCircle, bool isOutOfGame, bool isOnScreen, string? levelId = null)
         {
             UserId = userId;
             DoorCx = doorCx;
@@ -481,6 +488,7 @@ public sealed partial class NetNode : IDisposable
             InsideCircle = insideCircle;
             IsOutOfGame = isOutOfGame;
             IsOnScreen = isOnScreen;
+            LevelId = levelId ?? string.Empty;
         }
     }
 
@@ -512,6 +520,65 @@ public sealed partial class NetNode : IDisposable
         }
     }
 
+    /// <summary>
+    /// Host-approved safe spawn for a player joining an already-running level.
+    /// </summary>
+    /// <remarks>
+    /// The cell is simply where the host's hero is standing right now. That is the strongest
+    /// possible validity proof available and it needs no collision heuristics: a live hero is
+    /// occupying it, so it is inside the level, inside a room, not solid, and reachable. The
+    /// joining client still re-validates it against its OWN level data before using it, which
+    /// doubles as a world-agreement check — if the client's map has no room at the host's cell, the
+    /// two peers did not generate the same world and the client keeps its native entrance instead
+    /// of teleporting into nothing.
+    /// </remarks>
+    public readonly struct HostSpawnAnchor
+    {
+        public readonly int Cx;
+        public readonly int Cy;
+        public readonly string LevelId;
+
+        public HostSpawnAnchor(int cx, int cy, string? levelId)
+        {
+            Cx = cx;
+            Cy = cy;
+            LevelId = levelId ?? string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Host-authored decision to perform one level transition.
+    /// </summary>
+    /// <remarks>
+    /// The exit used to be a purely mutual rendezvous: whichever peer noticed "everyone is ready"
+    /// first went through, and so did the other, independently. That has no transaction identity,
+    /// so a duplicate or replayed readiness burst could start a second transition, and nothing
+    /// could distinguish "this trigger belongs to the level I am in now" from a stale one.
+    ///
+    /// This makes the host the single authority for WHEN a transition starts and WHICH door it
+    /// starts from, and gives the decision a monotonic sequence so duplicates and stale triggers
+    /// are rejected by identity rather than by timing. The destination is still generated natively
+    /// by each peer from the synchronized level graph; <see cref="DestinationLevelId"/> is carried
+    /// so a divergence is detected and reported instead of silently splitting the party.
+    /// </remarks>
+    public readonly struct ExitTransitionCommit
+    {
+        public readonly long Sequence;
+        public readonly int DoorCx;
+        public readonly int DoorCy;
+        public readonly string FromLevelId;
+        public readonly string DestinationLevelId;
+
+        public ExitTransitionCommit(long sequence, int doorCx, int doorCy, string? fromLevelId, string? destinationLevelId)
+        {
+            Sequence = sequence;
+            DoorCx = doorCx;
+            DoorCy = doorCy;
+            FromLevelId = fromLevelId ?? string.Empty;
+            DestinationLevelId = destinationLevelId ?? string.Empty;
+        }
+    }
+
     public readonly struct PlayerReviveRequest
     {
         public readonly int ReviverId;
@@ -528,6 +595,23 @@ public sealed partial class NetNode : IDisposable
     private TcpClient? _client;     // client
     private NetworkStream? _stream;
     private Task? _steamTransportTask;
+    /// <summary>
+    /// Keep-alive runs on its own task, never on the transport receive loop.
+    /// <see cref="SteamBridgeLoop"/> hands non-fast-path lines to the game main thread and awaits
+    /// that hand-off to preserve protocol order. While the peer's main thread is busy (level
+    /// generation, a host-authoritative graph wait, a loading screen) that await can park the
+    /// receive loop for seconds. When keep-alive lived inside that loop, a peer that was merely
+    /// loading looked identical to a peer that had died, and the other side dropped the session at
+    /// <see cref="SteamReceiveTimeoutSeconds"/>. That is invisible on localhost and is exactly the
+    /// "joined the lobby, then got kicked when the host pressed Start" failure online.
+    /// </summary>
+    private Task? _steamKeepAliveTask;
+    /// <summary>
+    /// Number of received lines handed to the main thread but not yet executed. A non-zero value
+    /// proves the peer is still delivering data, so the receive timeout must not fire while the
+    /// only thing that is slow is our own game thread.
+    /// </summary>
+    private int _steamMainThreadDispatchBacklog;
     private readonly bool _useSteamTransport;
     private readonly CSteamID _steamHostId;
     private ISteamP2PBridge? _steamBridge;
@@ -604,6 +688,9 @@ public sealed partial class NetNode : IDisposable
     private List<MobDraw> _pendingMobDraws = new();
     private List<MobRegistryEntry> _pendingMobRegistry = new();
     private List<ExitReadyState> _pendingExitReadyStates = new();
+    private List<ExitTransitionCommit> _pendingExitTransitionCommits = new();
+    /// <summary>Latest host spawn anchor (single value, newest wins). Guarded by <c>_sync</c>.</summary>
+    private HostSpawnAnchor? _latestHostSpawnAnchor;
     private List<PlayerDownState> _pendingPlayerDownStates = new();
     private List<PlayerReviveRequest> _pendingPlayerReviveRequests = new();
     private List<string> _pendingBossCineLevelIds = new();
@@ -627,11 +714,19 @@ public sealed partial class NetNode : IDisposable
     private Task? _acceptTask;
     private Task? _recvTask;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private bool _disposed;
+    private int _disposeState;
+    private bool _disposed => Volatile.Read(ref _disposeState) != 0;
     private long _lastSteamPacketReceivedTicks;
     private long _lastSteamKeepAliveSentTicks;
-    private const double SteamReceiveTimeoutSeconds = 18.0;
-    private const double SteamKeepAliveSeconds = 6.0;
+    /// <summary>
+    /// Must comfortably exceed the worst realistic gap between two keep-alives on a peer that is
+    /// alive but busy. Keep-alive is sent from a dedicated task every
+    /// <see cref="SteamKeepAliveSeconds"/>, so anything under a few multiples of that is a real
+    /// connection loss rather than a loading hitch.
+    /// </summary>
+    private const double SteamReceiveTimeoutSeconds = 30.0;
+    private const double SteamKeepAliveSeconds = 3.0;
+    private const int SteamKeepAlivePollMs = 500;
     private static readonly byte[] SteamKeepAliveBytes = Encoding.UTF8.GetBytes("PING\n");
 
     private readonly object _sync = new();
@@ -654,10 +749,30 @@ public sealed partial class NetNode : IDisposable
     private int? _cachedHostSerializerSeq;
     private int? _cachedHostSerializerUid;
     private string? _cachedHostLevelDescPayload;
-    private string? _cachedHostLevelSeedPayload;
+    /// <summary>
+    /// Host level seed / level graph caches for late-join replay, keyed by level id.
+    /// </summary>
+    /// <remarks>
+    /// These used to be single slots holding "the last thing sent". One run generates several
+    /// levels — a biome plus its challenge rooms and sublevels — so by the time anyone joined, the
+    /// slot described a CHALLENGE ROOM rather than the level the joiner was about to load. The
+    /// client then had no graph for its actual level, which both blocked the auto-start gate (it
+    /// waits on a graph for that level id) and, if it started anyway, made it generate its own
+    /// layout. Keyed by level id, every generated level stays available and the joiner finds the
+    /// one it needs. Bounded so a long run cannot grow them without limit.
+    /// </remarks>
+    private readonly Dictionary<string, string> _cachedHostLevelSeedsByLevelId = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _cachedHostLevelGraphsByLevelId = new(StringComparer.Ordinal);
+    private const int MaxCachedHostLevelPayloads = 12;
     private string? _cachedHostHeroSkin;
     private string? _cachedHostHeroHeadSkin;
-    private string? _cachedHostLevelGraphPayload;
+    /// <summary>
+    /// The GEN payload carries the launch action/custom/stream flags the client's auto-start gate
+    /// waits on. It was the only launch prerequisite with no host cache, so a client whose
+    /// handshake completed after the host pressed Start never received it and stayed in the lobby
+    /// forever with no error on either side.
+    /// </summary>
+    private string? _cachedHostGeneratePayload;
     private string? _cachedHostCustomGameDataPayload;
     private string? _cachedHostCoopId;
     private bool _cachedHostHasContinueSave;

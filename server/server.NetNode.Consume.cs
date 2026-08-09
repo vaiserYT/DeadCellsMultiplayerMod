@@ -271,6 +271,14 @@ public sealed partial class NetNode
         }
     }
 
+    public bool TryConsumeExitTransitionCommits(out List<ExitTransitionCommit> commits)
+    {
+        lock (_sync)
+        {
+            return TryConsumePendingListLocked(ref _pendingExitTransitionCommits, out commits);
+        }
+    }
+
     public bool TryConsumeBossCineLevelIds(out List<string> levelIds)
     {
         lock (_sync)

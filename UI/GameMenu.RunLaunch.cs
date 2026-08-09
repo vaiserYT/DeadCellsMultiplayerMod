@@ -81,13 +81,18 @@ internal static partial class GameMenu
         if (net == null || !net.IsAlive || !net.IsHost)
             return descriptor;
 
-        net.SendRunLaunchCommit(descriptor, flush: true);
-
-        // Hooks run inside Dead Cells' native launch path. Never block that main-thread path while
-        // waiting for a network acknowledgement (Steam receives are polled by the same frame loop).
-        // RUNCOMMIT and RUNEXEC are reliable/ordered, and the host cache replays both to late clients.
+        // Hooks run inside Dead Cells' native launch path. Never block that main-thread path on a
+        // network write: flush:true waits on the send task, which on a congested TCP link stalls the
+        // frame that is starting the run. RUNCOMMIT and RUNEXEC are reliable and ordered, the host
+        // cache replays both to late clients, and the beacon below re-publishes them until the
+        // friend confirms, so a synchronous flush bought nothing but a main-thread hitch.
+        net.SendRunLaunchCommit(descriptor, flush: false);
         var execute = RunLaunchCoordinator.MarkHostExecute(descriptor);
-        net.SendRunLaunchExecute(execute, flush: true);
+        net.SendRunLaunchExecute(execute, flush: false);
+
+        // Converge instead of hoping: keep re-publishing the whole prerequisite set until the
+        // client positively confirms it is launching.
+        StartHostRunLaunchBeacon(descriptor.Sequence);
         return descriptor;
     }
 
@@ -114,7 +119,15 @@ internal static partial class GameMenu
         }
     }
 
-    private static void SendRunReadyFromHero()
+    /// <summary>
+    /// Publishes RUNREADY ("this peer is now playing the committed run in this level"). Called once
+    /// per launch sequence from <see cref="MarkInRun"/>, i.e. when the hero has actually
+    /// initialized. This is the terminal state of the launch state machine: it advances the session
+    /// phase to Playing, and on the host it is what lets a late joiner learn that the run is live.
+    /// It was previously written but never invoked, so the phase never left LoadingLevel and the
+    /// launch had no completion signal at all.
+    /// </summary>
+    internal static void SendRunReadyFromHero()
     {
         string levelId = string.Empty;
         try
@@ -125,9 +138,28 @@ internal static partial class GameMenu
         {
         }
 
-        var ready = RunLaunchCoordinator.MarkLocalPlaying(levelId);
-        if (ready != null)
+        RunLevelReady? ready;
+        try
+        {
+            ready = RunLaunchCoordinator.MarkLocalPlaying(levelId);
+        }
+        catch (Exception ex)
+        {
+            _log?.Warning("[NetMod][RunLaunch] Failed to mark local run ready: {Message}", ex.Message);
+            return;
+        }
+
+        if (ready == null)
+            return;
+
+        try
+        {
             NetRef?.SendRunLevelReady(ready);
+        }
+        catch (Exception ex)
+        {
+            _log?.Warning("[NetMod][RunLaunch] Failed to send RUNREADY: {Message}", ex.Message);
+        }
     }
 
     internal static void ReceiveRunLaunchCommitPayload(string payload)
@@ -138,6 +170,13 @@ internal static partial class GameMenu
             _log?.Warning("[NetMod][RunLaunch] Malformed RUNCOMMIT: {Error}", decodeError);
             return;
         }
+
+        // Receiving a host commit on a live non-host node IS the proof that we are the client. If
+        // the coordinator has not observed the role transition yet, adopt it here rather than
+        // rejecting a valid launch that nothing would ever re-offer.
+        var localNet = NetRef;
+        if (localNet != null && localNet.IsAlive && !localNet.IsHost)
+            RunLaunchCoordinator.EnsureClientRoleForIncomingLaunch();
 
         var accepted = RunLaunchCoordinator.TryAcceptRemoteDescriptor(
             descriptor,
@@ -168,6 +207,11 @@ internal static partial class GameMenu
                 _structuredLaunchExecuteSequence = 0;
                 _pendingAutoStart = false;
                 _autoStartTriggered = false;
+                // A genuinely new launch gets a fresh level-graph preference window; carrying the
+                // previous launch's expiry over would skip the wait for a graph that is about to
+                // arrive for this run.
+                _clientLevelGraphWaitStartedTicks = 0;
+                _clientLevelGraphWaitExpired = false;
             }
             SignalClientLaunchProgressLocked();
             Monitor.PulseAll(Sync);
@@ -381,7 +425,37 @@ internal static partial class GameMenu
         }
 
         RunLaunchCoordinator.ReceiveRemoteReady(ready);
+
+        // RUNREADY means "the sender is already playing this run". Receiving it as a client that is
+        // NOT yet in a run is the protocol-level definition of joining mid-run — no timing guess
+        // required. The flag is consumed once, by the first level this client enters.
+        lock (Sync)
+        {
+            if (_role == NetRole.Client && !_inActualRun && !_midRunJoinSpawnPending)
+            {
+                _midRunJoinSpawnPending = true;
+                _log?.Information(
+                    "[NetMod][Session] Mid-run join detected (host already playing level={Level}); " +
+                    "a host-approved spawn will be applied once the level is built",
+                    ready.LevelId);
+            }
+        }
     }
+
+    private static bool _midRunJoinSpawnPending;
+
+    /// <summary>Consumed once by the joining client's first level; false for every normal launch.</summary>
+    internal static bool TryConsumeMidRunJoinSpawn()
+    {
+        lock (Sync)
+        {
+            if (!_midRunJoinSpawnPending)
+                return false;
+            _midRunJoinSpawnPending = false;
+            return true;
+        }
+    }
+
 
     internal static void ReceiveRunLaunchCancelPayload(string payload)
     {
@@ -410,6 +484,7 @@ internal static partial class GameMenu
 
     private static void CancelHostStructuredLaunch(int sequence, string reason)
     {
+        StopHostRunLaunchBeacon("host_launch_cancelled");
         var cancel = RunLaunchCoordinator.CancelHostLaunch(sequence, reason);
         if (cancel != null)
             NetRef?.SendRunLaunchCancel(cancel, flush: true);

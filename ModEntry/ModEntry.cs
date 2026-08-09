@@ -991,16 +991,38 @@ namespace DeadCellsMultiplayerMod
             }
             else if (_netRole == NetRole.Client)
             {
-                const int graphSyncWaitMs = 10000;
+                // The host's graph is the authoritative description of the generated world. This
+                // wait is the ONLY place the client can still receive it before committing to a
+                // layout, so it is sized for real online conditions (host still generating, a
+                // 1MB payload crossing a slow link) rather than for localhost. Waiting here shows
+                // the normal loading screen; failing here silently produces a different map.
+                const int graphSyncWaitMs = 25000;
                 if (GameDataSync.TryApplyRemoteLevelGraph(graphLevelId, graph, rng, graphSyncWaitMs, out var remoteRoot, out var reason))
                 {
-                    Logger.Information("[NetMod] Applied remote level graph+rand for {LevelId}", graphLevelId);
+                    Logger.Information("[NetMod][LevelSync] Applied remote level graph+rand for {LevelId}", graphLevelId);
                     if (remoteRoot != null)
                         root = remoteRoot;
                 }
                 else
                 {
-                    Logger.Warning("[NetMod] Remote level graph not applied for {LevelId}: {Reason}", graphLevelId, reason);
+                    // Not a warning: the client is about to build a world the host does not have.
+                    // Every downstream symptom (missing passages, exits that lead elsewhere, a
+                    // teammate standing in a wall) originates here, so name it explicitly.
+                    Logger.Error(
+                        "[NetMod][LevelSync] WORLD DESYNC: host level graph for {LevelId} was not applied ({Reason}); " +
+                        "this client is generating its own layout and will not match the host",
+                        graphLevelId,
+                        reason);
+                    try
+                    {
+                        MultiplayerUI.PushSystemMessage(
+                            GameMenu.Localize("Level failed to synchronize with the host. Return to the menu and rejoin."),
+                            8.0,
+                            1.0);
+                    }
+                    catch
+                    {
+                    }
                 }
             }
 
@@ -1106,6 +1128,8 @@ namespace DeadCellsMultiplayerMod
             var currentLevelId = GetCurrentLevelId();
             if (!string.IsNullOrWhiteSpace(currentLevelId))
                 SendLevel(currentLevelId);
+            // A mid-run joiner's first level is where the host-approved spawn applies.
+            ArmJoinSpawnForCurrentLevel(currentLevelId);
             SendCurrentRoomTarget(force: true);
             // Do not clear again after vanilla onLevelChanged: by this point the host may already
             // have sent the first valid bootstrap chunks for the new level. Generation fencing
@@ -1156,6 +1180,9 @@ namespace DeadCellsMultiplayerMod
             _debugExplorerRevealAppliedSignature = string.Empty;
             orig(self, lvl, cx, cy);
             EnsureHeroVisibilityAfterRoomChange(me);
+            // Either entry point can be the joiner's first level; arming is one-shot, so whichever
+            // runs first claims it.
+            ArmJoinSpawnForCurrentLevel(GetCurrentLevelId());
             SendCurrentRoomTarget(force: true);
             SendEquippedWeapons(self.inventory);
             MarkDiveNetGuardAfterSpawnOrRoomChange();
@@ -1239,6 +1266,11 @@ namespace DeadCellsMultiplayerMod
             stepStart = RuntimeHitchWatch.Start();
             SendCurrentRoomTarget(force: false);
             LogHeroUpdateStepIfSlow("ModEntry.OnHeroUpdate.SendCurrentRoomTarget", stepStart, null);
+
+            stepStart = RuntimeHitchWatch.Start();
+            PublishHostSpawnAnchor();
+            TryApplyHostApprovedJoinSpawn();
+            LogHeroUpdateStepIfSlow("ModEntry.OnHeroUpdate.JoinSpawn", stepStart, null);
 
             if (!_localFakeDead)
             {

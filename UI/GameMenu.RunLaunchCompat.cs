@@ -36,6 +36,9 @@ internal static partial class GameMenu
         _remoteSeedSequence = 0;
         _consumedRemoteSeedSequence = 0;
         _remoteLaunchKind = string.Empty;
+        _clientLevelGraphWaitStartedTicks = 0;
+        _clientLevelGraphWaitExpired = false;
+        _nextClientLaunchBlockLogTicks = 0;
         ClearStructuredLaunchFlagsLocked();
         ClearPrecommittedHostRunSeedLocked();
         _clientRestartPendingUntilTicks = 0;

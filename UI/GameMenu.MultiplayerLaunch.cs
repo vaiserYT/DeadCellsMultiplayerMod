@@ -792,9 +792,15 @@ namespace DeadCellsMultiplayerMod
                 _pendingLaunchCustom = launchCustom;
                 _pendingLaunchStreamEnabled = launchStreamEnabled;
                 // Opening Custom Mode announces custom=true before CGDATA exists. Clear readiness
-                // until the host's saved customGameData file arrives.
+                // until the host's saved customGameData file arrives — but only if we have not
+                // already received that file. This announcement is re-published by the host launch
+                // beacon, and unconditionally clearing readiness there would revoke a prerequisite
+                // the client had already satisfied, on every beat, forever.
                 if (action == PendingLaunchAction.NewGame && launchCustom)
-                    _remoteCustomGameDataReady = false;
+                {
+                    if (string.IsNullOrWhiteSpace(_pendingRemoteCustomGameDataJson))
+                        _remoteCustomGameDataReady = false;
+                }
                 else
                 {
                     _remoteCustomGameDataReady = true;
@@ -853,6 +859,36 @@ namespace DeadCellsMultiplayerMod
             net.SendLaunchMode((int)action, custom, streamEnabled, newCoopWorldPrepared, coopId, hostHasContinueSave);
         }
 
+        /// <summary>
+        /// How long the client prefers to wait for the host's level graph before starting anyway.
+        /// </summary>
+        /// <remarks>
+        /// Waiting for the graph in the LOBBY was a design inversion. The graph is consumed during
+        /// the client's own LevelGen pass, which already blocks for it (see
+        /// Hook_LevelGen_generateGraph), so gating the lobby on it only delayed the client's load
+        /// without adding any guarantee — and turned "the graph for this exact level id never got
+        /// cached" into "the client never leaves the main menu", with no error and no recovery.
+        /// The gate is now a bounded preference: if the graph is already here we start immediately
+        /// with everything in hand; if it is not, we still start and let the generation-time wait
+        /// (which is where the data is actually needed) do its job.
+        /// </remarks>
+        private const int ClientLevelGraphPreferenceGraceMs = 5000;
+        private static long _clientLevelGraphWaitStartedTicks;
+        /// <summary>
+        /// Sticky for the current launch once the grace window expires.
+        /// </summary>
+        /// <remarks>
+        /// This predicate is evaluated at least twice per frame — once to arm
+        /// (<see cref="ReevaluateClientLaunchArmLocked"/>) and once to claim
+        /// (<see cref="TryClaimClientAutoStartLocked"/>) — so it MUST be idempotent. A
+        /// non-sticky expiry would report "ready" to the arming call, restart its own timer, and
+        /// then report "not ready" to the claim a microsecond later, arming and disarming forever
+        /// on a 5s cycle without ever launching. Cleared with the rest of the launch state.
+        /// </remarks>
+        private static bool _clientLevelGraphWaitExpired;
+        private static long _nextClientLaunchBlockLogTicks;
+        private const int ClientLaunchBlockLogIntervalMs = 5000;
+
         private static bool IsPendingLaunchReadyForAutoStartLocked()
         {
             if (_pendingLaunchAction == PendingLaunchAction.LoadSave)
@@ -863,14 +899,24 @@ namespace DeadCellsMultiplayerMod
                     return false;
                 }
 
-                return _genArrived && GameDataSync.HasRemoteBossRune();
+                if (_genArrived && GameDataSync.HasRemoteBossRune())
+                    return true;
+
+                LogClientLaunchBlockLocked(_genArrived ? "boss rune not received" : "generate payload not received");
+                return false;
             }
 
             if (!_genArrived || !_seedArrived)
+            {
+                LogClientLaunchBlockLocked(_genArrived ? "run seed not received" : "generate payload not received");
                 return false;
+            }
 
             if (_pendingLaunchCustom && !_remoteCustomGameDataReady)
+            {
+                LogClientLaunchBlockLocked("custom mode rules not received");
                 return false;
+            }
 
             return IsRemoteRunSyncReadyForLaunchLocked();
         }
@@ -878,16 +924,78 @@ namespace DeadCellsMultiplayerMod
         private static bool IsRemoteRunSyncReadyForLaunchLocked()
         {
             if (!GameDataSync.HasRemoteBossRune())
+            {
+                LogClientLaunchBlockLocked("boss rune not received");
                 return false;
+            }
 
             var levelId = GetCachedLevelDescSync()?.LevelId;
             if (!string.IsNullOrWhiteSpace(levelId) && GameDataSync.HasPendingRemoteLevelGraph(levelId))
                 return true;
 
-            return GameDataSync.HasPendingRemoteLevelGraph("PrisonStart");
+            if (GameDataSync.HasPendingRemoteLevelGraph("PrisonStart"))
+                return true;
+
+            if (_clientLevelGraphWaitExpired)
+                return true;
+
+            var now = Environment.TickCount64;
+            if (_clientLevelGraphWaitStartedTicks == 0)
+            {
+                _clientLevelGraphWaitStartedTicks = now;
+                LogClientLaunchBlockLocked("waiting for the host level graph");
+                return false;
+            }
+
+            var waited = now - _clientLevelGraphWaitStartedTicks;
+            if (waited < ClientLevelGraphPreferenceGraceMs)
+            {
+                LogClientLaunchBlockLocked("waiting for the host level graph");
+                return false;
+            }
+
+            _clientLevelGraphWaitExpired = true;
+            _log?.Information(
+                "[NetMod][RunLaunch] Starting without a pre-cached host level graph after {Ms}ms; " +
+                "LevelGen will wait for the authoritative graph instead",
+                waited);
+            return true;
         }
 
-        private static void TryAutoStartPendingLaunch(TitleScreen screen)
+        /// <summary>
+        /// Rate-limited report of the single prerequisite currently blocking the client auto-start.
+        /// Without this, "the client stayed in the lobby" produced no evidence at all.
+        /// </summary>
+        private static void LogClientLaunchBlockLocked(string reason)
+        {
+            if (_role != NetRole.Client)
+                return;
+
+            var now = Environment.TickCount64;
+            if (now < _nextClientLaunchBlockLogTicks)
+                return;
+            _nextClientLaunchBlockLogTicks = now + ClientLaunchBlockLogIntervalMs;
+
+            _log?.Information(
+                "[NetMod][RunLaunch] Client launch waiting: {Reason} " +
+                "(gen={Gen} seed={Seed} commit={Commit} exec={Exec} seedSeq={SeedSeq} bossRune={BossRune} custom={Custom})",
+                reason,
+                _genArrived,
+                _seedArrived,
+                _structuredLaunchCommitArrived,
+                _structuredLaunchExecuteSequence,
+                _remoteSeedSequence,
+                GameDataSync.HasRemoteBossRune(),
+                _remoteCustomGameDataReady);
+        }
+
+        /// <summary>
+        /// <paramref name="screen"/> is optional: the title screen is only a convenience entry
+        /// point. If the weak reference to it has been collected, the launch still has to happen —
+        /// both branches below fall back to Main.launchGame — because the alternative is a client
+        /// that holds a fully valid authoritative launch and never leaves the menu.
+        /// </summary>
+        private static void TryAutoStartPendingLaunch(TitleScreen? screen)
         {
             PendingLaunchAction action;
             bool custom;
