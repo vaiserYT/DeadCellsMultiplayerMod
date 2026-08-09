@@ -77,6 +77,7 @@ public sealed partial class NetNode
         WaitForTaskShutdown(_steamKeepAliveTask, 400);
         Volatile.Write(ref _steamMainThreadDispatchBacklog, 0);
         GameDataSync.Seed = 0;
+        Interlocked.Exchange(ref _nextHostLevelSeedSequence, 0);
         lock (_hostCacheSync)
         {
             _cachedHostSeed = null;
@@ -96,6 +97,7 @@ public sealed partial class NetNode
             _cachedHostLevelGraphsByLevelId.Clear();
             _cachedHostGeneratePayload = null;
             _cachedHostCustomGameDataPayload = null;
+            _cachedHostRuneProgressPayload = null;
             _cachedHostCoopId = null;
             _cachedHostHasContinueSave = false;
             _cachedHostMobsHpMult = null;

@@ -41,6 +41,8 @@ public sealed class CoopAdvancedHardening :
     private static string _lastAppliedProgress = string.Empty;
     private static int _lastKnownRemoteCount = -1;
     private static bool _wasConnected;
+    private static NetNode? _hudSessionNet;
+    private static bool _connectedHudMessageShown;
 
     private const double LobbyHeartbeatSeconds = 0.50;
     private const double ProgressSyncSeconds = 1.50;
@@ -113,6 +115,30 @@ public sealed class CoopAdvancedHardening :
         }
     }
 
+    internal static void PrimeHostProgressSnapshot(NetNode? net)
+    {
+        if (net == null || !net.IsHost)
+            return;
+
+        try
+        {
+            var payload = BuildLocalPermanentProgressPayload();
+            if (string.IsNullOrWhiteSpace(payload))
+                return;
+
+            // This may run before any friend is fully connected. NetNode caches the payload even
+            // with zero peers so TCP and Steam initial-state replay can deliver host progression
+            // before GEN/RUNCOMMIT and before the client's first procedural generation.
+            _lastSentProgress = payload;
+            _nextProgressFullResendTicks = Stopwatch.GetTimestamp() + SecondsToTicks(ProgressFullResendSeconds);
+            net.SendRuneProgress(payload);
+        }
+        catch (Exception ex)
+        {
+            _log?.Warning("[CoopAdvanced] Initial host progress snapshot failed: {Message}", ex.Message);
+        }
+    }
+
     private static void SendPermanentProgress(NetNode net)
     {
         if (net == null || !net.IsHost)
@@ -144,17 +170,36 @@ public sealed class CoopAdvancedHardening :
     {
         try
         {
+            if (!ReferenceEquals(_hudSessionNet, net))
+            {
+                _hudSessionNet = net;
+                _connectedHudMessageShown = false;
+                _lastKnownRemoteCount = -1;
+                _wasConnected = false;
+            }
+
             var connected = net.HasRemote;
             var remoteCount = net.IsHost ? NetNode.ConnectedClientCount : (connected ? 1 : 0);
             if (connected == _wasConnected && remoteCount == _lastKnownRemoteCount)
                 return;
 
+            var previousRemoteCount = _lastKnownRemoteCount;
             _wasConnected = connected;
             _lastKnownRemoteCount = remoteCount;
             if (connected)
-                MultiplayerUI.PushSystemMessage(net.IsHost ? $"Co-op: {remoteCount} friend(s) connected" : "Co-op: connected to host", 4.0, 1.0);
-            else
-                MultiplayerUI.PushSystemMessage(net.IsHost ? "Co-op: lobby open, waiting for friend" : "Co-op: waiting for host", 4.0, 1.0);
+            {
+                // HasRemote can briefly flap while changing levels or while Steam renegotiates its
+                // P2P route. Treat the notification as session state, not a heartbeat, so chat is
+                // never flooded with repeated "connected" messages during an otherwise healthy run.
+                if (!_connectedHudMessageShown || (net.IsHost && remoteCount > Math.Max(0, previousRemoteCount)))
+                {
+                    var status = net.IsHost
+                        ? string.Format(CultureInfo.CurrentCulture, GameMenu.Localize("Co-op: {0} friend(s) connected"), remoteCount)
+                        : GameMenu.Localize("Co-op: connected to host");
+                    MultiplayerUI.PushSystemMessage(status, 4.0, 1.0);
+                    _connectedHudMessageShown = true;
+                }
+            }
         }
         catch
         {
@@ -207,6 +252,16 @@ public sealed class CoopAdvancedHardening :
                 PendingPermanentItems.Add(id);
             }
         }
+
+        // Initial-state replay deliberately sends RUNEPROG before GEN/RUNCOMMIT. Apply that
+        // snapshot on the game thread immediately instead of waiting for the 1.5s heartbeat: on a
+        // fresh/different save the client's first LevelGen can otherwise start before the host's
+        // mobility/rune state is visible, recreating the old "same seed but only same save works"
+        // race. The coalesced action is also safe when no User exists yet; the normal frame/hero
+        // retry keeps the pending items until one becomes available.
+        GameMenu.EnqueueCriticalMainThreadCoalesced(
+            "coop:apply-host-progress",
+            ApplyPendingPermanentProgress);
     }
 
     private static void ApplyPendingPermanentProgress()
@@ -251,7 +306,10 @@ public sealed class CoopAdvancedHardening :
                 if (!string.Equals(sig, _lastAppliedProgress, StringComparison.Ordinal))
                 {
                     _lastAppliedProgress = sig;
-                    MultiplayerUI.PushSystemMessage($"Co-op progression synced: +{added} unlock(s)", 6.0, 1.5);
+                    MultiplayerUI.PushSystemMessage(
+                        string.Format(CultureInfo.CurrentCulture, GameMenu.Localize("Co-op progression synced: +{0} unlock(s)"), added),
+                        6.0,
+                        1.5);
                     _log?.Information("[CoopAdvanced] Applied {Count} synced permanent unlocks", added);
                 }
             }
@@ -328,6 +386,8 @@ public sealed class CoopAdvancedHardening :
         _nextHudStatusTicks = 0;
         _lastKnownRemoteCount = -1;
         _wasConnected = false;
+        _hudSessionNet = null;
+        _connectedHudMessageShown = false;
     }
 
     private static User? GetUser()

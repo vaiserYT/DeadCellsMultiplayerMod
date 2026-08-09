@@ -222,6 +222,18 @@ internal static partial class GameMenu
         var maxActionLabel = string.Empty;
         var actionsStart = RuntimeHitchWatch.Start();
 
+        // Keep the Steam friends join page live without requiring the player to back out and
+        // reopen it. The discovery pass is rate-limited to 2.5 seconds and stays on the game
+        // thread so no Steam API call can outlive the title screen or process shutdown.
+        try
+        {
+            TickSteamFriendLobbyRefresh();
+        }
+        catch (Exception ex)
+        {
+            _log?.Debug("[NetMod][Steam] Friend lobby refresh tick failed: {Message}", ex.Message);
+        }
+
         // Critical + reliable network protocol work must drain even when the UI queue is busy.
         processed += DrainCriticalAndNetworkMainThreadQueues(MainThreadQueueMaxActionsPerPump);
 

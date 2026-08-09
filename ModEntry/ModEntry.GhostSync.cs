@@ -357,7 +357,8 @@ namespace DeadCellsMultiplayerMod
 
             // Always send X/Y/dir. Skipping unchanged frames let peer GhostKing physics drift
             // the remote Y while the local player stood still (no correction packets).
-            _net.TickSend(me.spr.x, me.spr.y, dir);
+            var positionLevelId = me._level?.map?.id?.ToString() ?? GetCurrentLevelId();
+            _net.TickSend(me.spr.x, me.spr.y, dir, positionLevelId);
             last_x = me.spr.x;
             last_y = me.spr.y;
             lastDir = dir;
@@ -1026,11 +1027,11 @@ namespace DeadCellsMultiplayerMod
                 invalidated,
                 reason);
 
-            // Do not create a GhostKing synchronously inside Save.save. The native serializer and,
-            // for Giant-door/return-teleporter paths, the sublevel render guard may still own the
-            // display tree. Queue a rebuild; ReceiveGhostCoords also runs from normal hero updates,
-            // so a transition guard that temporarily rejects this queued attempt still recovers.
-            GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
+            // Do not queue a rebuild from inside Save.save. On "Quit to menu" the save is
+            // immediately followed by Game/level disposal; the old queued rebuild recreated a
+            // GhostKing in that teardown window and could later crash native skin/head cleanup
+            // (notably Null access .heroHeadSkin). If gameplay continues, the normal hero update
+            // calls ReceiveGhostCoords on the next live frame and recreates the shell safely.
         }
 
         private void DisposeClientSlot(int slot, bool clearIdentity)

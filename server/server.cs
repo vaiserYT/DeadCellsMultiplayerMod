@@ -50,12 +50,17 @@ public sealed partial class NetNode : IDisposable
         public bool HandshakeComplete => Volatile.Read(ref _handshakeComplete) != 0;
         private readonly object _initialStateSync = new();
         private DateTime _lastInitialStateSentUtc = DateTime.MinValue;
+        private long _lastPacketReceivedTicks;
 
         public SteamClientConnection(CSteamID steamId, int assignedId)
         {
             SteamId = steamId;
             AssignedId = assignedId;
+            _lastPacketReceivedTicks = Stopwatch.GetTimestamp();
         }
+
+        public long LastPacketReceivedTicks => Interlocked.Read(ref _lastPacketReceivedTicks);
+        public void MarkPacketReceived() => Interlocked.Exchange(ref _lastPacketReceivedTicks, Stopwatch.GetTimestamp());
 
         public bool TryCompleteHandshake() => Interlocked.Exchange(ref _handshakeComplete, 1) == 0;
 
@@ -89,6 +94,7 @@ public sealed partial class NetNode : IDisposable
         public double Y;
         public int Dir = 1;
         public bool HasPosition;
+        public long LastPositionSequence;
         public bool HasRemote;
         public string? LevelId;
         public string? RoomLevelId;
@@ -717,6 +723,7 @@ public sealed partial class NetNode : IDisposable
     private int _disposeState;
     private bool _disposed => Volatile.Read(ref _disposeState) != 0;
     private long _lastSteamPacketReceivedTicks;
+    private long _nextPositionSequence;
     private long _lastSteamKeepAliveSentTicks;
     /// <summary>
     /// Must comfortably exceed the worst realistic gap between two keep-alives on a peer that is
@@ -739,6 +746,7 @@ public sealed partial class NetNode : IDisposable
     private int _localHpRecover;
     private readonly object _hostCacheSync = new();
     private int? _cachedHostSeed;
+    private long _nextHostLevelSeedSequence;
     private int? _cachedHostRunSeedSequence;
     private string? _cachedHostLaunchKind;
     private string? _cachedHostRunCommitPayload;
@@ -774,6 +782,11 @@ public sealed partial class NetNode : IDisposable
     /// </summary>
     private string? _cachedHostGeneratePayload;
     private string? _cachedHostCustomGameDataPayload;
+    // Host-selected permanent progression (runes/mobility unlocks) must be available during
+    // the handshake, before the joining client starts LevelGen. Without a cache the first
+    // RUNEPROG snapshot was delayed until the periodic heartbeat, making fresh/different saves
+    // race the initial world generation even when the run seed itself matched.
+    private string? _cachedHostRuneProgressPayload;
     private string? _cachedHostCoopId;
     private bool _cachedHostHasContinueSave;
     private double? _cachedHostMobsHpMult;

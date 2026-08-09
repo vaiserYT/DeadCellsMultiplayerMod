@@ -185,8 +185,8 @@ namespace DeadCellsMultiplayerMod
                     try
                     {
                         var contentClue = link.contentClue;
-                    if (contentClue is HaxeEnum haxeEnum)
-                        clue = haxeEnum.RawIndex;
+                        if (contentClue is HaxeEnum haxeEnum)
+                            clue = haxeEnum.RawIndex;
                     }
                     catch
                     {

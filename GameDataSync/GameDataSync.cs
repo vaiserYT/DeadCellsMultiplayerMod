@@ -68,7 +68,15 @@ namespace DeadCellsMultiplayerMod
         /// the last and the joiner had no seed for the level it was actually loading. Keyed by level
         /// id, each level keeps its own seed and consumption stays per level.
         /// </remarks>
-        private static readonly Dictionary<string, double> _remoteLevelSeedsByLevelId = new(StringComparer.Ordinal);
+        private sealed class RemoteLevelSeedSync
+        {
+            public double Seed { get; init; }
+            public long Seq { get; init; }
+        }
+
+        private static readonly Dictionary<string, RemoteLevelSeedSync> _remoteLevelSeedsByLevelId = new(StringComparer.Ordinal);
+        private static readonly Dictionary<string, long> _lastReceivedLevelSeedSequenceByLevelId = new(StringComparer.Ordinal);
+        private static readonly Dictionary<string, long> _lastAppliedLevelSeedSequenceByLevelId = new(StringComparer.Ordinal);
         private const int MaxRemoteLevelSeeds = 16;
         private static readonly object _serializerSyncLock = new();
         private static int _remoteSerializerSeq;
@@ -83,6 +91,14 @@ namespace DeadCellsMultiplayerMod
         {
             _log = log;
             EventSystem.AddReceiver(this);
+        }
+
+        // GameDataSync is used primarily through static hook methods; the historical receiver
+        // instance is not constructed by the current bootstrap. Configure its logger explicitly so
+        // level-graph capture/send failures are visible instead of becoming silent world desyncs.
+        internal static void ConfigureLogger(Serilog.ILogger log)
+        {
+            _log = log;
         }
 
         void IOnAdvancedModuleInitializing.OnAdvancedModuleInitializing(ModEntry entry)
@@ -157,7 +173,15 @@ namespace DeadCellsMultiplayerMod
                     // seed; ReceiveHostRunRestart is idempotent with the pending restart state.
                     if (currentNet.IsHost)
                     {
-                        try { currentNet.SendRunRestart(committedSeed); }
+                        try
+                        {
+                            // Manual/native Restart can bypass GameMenu.QueueHostRestartFromDeath.
+                            // Fence the old generated world here as well so the same level id cannot
+                            // replay the previous run's seed/graph to a client during the restart.
+                            currentNet.ClearCachedGeneratedLevelStateForRestart();
+                            ResetGeneratedLevelSyncForRestart();
+                            currentNet.SendRunRestart(committedSeed);
+                        }
                         catch (Exception ex)
                         {
                             _log?.Warning("[NetMod][RunLaunch] Failed to broadcast native same-run restart: {Message}", ex.Message);
@@ -654,14 +678,27 @@ namespace DeadCellsMultiplayerMod
             if (string.IsNullOrWhiteSpace(payload))
                 return;
 
-            var sep = payload.IndexOf('|');
-            if (sep <= 0 || sep >= payload.Length - 1)
+            var parts = payload.Split('|');
+            if (parts.Length < 2)
                 return;
 
-            var levelId = payload[..sep];
-            var seedText = payload[(sep + 1)..];
+            var levelId = parts[0];
             if (string.IsNullOrWhiteSpace(levelId) || levelId.Length > 128)
                 return;
+
+            long sequence = 0;
+            string seedText;
+            if (parts.Length >= 3 &&
+                long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedSequence))
+            {
+                sequence = parsedSequence;
+                seedText = parts[2];
+            }
+            else
+            {
+                // Legacy shape: levelId|seed. Protocol 19 peers always send a sequence.
+                seedText = parts[1];
+            }
 
             if (!double.TryParse(seedText, NumberStyles.Float, CultureInfo.InvariantCulture, out var seed) ||
                 double.IsNaN(seed) || double.IsInfinity(seed))
@@ -669,7 +706,16 @@ namespace DeadCellsMultiplayerMod
 
             lock (_levelSeedLock)
             {
-                _remoteLevelSeedsByLevelId[levelId] = seed;
+                if (sequence > 0)
+                {
+                    if (_lastAppliedLevelSeedSequenceByLevelId.TryGetValue(levelId, out var appliedSeq) && sequence <= appliedSeq)
+                        return;
+                    if (_lastReceivedLevelSeedSequenceByLevelId.TryGetValue(levelId, out var receivedSeq) && sequence <= receivedSeq)
+                        return;
+                    _lastReceivedLevelSeedSequenceByLevelId[levelId] = sequence;
+                }
+
+                _remoteLevelSeedsByLevelId[levelId] = new RemoteLevelSeedSync { Seed = seed, Seq = sequence };
                 while (_remoteLevelSeedsByLevelId.Count > MaxRemoteLevelSeeds)
                 {
                     var oldest = default(string);
@@ -683,7 +729,21 @@ namespace DeadCellsMultiplayerMod
                         break;
                     _remoteLevelSeedsByLevelId.Remove(oldest);
                 }
+
+                Monitor.PulseAll(_levelSeedLock);
             }
+        }
+
+        private static bool TryConsumeRemoteLevelSeedLocked(string levelId, Rand rng)
+        {
+            if (!_remoteLevelSeedsByLevelId.TryGetValue(levelId, out var state) || state == null)
+                return false;
+
+            rng.seed = state.Seed;
+            _remoteLevelSeedsByLevelId.Remove(levelId);
+            if (state.Seq > 0)
+                _lastAppliedLevelSeedSequenceByLevelId[levelId] = state.Seq;
+            return true;
         }
 
         public static bool TryApplyRemoteLevelSeed(string levelId, Rand rng)
@@ -692,18 +752,48 @@ namespace DeadCellsMultiplayerMod
                 return false;
 
             lock (_levelSeedLock)
+                return TryConsumeRemoteLevelSeedLocked(levelId, rng);
+        }
+
+        /// <summary>
+        /// Applies the host-authored level RNG seed, waiting for it when a real network/transition
+        /// has not delivered it yet. Protocol-19 seeds carry a monotonic generation sequence so a
+        /// delayed packet from a previous visit/restart cannot win the race.
+        /// </summary>
+        public static bool TryWaitApplyRemoteLevelSeed(string levelId, Rand rng, int timeoutMs)
+        {
+            if (rng == null || string.IsNullOrWhiteSpace(levelId))
+                return false;
+
+            var deadline = Environment.TickCount64 + Math.Max(0, timeoutMs);
+            var nextRequestAt = 0L;
+
+            while (true)
             {
-                if (_remoteLevelSeedsByLevelId.TryGetValue(levelId, out var seed))
+                lock (_levelSeedLock)
                 {
-                    rng.seed = seed;
-                    // One level-seed packet belongs to one graph generation. Leaving it cached made
-                    // a later visit to the same biome reuse an old seed before the new packet arrived.
-                    _remoteLevelSeedsByLevelId.Remove(levelId);
-                    return true;
+                    if (TryConsumeRemoteLevelSeedLocked(levelId, rng))
+                        return true;
+                }
+
+                var now = Environment.TickCount64;
+                var remaining = deadline - now;
+                if (timeoutMs <= 0 || remaining <= 0)
+                    return false;
+
+                if (now >= nextRequestAt)
+                {
+                    try { GameMenu.NetRef?.RequestLevelSeed(levelId); } catch { }
+                    nextRequestAt = now + 1000;
+                }
+
+                lock (_levelSeedLock)
+                {
+                    if (TryConsumeRemoteLevelSeedLocked(levelId, rng))
+                        return true;
+                    Monitor.Wait(_levelSeedLock, (int)Math.Min(Math.Max(1, remaining), 250));
                 }
             }
-
-            return false;
         }
 
         public static void SendLevelSeed(string levelId, Rand rng, NetNode? net)

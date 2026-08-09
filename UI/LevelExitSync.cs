@@ -430,8 +430,8 @@ public class LevelExitSync :
     /// The host decides and publishes; the client waits for that decision. This is what makes the
     /// transition a transaction with an identity instead of two peers independently reacting to the
     /// same readiness state — which is what allowed a duplicated or replayed readiness burst to
-    /// start a second transition. The client keeps a bounded fallback so a lost commit degrades to
-    /// the old behaviour with a warning rather than stranding it at the door.
+    /// start a second transition. A connected client never falls back to an independent local
+    /// transition; it re-announces readiness and waits for the authoritative host commit.
     /// </remarks>
     private bool TryBeginCoordinatedTransition(NetNode net, Entity target, Hero hero)
     {
@@ -479,12 +479,17 @@ public class LevelExitSync :
         if (Stopwatch.GetElapsedTime(_clientAwaitingCommitSinceTicks).TotalSeconds < ClientTransitionCommitFallbackSeconds)
             return false;
 
-        _clientAwaitingCommitSinceTicks = 0;
+        // Never let a connected client independently cross a passage just because a commit packet
+        // is late. That fallback created exactly the reported "both used the passage, then ended up
+        // desynced" failure: the host and client could invoke two independent native transitions.
+        // Keep waiting, refresh our ready state, and let the host's transaction remain authoritative.
+        _clientAwaitingCommitSinceTicks = Stopwatch.GetTimestamp();
+        try { UpdateLocalPlayerState(net, forceSend: true); } catch { }
         _log.Warning(
-            "[ExitSync] No host transition commit after {Seconds:F0}s at door={DoorKey}; transitioning on the local rendezvous instead",
+            "[ExitSync] Still waiting for host transition commit after {Seconds:F0}s at door={DoorKey}; re-sent ready state and will not transition locally",
             ClientTransitionCommitFallbackSeconds,
             _localDoorKey);
-        return true;
+        return false;
     }
 
     /// <summary>Client: apply the host's authoritative transition decision.</summary>
@@ -566,6 +571,16 @@ public class LevelExitSync :
                     commit.DoorCx,
                     commit.DoorCy,
                     commit.DestinationLevelId);
+
+                // Ask immediately for the host-authored destination seed/graph. The host may still
+                // be generating it; the LevelStruct/LevelGen gates will keep retrying while loading.
+                // Doing this at commit time narrows the transition race substantially on Steam and
+                // high-latency direct-IP links.
+                if (!string.IsNullOrWhiteSpace(commit.DestinationLevelId))
+                {
+                    try { net.RequestLevelSeed(commit.DestinationLevelId); } catch { }
+                    try { net.RequestLevelGraph(commit.DestinationLevelId); } catch { }
+                }
 
                 TriggerExitTransition(target, hero, null);
             }
@@ -705,10 +720,15 @@ public class LevelExitSync :
 
         try
         {
-            // Preserve the corpse/downed anchor instead of dragging it through room collision.
-            // The transition activation applies the configured downed-player exit cost.
-            TriggerExitTransition(target, hero, null);
-            _downedExitFollowStartedTicks = 0;
+            // Downed follow still belongs to the same host-authored EXITCOMMIT transaction. The
+            // previous timer path invoked the native door directly on every peer and could send a
+            // downed client into an independently generated destination. Clients now wait; only
+            // the host can authorize and activate this transition.
+            if (TryBeginCoordinatedTransition(net, target, hero))
+            {
+                TriggerExitTransition(target, hero, null);
+                _downedExitFollowStartedTicks = 0;
+            }
         }
         catch (Exception ex)
         {

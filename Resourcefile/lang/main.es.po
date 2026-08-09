@@ -290,3 +290,50 @@ msgstr "Error de invitación de Steam"
 #: GameMenu.cs / GameMenu.Connection.cs
 msgid "Could not open the Steam invite list. Check console logs."
 msgstr "No se pudo abrir la lista de invitaciones de Steam. Revisa los registros de la consola."
+
+#: GameMenu.cs
+msgid "Steam friends hosting this mod"
+msgstr "Amigos de Steam que alojan este mod"
+
+#: GameMenu.cs
+msgid "No Steam friends are hosting right now."
+msgstr "Ningún amigo de Steam está alojando ahora mismo."
+
+#: GameMenu.cs
+msgid "This list refreshes automatically."
+msgstr "Esta lista se actualiza automáticamente."
+
+#: GameMenu.cs
+msgid "Steam friend"
+msgstr "Amigo de Steam"
+
+#: GameMenu.cs
+msgid "Join this friend's Steam lobby"
+msgstr "Unirse al lobby de Steam de este amigo"
+
+#: GameMenu.cs
+msgid "Open Steam friends"
+msgstr "Abrir amigos de Steam"
+
+#: GameMenu.cs
+msgid "Join by Steam lobby code (fallback)"
+msgstr "Unirse con código de lobby de Steam (alternativa)"
+
+msgid "Co-op: connected to host"
+msgstr "Cooperativo: conectado al anfitrión"
+
+msgid "Co-op: {0} friend(s) connected"
+msgstr "Cooperativo: {0} amigo(s) conectado(s)"
+
+msgid "Co-op progression synced: +{0} unlock(s)"
+msgstr "Progreso cooperativo sincronizado: +{0} desbloqueo(s)"
+
+
+#: Multiplayer online sync hardening
+msgid "Join"
+msgstr "Unirse"
+
+
+#: Multiplayer online sync hardening
+msgid "Level failed to synchronize with the host. Return to the menu and rejoin."
+msgstr "No se pudo sincronizar el nivel con el anfitrión. Vuelve al menú y únete de nuevo."

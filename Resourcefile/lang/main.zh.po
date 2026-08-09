@@ -474,3 +474,45 @@ msgstr "Steam 邀请失败"
 #: GameMenu.cs / GameMenu.Connection.cs
 msgid "Could not open the Steam invite list. Check console logs."
 msgstr "无法打开 Steam 邀请列表。请查看控制台日志。"
+
+#: GameMenu.cs
+msgid "Steam friends hosting this mod"
+msgstr "正在使用此模组开房的 Steam 好友"
+
+#: GameMenu.cs
+msgid "No Steam friends are hosting right now."
+msgstr "目前没有 Steam 好友正在开房。"
+
+#: GameMenu.cs
+msgid "This list refreshes automatically."
+msgstr "此列表会自动刷新。"
+
+#: GameMenu.cs
+msgid "Steam friend"
+msgstr "Steam 好友"
+
+#: GameMenu.cs
+msgid "Join this friend's Steam lobby"
+msgstr "加入此好友的 Steam 大厅"
+
+#: GameMenu.cs
+msgid "Open Steam friends"
+msgstr "打开 Steam 好友列表"
+
+#: GameMenu.cs
+msgid "Join by Steam lobby code (fallback)"
+msgstr "通过 Steam 大厅代码加入（备用）"
+
+msgid "Co-op: connected to host"
+msgstr "合作模式：已连接到主机"
+
+msgid "Co-op: {0} friend(s) connected"
+msgstr "合作模式：已连接 {0} 位好友"
+
+msgid "Co-op progression synced: +{0} unlock(s)"
+msgstr "合作进度已同步：+{0} 项解锁"
+
+
+#: Multiplayer online sync hardening
+msgid "Level failed to synchronize with the host. Return to the menu and rejoin."
+msgstr "关卡未能与主机同步。请返回菜单并重新加入。"

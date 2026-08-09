@@ -149,6 +149,12 @@ namespace DeadCellsMultiplayerMod
         public static bool kingInitialized = false;
 
         public string levelId = string.Empty;
+        // _LevelStruct.get is invoked from inside LevelGen.generateGraph. Some game builds leave
+        // RoomNode.@struct null on the returned root even though the actual LevelStruct exists and
+        // was populated by the generator. Keep the live struct reference from the nested hook so
+        // host graph capture never silently disappears on those builds.
+        private LevelStruct? _levelStructForGraphSync;
+        private string _levelStructForGraphSyncLevelId = string.Empty;
 
         public static int remotePlayerId = -1;
 
@@ -509,6 +515,7 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             s_hooksInstalled = true;
+            GameDataSync.ConfigureLogger(entry.Logger);
             entry.Logger.Information("\x1b[32m[[ModEntry] Initializing ModEntry...]\x1b[0m ");
             entry.Logger.Information("[NetMod] Source build: {SourceBuild}", BuildInfo.SourceMarker);
             entry.Logger.Information(
@@ -958,10 +965,28 @@ namespace DeadCellsMultiplayerMod
             else if (_netRole == NetRole.Client)
             {
                 GameDataSync.TryApplyRemoteSerializerSync();
-                GameDataSync.TryApplyRemoteLevelSeed(levelId, rng);
+
+                // Level RNG is host-authoritative. Applying it "if already cached" was not enough
+                // over real Steam/IP latency: a client could enter the generator a frame before the
+                // seed packet and permanently diverge even though the later run seed matched.
+                const int levelSeedSyncWaitMs = 15000;
+                if (!GameDataSync.TryWaitApplyRemoteLevelSeed(levelId, rng, levelSeedSyncWaitMs))
+                {
+                    Logger.Error(
+                        "[NetMod][LevelSync] authoritative level seed for {LevelId} was not received within {Timeout}ms",
+                        levelId,
+                        levelSeedSyncWaitMs);
+                    GameMenu.AbortClientWorldSync($"level seed timeout: {levelId}");
+                }
             }
 
             var result = orig(user, l, rng);
+
+            if (_netRole != NetRole.None && result != null)
+            {
+                _levelStructForGraphSync = result;
+                _levelStructForGraphSyncLevelId = levelId;
+            }
 
             return result;
         }
@@ -977,6 +1002,15 @@ namespace DeadCellsMultiplayerMod
 
             var root = orig(self, user, l, rng);
             var graph = root?.@struct;
+            if (graph == null &&
+                _levelStructForGraphSync != null &&
+                string.Equals(_levelStructForGraphSyncLevelId, graphLevelId, StringComparison.Ordinal))
+            {
+                graph = _levelStructForGraphSync;
+                Logger.Debug(
+                    "[NetMod][LevelSync] Using LevelStruct captured from _LevelStruct.get for graph sync level={LevelId}",
+                    graphLevelId);
+            }
 
             if (_netRole == NetRole.Host)
             {
@@ -1023,6 +1057,13 @@ namespace DeadCellsMultiplayerMod
                     catch
                     {
                     }
+
+                    // If the payload DID arrive but binding failed, ReceiveLevelGraph already
+                    // queued an in-level authoritative reload and TryApplyRemoteLevelGraph keeps
+                    // that payload cached for the retry. If no payload exists at all, there is no
+                    // safe recovery path: leave rather than knowingly continue on a different map.
+                    if (!GameDataSync.HasPendingRemoteLevelGraph(graphLevelId))
+                        GameMenu.AbortClientWorldSync($"level graph unavailable: {graphLevelId} ({reason})");
                 }
             }
 

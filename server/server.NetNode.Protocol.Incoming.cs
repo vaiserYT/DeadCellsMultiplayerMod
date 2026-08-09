@@ -81,6 +81,27 @@ public sealed partial class NetNode
         if (TryHandleMobTrafficFastPath(line, senderId))
             return true;
 
+        if (_role == NetRole.Host)
+        {
+            if (line.StartsWith("LSEEDREQ|", StringComparison.Ordinal))
+            {
+                var levelId = ClampProtocolText(line["LSEEDREQ|".Length..], MaxIdentityFieldChars);
+                if (!string.IsNullOrWhiteSpace(levelId))
+                    ResendCachedLevelSeed(levelId);
+                return true;
+            }
+
+            if (line.StartsWith("LGRAPHREQ|", StringComparison.Ordinal))
+            {
+                var levelId = ClampProtocolText(line["LGRAPHREQ|".Length..], MaxIdentityFieldChars);
+                if (!string.IsNullOrWhiteSpace(levelId))
+                    ResendCachedLevelGraph(levelId);
+                return true;
+            }
+
+            return false;
+        }
+
         if (_role != NetRole.Client)
             return false;
 
@@ -1378,7 +1399,7 @@ public sealed partial class NetNode
             return false;
         }
 
-        if (TryParsePositionLine(line, senderId, out var remoteId, out var cx, out var cy, out var dir, out var hasDir))
+        if (TryParsePositionLine(line, senderId, out var remoteId, out var cx, out var cy, out var dir, out var hasDir, out var positionLevelId, out var positionSequence))
         {
             if (forceSenderId && senderId.HasValue)
                 remoteId = senderId.Value;
@@ -1386,11 +1407,24 @@ public sealed partial class NetNode
             lock (_sync)
             {
                 var state = GetOrCreateRemoteLocked(remoteId);
+
+                // Steam movement uses the intentionally-unreliable realtime channel, which may
+                // deliver an older packet after the player has already crossed a passage. Without
+                // an ordering fence that old coordinate could win and briefly place the remote
+                // shell inside geometry from the new world. Protocol 19 position packets carry a
+                // monotonic sender sequence; ignore any packet older than the last accepted one.
+                if (positionSequence > 0 && state.LastPositionSequence > 0 && positionSequence <= state.LastPositionSequence)
+                    return true;
+                if (positionSequence > 0)
+                    state.LastPositionSequence = positionSequence;
+
                 var prevX = state.X;
                 var hadRemote = state.HasRemote;
                 state.X = cx;
                 state.Y = cy;
                 state.HasPosition = true;
+                if (!string.IsNullOrWhiteSpace(positionLevelId))
+                    state.LevelId = ClampProtocolText(positionLevelId, MaxIdentityFieldChars);
                 if (hasDir)
                 {
                     state.Dir = dir;
@@ -1406,7 +1440,7 @@ public sealed partial class NetNode
                 forwardDir = state.Dir;
             }
             if (_role == NetRole.Host && senderId.HasValue)
-                forwardLine = BuildPosLine(remoteId, cx, cy, forwardDir);
+                forwardLine = BuildPosLine(remoteId, cx, cy, forwardDir, positionLevelId, positionSequence);
         }
 
         return true;

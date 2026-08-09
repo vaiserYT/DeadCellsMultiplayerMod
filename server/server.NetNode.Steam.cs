@@ -407,6 +407,7 @@ public sealed partial class NetNode
                     var remoteSteamId = new CSteamID(packet.RemoteSteamId);
                     if (!TryGetOrRegisterSteamClient(remoteSteamId, out var connection) || connection == null)
                         continue;
+                    connection.MarkPacketReceived();
                     drained.Add((packet.Payload, connection.AssignedId, connection));
                 }
             }
@@ -426,15 +427,38 @@ public sealed partial class NetNode
             while (bridge.TryReadSessionFail(out var failedSteamId))
             {
                 hasPacket = true;
-                _log.Warning("[NetNode] P2P session failed: remote={RemoteId}", failedSteamId);
+                var failureTicks = Stopwatch.GetTimestamp();
+                _log.Warning(
+                    "[NetNode][Steam] P2P session failure callback: remote={RemoteId}; granting recovery grace before disconnect",
+                    failedSteamId);
                 if (_role == NetRole.Client && failedSteamId == _steamHostId.m_SteamID)
                 {
-                    GameMenu.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
+                    _ = Task.Run(async () =>
                     {
-                        if (IsCurrentNetworkSession())
-                            CleanupClient();
-                    });
-                    return;
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+                            if (ct.IsCancellationRequested || !IsCurrentNetworkSession())
+                                return;
+
+                            // Steam can emit a transient connect-fail callback while its P2P path
+                            // is renegotiating. If any host packet arrived after the callback, the
+                            // session recovered and must not be torn down.
+                            if (Interlocked.Read(ref _lastSteamPacketReceivedTicks) > failureTicks)
+                            {
+                                _log.Information("[NetNode][Steam] P2P session recovered during grace: remote={RemoteId}", failedSteamId);
+                                return;
+                            }
+
+                            GameMenu.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
+                            {
+                                if (IsCurrentNetworkSession())
+                                    CleanupClient();
+                            });
+                        }
+                        catch (OperationCanceledException) { }
+                    }, ct);
+                    continue;
                 }
                 if (_role == NetRole.Host)
                 {
@@ -450,11 +474,33 @@ public sealed partial class NetNode
                     if (connection != null)
                     {
                         var connToCleanup = connection;
-                        GameMenu.EnqueueMainThreadCoalesced(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"net:cleanup-host-client:{connToCleanup.AssignedId}"), () =>
+                        _ = Task.Run(async () =>
                         {
-                            if (IsCurrentNetworkSession())
-                                CleanupHostSteamClient(connToCleanup);
-                        });
+                            try
+                            {
+                                await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+                                if (ct.IsCancellationRequested || !IsCurrentNetworkSession())
+                                    return;
+
+                                if (connToCleanup.LastPacketReceivedTicks > failureTicks)
+                                {
+                                    _log.Information(
+                                        "[NetNode][Steam] Client P2P session recovered during grace: remote={RemoteId} assignedId={AssignedId}",
+                                        failedSteamId,
+                                        connToCleanup.AssignedId);
+                                    return;
+                                }
+
+                                GameMenu.EnqueueMainThreadCoalesced(
+                                    string.Create(System.Globalization.CultureInfo.InvariantCulture, $"net:cleanup-host-client:{connToCleanup.AssignedId}"),
+                                    () =>
+                                    {
+                                        if (IsCurrentNetworkSession())
+                                            CleanupHostSteamClient(connToCleanup);
+                                    });
+                            }
+                            catch (OperationCanceledException) { }
+                        }, ct);
                     }
                 }
             }
@@ -625,6 +671,7 @@ public sealed partial class NetNode
         List<string> cachedLevelGraphPayloads;
         string? cachedGeneratePayload;
         string? cachedCustomGameDataPayload;
+        string? cachedRuneProgressPayload;
         string? cachedHeroSkin;
         string? cachedHeroHeadSkin;
         string? cachedCoopId;
@@ -648,6 +695,7 @@ public sealed partial class NetNode
             cachedLevelGraphPayloads = new List<string>(_cachedHostLevelGraphsByLevelId.Values);
             cachedGeneratePayload = _cachedHostGeneratePayload;
             cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
+            cachedRuneProgressPayload = _cachedHostRuneProgressPayload;
             cachedHeroSkin = _cachedHostHeroSkin;
             cachedHeroHeadSkin = _cachedHostHeroHeadSkin;
             cachedCoopId = _cachedHostCoopId;
@@ -664,6 +712,8 @@ public sealed partial class NetNode
             await SendLineToSteamClientSafe(connection, BuildCoopStateLine(1, cachedCoopId, cachedHasContinueSave)).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedCustomGameDataPayload))
             await SendLineToSteamClientSafe(connection, $"CGDATA|{cachedCustomGameDataPayload}\n").ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(cachedRuneProgressPayload))
+            await SendLineToSteamClientSafe(connection, $"RUNEPROG|{cachedRuneProgressPayload}\n").ConfigureAwait(false);
         // See the TCP replay: GEN is a launch prerequisite and must arrive before RUNCOMMIT.
         if (!string.IsNullOrWhiteSpace(cachedGeneratePayload))
             await SendLineToSteamClientSafe(connection, $"GEN|{cachedGeneratePayload}\n").ConfigureAwait(false);
@@ -673,14 +723,17 @@ public sealed partial class NetNode
             await SendLineToSteamClientSafe(
                 connection,
                 $"SEED|{cachedRunSeedSequence.Value}|{cachedSeed.Value}|{cachedLaunchKind ?? string.Empty}\n").ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(cachedRunExecutePayload))
-            await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
+        // For late join, replay current-level authority before RUNEXEC. Steam reliable packets are
+        // ordered on this channel, so this guarantees LSEED/LGRAPH are already on the wire ahead
+        // of the auto-start trigger instead of racing a faster client into local generation.
         if (cachedLevelDescPayload != null)
             await SendLineToSteamClientSafe(connection, $"LDESC|{cachedLevelDescPayload}\n").ConfigureAwait(false);
         for (var i = 0; i < cachedLevelSeedPayloads.Count; i++)
             await SendLineToSteamClientSafe(connection, $"LSEED|{cachedLevelSeedPayloads[i]}\n").ConfigureAwait(false);
         for (var i = 0; i < cachedLevelGraphPayloads.Count; i++)
             await SendLineToSteamClientSafe(connection, $"LGRAPH|{cachedLevelGraphPayloads[i]}\n").ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(cachedRunExecutePayload))
+            await SendLineToSteamClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedHeroSkin))
             await SendLineToSteamClientSafe(connection, BuildTaggedLine("SKIN", 1, cachedHeroSkin)).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(cachedHeroHeadSkin))

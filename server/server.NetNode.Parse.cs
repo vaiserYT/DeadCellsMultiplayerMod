@@ -1135,13 +1135,24 @@ public sealed partial class NetNode
         return true;
     }
 
-    private static bool TryParsePositionLine(string line, int? senderId, out int remoteId, out double rx, out double ry, out int dir, out bool hasDir)
+    private static bool TryParsePositionLine(
+        string line,
+        int? senderId,
+        out int remoteId,
+        out double rx,
+        out double ry,
+        out int dir,
+        out bool hasDir,
+        out string? levelId,
+        out long positionSequence)
     {
         remoteId = 0;
         rx = 0;
         ry = 0;
         dir = 0;
         hasDir = false;
+        levelId = null;
+        positionSequence = 0;
 
         var parts = line.Split('|');
         if (parts.Length >= 4 &&
@@ -1155,6 +1166,10 @@ public sealed partial class NetNode
             ry = cyWithDir;
             dir = parsedDir < 0 ? -1 : parsedDir > 0 ? 1 : 0;
             hasDir = true;
+            if (parts.Length >= 5 && !string.IsNullOrWhiteSpace(parts[4]))
+                levelId = parts[4].Trim();
+            if (parts.Length >= 6)
+                long.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out positionSequence);
             return true;
         }
 

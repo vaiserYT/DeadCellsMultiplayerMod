@@ -15,6 +15,36 @@ namespace DeadCellsMultiplayerMod
 {
     internal static partial class GameMenu
     {
+        internal static void AbortClientWorldSync(string reason)
+        {
+            if (CurrentRole != NetRole.Client)
+                return;
+
+            var safeReason = string.IsNullOrWhiteSpace(reason) ? "authoritative world sync failed" : reason.Trim();
+            EnqueueCriticalMainThreadCoalesced("game:abort-world-desync", () =>
+            {
+                if (CurrentRole != NetRole.Client)
+                    return;
+
+                _log?.Error("[NetMod][LevelSync] Aborting client session instead of continuing a divergent world: {Reason}", safeReason);
+                try
+                {
+                    MultiplayerUI.PushSystemMessage(
+                        Localize("Level failed to synchronize with the host. Return to the menu and rejoin."),
+                        8.0,
+                        1.0);
+                }
+                catch
+                {
+                }
+
+                // Never keep playing after seed/graph authority has failed. Returning through the
+                // normal world-exit path is safer than throwing from a Hashlink generation hook
+                // and also guarantees the transport/save/serializer cleanup runs.
+                HandleWorldExit();
+            });
+        }
+
         private static void ForceExitToMainMenu()
         {
             try

@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Reflection;
 using dc.pr;
@@ -46,6 +46,12 @@ namespace DeadCellsMultiplayerMod
         private static ulong _steamHostSteamId;
         private static bool _steamJoinLobbyResolvePending;
         private static ulong? _pendingOverlayJoinLobbyId;
+        private static bool _steamFriendJoinPageActive;
+        private static bool _steamFriendLobbyRefreshInFlight;
+        private static long _nextSteamFriendLobbyRefreshTicks;
+        private static string _steamFriendLobbySignature = string.Empty;
+        private static List<SteamConnect.FriendLobbyInfo> _steamFriendLobbies = new();
+        private const int SteamFriendLobbyRefreshMs = 2500;
         internal const int ClientConnectMaxAttempts = 3;
         private static bool _pendingAutoStart;
         private static bool _autoStartTriggered;
@@ -172,6 +178,11 @@ namespace DeadCellsMultiplayerMod
                 _steamLobbyId = 0;
                 _steamLobbyCode = string.Empty;
                 _steamHostSteamId = 0UL;
+                _steamFriendJoinPageActive = false;
+                _steamFriendLobbyRefreshInFlight = false;
+                _nextSteamFriendLobbyRefreshTicks = 0;
+                _steamFriendLobbySignature = string.Empty;
+                _steamFriendLobbies.Clear();
                 _pendingLaunchAction = PendingLaunchAction.NewGame;
                 _pendingLaunchCustom = false;
                 _pendingLaunchStreamEnabled = false;
@@ -353,37 +364,29 @@ namespace DeadCellsMultiplayerMod
                 _log?.Information("[NetMod] Host restarting run ({Reason})", reason);
                 GameDataSync.ClearPendingBossRuneReloadState();
                 GameDataSync.SendBossRune(game.user, NetRef);
+
+                // Drop old generated-level cache before announcing the restart. Otherwise a client
+                // revisiting PrisonStart could consume the PREVIOUS run's cached LSEED/LGRAPH while
+                // the host was still generating the replacement.
+                try { NetRef?.ClearCachedGeneratedLevelStateForRestart(); } catch { }
+                GameDataSync.ResetGeneratedLevelSyncForRestart();
                 GameDataSync.BeginSameRunRestart(GameDataSync.Seed);
                 try { NetRef?.SendRunRestart(GameDataSync.Seed); } catch { }
+
                 var restartLaunch = GameDataSync.BuildSameRunRestartLaunchMode();
-                var restartIsCustom = GameDataSync.ResolveCurrentRunIsCustom();
-                var restartStreamEnabled = GameDataSync.ResolveCurrentRunStreamEnabled();
                 try
                 {
-                    RestartCurrentWorldDirect(game, GameDataSync.Seed, restartStreamEnabled, restartIsCustom, restartLaunch);
+                    // Use Dead Cells' normal loading path on the host too. Manually destroying the
+                    // Game and immediately calling User.newGame left skin/cine/runtime objects alive
+                    // during teardown and was a major source of restart/quit crashes.
+                    RestartCurrentWorldWithLoading(game, restartLaunch);
                 }
                 catch (Exception ex)
                 {
-                    _log?.Warning("[NetMod] Host direct restart failed: {Message}", ex.Message);
+                    GameDataSync.CancelSameRunRestart();
+                    _log?.Warning("[NetMod] Host loading restart failed: {Message}", ex.Message);
                 }
             });
-        }
-
-        private static void RestartCurrentWorldDirect(
-            dc.pr.Game game,
-            int seed,
-            bool streamEnabled,
-            bool customMode,
-            dc.LaunchMode launchMode)
-        {
-            var user = game.user;
-            if (user == null)
-                return;
-
-            PrepareCurrentWorldForRestartTransition(game);
-            try { game.destroy(); } catch { }
-            try { game.disposeImmediately(); } catch { }
-            user.newGame(seed, GameDataSync._isTwitch, streamEnabled, customMode, launchMode);
         }
 
         private static void RestartCurrentWorldWithLoading(dc.pr.Game game, dc.LaunchMode launchMode)
@@ -454,6 +457,7 @@ namespace DeadCellsMultiplayerMod
                 _log?.Information("[NetMod] Client restarting run from host seed {Seed} ({Reason})", seed, reason);
                 GameDataSync.ClearPendingBossRuneReloadState();
                 GameDataSync.RestoreRemoteUserData(game.user);
+                GameDataSync.ResetGeneratedLevelSyncForRestart();
                 GameDataSync.BeginSameRunRestart(seed);
                 var restartLaunch = GameDataSync.BuildSameRunRestartLaunchMode();
                 try
@@ -548,13 +552,9 @@ namespace DeadCellsMultiplayerMod
 
             // Lobby heartbeats re-send the same name ~2/sec; only react on real changes.
             _log?.Information("[NetMod] Received remote username {Username}", cleaned);
-            if (_role == NetRole.Host)
-            {
-                var userForMsg = cleaned;
-                EnqueueMainThread(() =>
-                    MultiplayerUI.PushSystemMessage(FormatLocalized("{0} connected to the server.", userForMsg)));
-            }
-
+            // Username can legitimately be re-announced by handshake replay, reconnect recovery
+            // and lobby heartbeats. Treat it as identity state only; connection notifications are
+            // emitted by the handshake lifecycle, not every time a name packet changes.
             RequestLobbyMenuRefresh();
         }
 
@@ -689,9 +689,7 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowMultiplayerMenu(TitleScreen screen)
         {
-            
-
-
+            _steamFriendJoinPageActive = false;
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
             var prevIsMain = GetIsMainMenu(screen);
@@ -732,6 +730,7 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowHostTransportMenu(TitleScreen screen)
         {
+            _steamFriendJoinPageActive = false;
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
             var prevIsMain = GetIsMainMenu(screen);
@@ -778,6 +777,7 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowSteamHostModeMenu(TitleScreen screen)
         {
+            _steamFriendJoinPageActive = false;
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
             var prevIsMain = GetIsMainMenu(screen);
@@ -824,6 +824,8 @@ namespace DeadCellsMultiplayerMod
 
         private static void ShowJoinTransportMenu(TitleScreen screen)
         {
+            _steamFriendJoinPageActive = true;
+
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
             var prevIsMain = GetIsMainMenu(screen);
@@ -835,34 +837,79 @@ namespace DeadCellsMultiplayerMod
                 AddMenuButton(
                     screen,
                     GetText.Instance.GetString("Lan join"),
-                    () => ShowConnectionMenu(screen, NetRole.Client),
+                    () =>
+                    {
+                        _steamFriendJoinPageActive = false;
+                        ShowConnectionMenu(screen, NetRole.Client);
+                    },
                     GetText.Instance.GetString("Connect by IP/port"));
 
-                AddMenuButton(
-                    screen,
-                    GetText.Instance.GetString("Join by Steam lobby code"),
-                    () => StartSteamJoin(screen),
-                    GetText.Instance.GetString("Connect by Steam lobby id/code from clipboard"));
+                AddInfoLine(screen, Localize("Steam friends hosting this mod"), infoColor: 0xA8D8FF);
+
+                if (_steamFriendLobbies.Count == 0)
+                {
+                    AddInfoLine(screen, Localize("No Steam friends are hosting right now."), infoColor: 0xC8C8C8);
+                    AddInfoLine(screen, Localize("This list refreshes automatically."), infoColor: 0x9098A8);
+                }
+                else
+                {
+                    foreach (var friendLobby in _steamFriendLobbies)
+                    {
+                        var capturedLobbyId = friendLobby.LobbyId;
+                        var capturedHostSteamId = friendLobby.HostSteamId;
+                        var displayName = string.IsNullOrWhiteSpace(friendLobby.PersonaName)
+                            ? Localize("Steam friend")
+                            : friendLobby.PersonaName.Trim();
+
+                        AddMenuButton(
+                            screen,
+                            $"{displayName} - {Localize("Join")}",
+                            () =>
+                            {
+                                _steamFriendJoinPageActive = false;
+                                HandleSteamFriendLobbyJoinRequest(capturedLobbyId, capturedHostSteamId);
+                            },
+                            Localize("Join this friend's Steam lobby"));
+                    }
+                }
 
                 AddMenuButton(
                     screen,
-                    GetText.Instance.GetString("Join Steam friend"),
+                    Localize("Open Steam friends"),
                     () => OpenSteamFriendsJoinOverlay(screen),
-                    GetText.Instance.GetString("Open Steam friends and choose Join Game"));
+                    Localize("Open Steam friends and choose Join Game"));
+
+                // Keep the code route as a compatibility fallback, but it is no longer the primary
+                // Steam flow. Friends hosting the mod appear above automatically.
+                AddMenuButton(
+                    screen,
+                    Localize("Join by Steam lobby code (fallback)"),
+                    () =>
+                    {
+                        _steamFriendJoinPageActive = false;
+                        StartSteamJoin(screen);
+                    },
+                    Localize("Connect by Steam lobby id/code from clipboard"));
 
                 AddMenuButton(
                     screen,
                     GetText.Instance.GetString("Back"),
-                    () => ShowMultiplayerMenu(screen),
+                    () =>
+                    {
+                        _steamFriendJoinPageActive = false;
+                        ShowMultiplayerMenu(screen);
+                    },
                     GetText.Instance.GetString("Back to multiplayer menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
                 RemoveDuplicatesKeepFirst(
                     screen,
                     GetText.Instance.GetString("Lan join"),
-                    GetText.Instance.GetString("Join by Steam lobby code"),
-                    GetText.Instance.GetString("Join Steam friend"),
+                    Localize("Open Steam friends"),
+                    Localize("Join by Steam lobby code (fallback)"),
                     GetText.Instance.GetString("Back"));
+
+                RequestSteamFriendLobbyRefresh(force: _steamFriendLobbies.Count == 0);
             }
             catch (Exception ex)
             {
@@ -873,6 +920,110 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, prevIsMain);
                 _suppressAutoButton = prevSuppress;
             }
+        }
+
+        private static void RequestSteamFriendLobbyRefresh(bool force)
+        {
+            if (!_steamFriendJoinPageActive || _steamFriendLobbyRefreshInFlight)
+                return;
+
+            var now = Environment.TickCount64;
+            if (!force && now < _nextSteamFriendLobbyRefreshTicks)
+                return;
+
+            _steamFriendLobbyRefreshInFlight = true;
+            _nextSteamFriendLobbyRefreshTicks = now + SteamFriendLobbyRefreshMs;
+            try
+            {
+                // Keep Steam Friends discovery on the normal game/main-thread pump. The previous
+                // background Task could outlive the title screen or process shutdown and call the
+                // native Steam API while Hashlink/.NET teardown was already in progress. Friend
+                // enumeration is tiny and runs only every 2.5 seconds while this page is visible.
+                var lobbies = SteamConnect.GetJoinableFriendLobbies();
+                if (!_steamFriendJoinPageActive)
+                    return;
+
+                var signature = string.Join(
+                    ";",
+                    lobbies.Select(x => $"{x.FriendSteamId}:{x.LobbyId}:{x.HostSteamId}:{x.PersonaName}"));
+
+                var changed = !string.Equals(signature, _steamFriendLobbySignature, StringComparison.Ordinal);
+                _steamFriendLobbySignature = signature;
+                _steamFriendLobbies = lobbies;
+
+                if (!changed)
+                    return;
+
+                var current = GetTitleScreen();
+                if (current != null)
+                    ShowJoinTransportMenu(current);
+            }
+            catch (Exception ex)
+            {
+                _log?.Debug("[NetMod][Steam] Friend lobby refresh failed: {Message}", ex.Message);
+            }
+            finally
+            {
+                _steamFriendLobbyRefreshInFlight = false;
+            }
+        }
+
+        internal static void TickSteamFriendLobbyRefresh()
+        {
+            if (!_steamFriendJoinPageActive)
+                return;
+
+            RequestSteamFriendLobbyRefresh(force: false);
+        }
+
+        /// <summary>
+        /// One-click path for a lobby discovered from the Steam friends list. FriendGameInfo already
+        /// gives us the lobby and, in the normal case, its owner, so do not make the player copy a
+        /// code or spin up the legacy resolver worker. The transport handshake still validates
+        /// protocol/build compatibility before gameplay state is accepted.
+        /// </summary>
+        private static void HandleSteamFriendLobbyJoinRequest(ulong lobbyId, ulong hostSteamId)
+        {
+            var screen = GetTitleScreen();
+            if (screen == null || lobbyId == 0UL)
+                return;
+
+            if (hostSteamId == 0UL)
+            {
+                // Steam had the friend/lobby relationship but not the owner yet. Fall back to the
+                // existing resolver; the auto-refresh page remains available if the lobby vanished.
+                HandleSteamOverlayJoinRequest(lobbyId);
+                return;
+            }
+
+            _log?.Information(
+                "[NetMod][Steam] One-click friend join lobbyId={LobbyId} hostSteamId={HostSteamId}",
+                lobbyId,
+                hostSteamId);
+
+            _menuSelection = NetRole.Client;
+            _menuTransport = ConnectionTransport.Steam;
+            _steamLobbyId = lobbyId;
+            _steamLobbyCode = string.Empty;
+            _steamHostSteamId = hostSteamId;
+            ApplySteamPersonaUsername();
+
+            // Enter the actual Steam lobby as well as opening the P2P session. We already know the
+            // host from the friends list, so this is non-blocking/best-effort and the network
+            // handshake remains the source of truth if Steam's lobby callback is delayed.
+            SteamConnect.JoinLobbyBestEffort(lobbyId);
+
+            PrepareSteamJoinConnectionUiOnly(screen);
+            var join = new SteamConnect.JoinLobbyResult
+            {
+                Success = true,
+                LobbyId = lobbyId,
+                HostSteamId = hostSteamId,
+                PersonaName = string.Empty,
+                Endpoint = null,
+                Error = string.Empty
+            };
+            ApplySteamJoinResult(screen, true, join, fromOverlay: true);
         }
 
         private static void ShowConnectionMenu(TitleScreen screen, NetRole role)
@@ -1244,6 +1395,12 @@ namespace DeadCellsMultiplayerMod
                         ModEntry.Instance.StartSteamHostFromMenu(_mpPort, _steamLobbyVisibility);
                     else
                         ModEntry.Instance.StartHostFromMenu(_mpIp, _mpPort);
+
+                    // Prime host-save mobility/rune progression while still on the main thread.
+                    // NetNode caches it even with no completed peer, so a different/clean client
+                    // save receives this before its launch and first LevelGen.
+                    DeadCellsMultiplayerMod.AdvancedCoop.CoopAdvancedHardening.PrimeHostProgressSnapshot(NetRef);
+
                     SetAuthoritativePendingNewGameLaunch(custom: false, streamEnabled);
                     RememberPendingLaunch(PendingLaunchAction.NewGame, custom: false, streamEnabled, sendToRemote: true);
                     TryLaunchNewGame(screen, custom: false, streamEnabled);
@@ -1303,6 +1460,8 @@ namespace DeadCellsMultiplayerMod
                     var hostIp = bindAnyAddress ? "0.0.0.0" : _mpIp;
                     ModEntry.Instance.StartHostFromMenu(hostIp, _mpPort);
                 }
+
+                DeadCellsMultiplayerMod.AdvancedCoop.CoopAdvancedHardening.PrimeHostProgressSnapshot(NetRef);
 
             }
             catch (Exception ex)

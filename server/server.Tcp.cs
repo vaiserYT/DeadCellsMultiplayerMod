@@ -173,6 +173,7 @@ public sealed partial class NetNode
                     List<string> cachedLevelGraphPayloads;
                     string? cachedGeneratePayload;
                     string? cachedCustomGameDataPayload;
+                    string? cachedRuneProgressPayload;
                     string? cachedCoopId;
                     bool cachedHasContinueSave;
                     double? cachedMobsHpMult;
@@ -196,6 +197,7 @@ public sealed partial class NetNode
                         cachedLevelGraphPayloads = new List<string>(_cachedHostLevelGraphsByLevelId.Values);
                         cachedGeneratePayload = _cachedHostGeneratePayload;
                         cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
+                        cachedRuneProgressPayload = _cachedHostRuneProgressPayload;
                         cachedCoopId = _cachedHostCoopId;
                         cachedHasContinueSave = _cachedHostHasContinueSave;
                         cachedMobsHpMult = _cachedHostMobsHpMult;
@@ -214,6 +216,9 @@ public sealed partial class NetNode
                     if (!string.IsNullOrWhiteSpace(cachedCustomGameDataPayload))
                         await SendLineToClientSafe(connection, $"CGDATA|{cachedCustomGameDataPayload}\n").ConfigureAwait(false);
 
+                    if (!string.IsNullOrWhiteSpace(cachedRuneProgressPayload))
+                        await SendLineToClientSafe(connection, $"RUNEPROG|{cachedRuneProgressPayload}\n").ConfigureAwait(false);
+
                     // GEN carries the pending launch action the client's auto-start gate waits on.
                     // It must precede RUNCOMMIT so the client already knows which launch kind the
                     // committed run belongs to when the commit lands.
@@ -228,9 +233,11 @@ public sealed partial class NetNode
                             connection,
                             $"SEED|{cachedRunSeedSequence.Value}|{cachedSeed.Value}|{cachedLaunchKind ?? string.Empty}\n").ConfigureAwait(false);
 
-                    if (!string.IsNullOrWhiteSpace(cachedRunExecutePayload))
-                        await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
-
+                    // A late joiner must receive the authoritative current level before RUNEXEC
+                    // can auto-start it. Keeping execute ahead of LSEED/LGRAPH recreated the old
+                    // race where a fast client entered LevelGen while the large graph packet was
+                    // still behind the execute packet on a real network. Client launch state is
+                    // order-independent, so prerequisites can safely be replayed first.
                     if (cachedLevelDescPayload != null)
                         await SendLineToClientSafe(connection, $"LDESC|{cachedLevelDescPayload}\n").ConfigureAwait(false);
 
@@ -239,6 +246,9 @@ public sealed partial class NetNode
 
                     for (var i = 0; i < cachedLevelGraphPayloads.Count; i++)
                         await SendLineToClientSafe(connection, $"LGRAPH|{cachedLevelGraphPayloads[i]}\n").ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(cachedRunExecutePayload))
+                        await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
 
                     if (cachedMobsHpMult.HasValue && cachedBossesHpMult.HasValue)
                         await SendLineToClientSafe(connection, $"HPMULT|{cachedMobsHpMult.Value.ToString(CultureInfo.InvariantCulture)}|{cachedBossesHpMult.Value.ToString(CultureInfo.InvariantCulture)}\n").ConfigureAwait(false);

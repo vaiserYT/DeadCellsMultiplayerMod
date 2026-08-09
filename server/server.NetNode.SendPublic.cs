@@ -4,11 +4,12 @@ using DeadCellsMultiplayerMod.PortableCore;
 
 public sealed partial class NetNode
 {
-    public void TickSend(double cx, double cy, int dir)
+    public void TickSend(double cx, double cy, int dir, string? levelId = null)
     {
         if (!HasAnyConnection()) return;
         if (ID <= 0) return;
-        var line = BuildPosLine(ID, cx, cy, dir);
+        var positionSequence = Interlocked.Increment(ref _nextPositionSequence);
+        var line = BuildPosLine(ID, cx, cy, dir, levelId, positionSequence);
         _ = SendLineSafe(line);
     }
 
@@ -380,8 +381,17 @@ public sealed partial class NetNode
     {
         var safeSeed = seed.ToString(CultureInfo.InvariantCulture);
         var safeId = (levelId ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
-        var payload = $"{safeId}|{safeSeed}";
-        if (_role == NetRole.Host && !string.IsNullOrWhiteSpace(safeId))
+        if (string.IsNullOrWhiteSpace(safeId))
+            return;
+
+        // Same level ids are revisited on restart and nested/sublevel flows. A monotonic sequence
+        // prevents a delayed previous LSEED from being consumed by the new generation.
+        var sequence = _role == NetRole.Host ? Interlocked.Increment(ref _nextHostLevelSeedSequence) : 0L;
+        var payload = sequence > 0
+            ? $"{safeId}|{sequence.ToString(CultureInfo.InvariantCulture)}|{safeSeed}"
+            : $"{safeId}|{safeSeed}";
+
+        if (_role == NetRole.Host)
         {
             lock (_hostCacheSync)
             {
@@ -390,17 +400,82 @@ public sealed partial class NetNode
             }
         }
 
-        if (string.IsNullOrWhiteSpace(safeId))
-            return;
-
         if (!HasAnyConnection())
         {
-            _log.Information("[NetNode] Skip sending level seed: no connected client");
+            _log.Information("[NetNode] Cached level seed seq={Sequence} for {LevelId}: no connected client", sequence, safeId);
             return;
         }
 
         SendRaw($"LSEED|{payload}");
-        _log.Information("[NetNode] Sent level seed for {LevelId}", safeId);
+        _log.Information("[NetNode] Sent level seed seq={Sequence} for {LevelId}", sequence, safeId);
+    }
+
+    public void RequestLevelSeed(string levelId)
+    {
+        if (_role != NetRole.Client || !HasAnyConnection() || string.IsNullOrWhiteSpace(levelId))
+            return;
+
+        var safeId = levelId.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (string.IsNullOrWhiteSpace(safeId))
+            return;
+
+        SendRaw("LSEEDREQ|" + safeId);
+    }
+
+    public void RequestLevelGraph(string levelId)
+    {
+        if (_role != NetRole.Client || !HasAnyConnection() || string.IsNullOrWhiteSpace(levelId))
+            return;
+
+        var safeId = levelId.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (string.IsNullOrWhiteSpace(safeId))
+            return;
+
+        SendRaw("LGRAPHREQ|" + safeId);
+    }
+
+    private void ResendCachedLevelSeed(string levelId)
+    {
+        if (_role != NetRole.Host || string.IsNullOrWhiteSpace(levelId))
+            return;
+
+        string? payload = null;
+        lock (_hostCacheSync)
+            _cachedHostLevelSeedsByLevelId.TryGetValue(levelId, out payload);
+
+        if (!string.IsNullOrWhiteSpace(payload))
+        {
+            SendRaw("LSEED|" + payload);
+            _log.Debug("[NetNode][LevelSync] Re-sent cached level seed for {LevelId}", levelId);
+        }
+    }
+
+    private void ResendCachedLevelGraph(string levelId)
+    {
+        if (_role != NetRole.Host || string.IsNullOrWhiteSpace(levelId))
+            return;
+
+        string? payload = null;
+        lock (_hostCacheSync)
+            _cachedHostLevelGraphsByLevelId.TryGetValue(levelId, out payload);
+
+        if (!string.IsNullOrWhiteSpace(payload))
+        {
+            SendRaw("LGRAPH|" + payload);
+            _log.Debug("[NetNode][LevelSync] Re-sent cached level graph for {LevelId}", levelId);
+        }
+    }
+
+    internal void ClearCachedGeneratedLevelStateForRestart()
+    {
+        if (_role != NetRole.Host)
+            return;
+
+        lock (_hostCacheSync)
+        {
+            _cachedHostLevelSeedsByLevelId.Clear();
+            _cachedHostLevelGraphsByLevelId.Clear();
+        }
     }
 
     public void SendLevelGraph(string levelId, string json)
@@ -1132,12 +1207,21 @@ public sealed partial class NetNode
 
     public void SendRuneProgress(string csvPermanentIds)
     {
-        if (!HasAnyConnection())
-            return;
         if (string.IsNullOrWhiteSpace(csvPermanentIds))
             return;
 
         var safe = csvPermanentIds.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (_role == NetRole.Host)
+        {
+            lock (_hostCacheSync)
+                _cachedHostRuneProgressPayload = safe;
+        }
+
+        // Cache even before a friend finishes connecting. Initial-state replay then puts the
+        // host save's mobility/rune progression in front of GEN/RUNCOMMIT on every transport.
+        if (!HasAnyConnection())
+            return;
+
         SendRaw($"RUNEPROG|{safe}");
     }
 

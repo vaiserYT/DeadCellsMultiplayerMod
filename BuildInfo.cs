@@ -7,8 +7,8 @@ namespace DeadCellsMultiplayerMod;
 internal static class BuildInfo
 {
     public const string Version = "0.8.91";
-    public const string SourceMarker = "v0.8.91-runtime-registry+attack-retarget";
-    // Protocol 18: launch convergence and level-boundary identity.
+    public const string SourceMarker = "v0.8.91-online-worldsync-p19";
+    // Protocol 19: launch convergence, level-boundary identity, sequenced level seeds and ordered player positions.
     //   * The host re-publishes the full launch prerequisite set (GEN/CGDATA/RUNCOMMIT/SEED/
     //     RUNEXEC) until the client confirms, and GEN is host-cached and replayed to late joiners.
     //     A protocol 17 peer never sends or expects that repetition.
@@ -21,6 +21,11 @@ internal static class BuildInfo
     //   * SPAWNANCHOR: host-approved safe spawn for mid-run joiners.
     //   * Boss snapshots may carry Conjunctivius vulnerability/arena-platform fields; a peer
     //     without them computes vulnerability locally and can disagree with the host.
+    //   * LSEED now carries a monotonic generation sequence (level|seq|seed), preventing a delayed
+    //     seed from a previous visit/restart from being consumed by a new generation of the same
+    //     level id. Protocol 18 interpreted the second field as the seed itself.
+    //   * Position snapshots carry the sender level id plus a monotonic sequence, so a delayed
+    //     unreliable Steam packet from the previous passage cannot overwrite new-world coordinates.
     // These change how peers interpret the same exchange, so cross-version pairing is rejected.
-    public const int NetworkProtocolVersion = 18;
+    public const int NetworkProtocolVersion = 19;
 }

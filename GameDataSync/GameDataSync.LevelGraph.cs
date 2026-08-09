@@ -15,7 +15,12 @@ namespace DeadCellsMultiplayerMod
         private static readonly object _levelGraphLock = new();
         private static readonly Dictionary<string, LevelGraphSync> _remoteLevelGraphs = new(StringComparer.Ordinal);
         private static long _nextLevelGraphSequence;
-        private static long _lastReceivedLevelGraphSequence;
+        // Graph ordering is per level, not global. A challenge room/sublevel can legitimately
+        // arrive after the next biome's graph (or vice versa) during late-join replay. A single
+        // global "last sequence" incorrectly discarded valid graphs for other level ids and left
+        // the client generating its own world.
+        private static readonly Dictionary<string, long> _lastReceivedLevelGraphSequenceByLevelId = new(StringComparer.Ordinal);
+        private static readonly Dictionary<string, long> _lastAppliedLevelGraphSequenceByLevelId = new(StringComparer.Ordinal);
         private const int MaxRemoteLevelGraphPayloadChars = 1_000_000;
         private const int MaxRemoteLevelGraphNodes = 4096;
         private const int MaxCachedRemoteLevelGraphs = 8;
@@ -112,18 +117,33 @@ namespace DeadCellsMultiplayerMod
                 graph.ReceivedAtTick = Environment.TickCount64;
                 lock (_levelGraphLock)
                 {
-                    if (graph.Seq > 0 && graph.Seq <= _lastReceivedLevelGraphSequence)
+                    if (graph.Seq > 0)
                     {
-                        _log?.Debug(
-                            "[NetMod] Ignored stale level graph seq={Seq} last={Last} level={LevelId}",
-                            graph.Seq,
-                            _lastReceivedLevelGraphSequence,
-                            graph.LevelId);
-                        return;
+                        if (_lastAppliedLevelGraphSequenceByLevelId.TryGetValue(graph.LevelId, out var appliedSeq) &&
+                            graph.Seq <= appliedSeq)
+                        {
+                            _log?.Debug(
+                                "[NetMod] Ignored already-applied level graph seq={Seq} applied={Applied} level={LevelId}",
+                                graph.Seq,
+                                appliedSeq,
+                                graph.LevelId);
+                            return;
+                        }
+
+                        if (_lastReceivedLevelGraphSequenceByLevelId.TryGetValue(graph.LevelId, out var lastSeq) &&
+                            graph.Seq <= lastSeq)
+                        {
+                            _log?.Debug(
+                                "[NetMod] Ignored stale level graph seq={Seq} last={Last} level={LevelId}",
+                                graph.Seq,
+                                lastSeq,
+                                graph.LevelId);
+                            return;
+                        }
+
+                        _lastReceivedLevelGraphSequenceByLevelId[graph.LevelId] = graph.Seq;
                     }
 
-                    if (graph.Seq > 0)
-                        _lastReceivedLevelGraphSequence = graph.Seq;
                     _remoteLevelGraphs[graph.LevelId] = graph;
                     TrimRemoteLevelGraphCacheLocked();
                     Monitor.PulseAll(_levelGraphLock);
@@ -304,9 +324,22 @@ namespace DeadCellsMultiplayerMod
                 }
             }
 
-            ConsumeRemoteLevelGraph(levelId);
+            if (applied && remoteGraph.Seq > 0)
+            {
+                lock (_levelGraphLock)
+                {
+                    _lastAppliedLevelGraphSequenceByLevelId[levelId] = remoteGraph.Seq;
+                }
+            }
+
+            // Only consume a graph after it was successfully bound. If application failed
+            // because the local LevelStruct was still being replaced, keep the authoritative
+            // payload cached: the already-scheduled in-level reload can retry it and a repeated
+            // host cache response with the same sequence does not have to be accepted again.
             if (!applied)
                 return false;
+
+            ConsumeRemoteLevelGraph(levelId);
 
             // FTL / HL cast correlation: pair with host "Sent level graph" and client combat/restart logs.
             // Repro surface: client PrisonStart (or any level) with remote graph, host_restart, then dive/combat.
@@ -346,25 +379,43 @@ namespace DeadCellsMultiplayerMod
                 return false;
 
             var deadline = Environment.TickCount64 + Math.Max(0, timeoutMs);
-            lock (_levelGraphLock)
+            var nextRequestAt = 0L;
+
+            while (true)
             {
-                while (true)
+                var now = Environment.TickCount64;
+                lock (_levelGraphLock)
                 {
-                    var now = Environment.TickCount64;
+                    if (_remoteLevelGraphs.TryGetValue(levelId, out var found))
+                    {
+                        graph = found;
+                        return true;
+                    }
+                }
+
+                var remaining = deadline - now;
+                if (timeoutMs <= 0 || remaining <= 0)
+                    return false;
+
+                // Reliable delivery can still be interrupted by a reconnect, a transition race or
+                // a host send that happened just before this client finished switching levels.
+                // Request the cached authoritative graph periodically instead of ever silently
+                // committing a locally generated layout.
+                if (now >= nextRequestAt)
+                {
+                    try { GameMenu.NetRef?.RequestLevelGraph(levelId); } catch { }
+                    nextRequestAt = now + 1000;
+                }
+
+                lock (_levelGraphLock)
+                {
                     if (_remoteLevelGraphs.TryGetValue(levelId, out var found))
                     {
                         graph = found;
                         return true;
                     }
 
-                    var remaining = deadline - now;
-                    if (timeoutMs <= 0 || remaining <= 0)
-                        return false;
-
-                    // LGRAPH is parsed by the network fast path, so waiting on the graph lock is
-                    // enough. Processing arbitrary main-thread actions from inside LevelGen caused
-                    // re-entrant level/dispose/ghost work while the graph was only half built.
-                    Monitor.Wait(_levelGraphLock, (int)Math.Min(remaining, 250));
+                    Monitor.Wait(_levelGraphLock, (int)Math.Min(Math.Max(1, remaining), 250));
                 }
             }
         }
@@ -380,17 +431,41 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        internal static void ResetTransientNetworkState()
+        internal static void ResetGeneratedLevelSyncForRestart()
         {
+            // A same-run restart revisits the same level ids. Never let the client's old cached
+            // seed/graph satisfy the new generation before the host has produced the replacement.
             lock (_levelSeedLock)
             {
                 _remoteLevelSeedsByLevelId.Clear();
+                Monitor.PulseAll(_levelSeedLock);
             }
 
             lock (_levelGraphLock)
             {
                 _remoteLevelGraphs.Clear();
-                _lastReceivedLevelGraphSequence = 0;
+                Monitor.PulseAll(_levelGraphLock);
+            }
+
+            ResetLevelReloadState();
+            ClearPendingBossRuneReloadState();
+        }
+
+        internal static void ResetTransientNetworkState()
+        {
+            lock (_levelSeedLock)
+            {
+                _remoteLevelSeedsByLevelId.Clear();
+                _lastReceivedLevelSeedSequenceByLevelId.Clear();
+                _lastAppliedLevelSeedSequenceByLevelId.Clear();
+                Monitor.PulseAll(_levelSeedLock);
+            }
+
+            lock (_levelGraphLock)
+            {
+                _remoteLevelGraphs.Clear();
+                _lastReceivedLevelGraphSequenceByLevelId.Clear();
+                _lastAppliedLevelGraphSequenceByLevelId.Clear();
                 Monitor.PulseAll(_levelGraphLock);
             }
             Interlocked.Exchange(ref _nextLevelGraphSequence, 0);

@@ -110,6 +110,117 @@ namespace DeadCellsMultiplayerMod
             public string Error { get; init; } = string.Empty;
         }
 
+        internal sealed class FriendLobbyInfo
+        {
+            public ulong FriendSteamId { get; init; }
+            public ulong LobbyId { get; init; }
+            public ulong HostSteamId { get; init; }
+            public string PersonaName { get; init; } = string.Empty;
+        }
+
+        private static ulong TryParseRichPresenceLobbyId(string? connect)
+        {
+            if (string.IsNullOrWhiteSpace(connect))
+                return 0UL;
+
+            var parts = connect.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i + 1 < parts.Length; i++)
+            {
+                if (string.Equals(parts[i], "+connect_lobby", StringComparison.OrdinalIgnoreCase) &&
+                    ulong.TryParse(parts[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var lobbyId) &&
+                    lobbyId != 0UL)
+                {
+                    return lobbyId;
+                }
+            }
+
+            return ulong.TryParse(connect.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var direct)
+                ? direct
+                : 0UL;
+        }
+
+        internal static List<FriendLobbyInfo> GetJoinableFriendLobbies()
+        {
+            var result = new List<FriendLobbyInfo>();
+            try
+            {
+                if (!ModEntry.EnsureSteamApiForNetworking("Steam friend lobby discovery"))
+                    return result;
+
+                ModEntry.RunSteamNetworkingSerialized(() =>
+                {
+                    var flags = EFriendFlags.k_EFriendFlagImmediate;
+                    var count = SteamFriends.GetFriendCount(flags);
+                    var seen = new HashSet<ulong>();
+
+                    for (var i = 0; i < count; i++)
+                    {
+                        var friend = SteamFriends.GetFriendByIndex(i, flags);
+                        if (friend.m_SteamID == 0UL)
+                            continue;
+                        if (!SteamFriends.GetFriendGamePlayed(friend, out var info))
+                            continue;
+
+                        try
+                        {
+                            if (info.m_gameID.AppID().m_AppId != DeadCellsAppId)
+                                continue;
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+
+                        // The host publishes +connect_lobby through Steam Rich Presence. Prefer
+                        // that explicit multiplayer marker when available; it also covers Steam
+                        // clients where FriendGameInfo has not populated m_steamIDLobby yet.
+                        var lobbyId = 0UL;
+                        try
+                        {
+                            lobbyId = TryParseRichPresenceLobbyId(
+                                SteamFriends.GetFriendRichPresence(friend, "connect"));
+                        }
+                        catch
+                        {
+                        }
+                        if (lobbyId == 0UL)
+                            lobbyId = info.m_steamIDLobby.m_SteamID;
+                        if (lobbyId == 0UL || !seen.Add(lobbyId))
+                            continue;
+
+                        // The friend may be another CLIENT in the host's lobby. Never assume the
+                        // friend is the authoritative host: if Steam has not cached the lobby owner
+                        // yet, leave HostSteamId empty and let the existing no-code lobby resolver
+                        // join/resolve the lobby before opening gameplay P2P.
+                        ulong hostSteamId = 0UL;
+                        try
+                        {
+                            hostSteamId = SteamMatchmaking.GetLobbyOwner(new CSteamID(lobbyId)).m_SteamID;
+                        }
+                        catch
+                        {
+                        }
+
+                        var name = SteamFriends.GetFriendPersonaName(friend) ?? string.Empty;
+                        result.Add(new FriendLobbyInfo
+                        {
+                            FriendSteamId = friend.m_SteamID,
+                            LobbyId = lobbyId,
+                            HostSteamId = hostSteamId,
+                            PersonaName = name
+                        });
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                ModEntry.Instance?.Logger?.Debug("[NetMod][Steam] Friend lobby discovery failed: {Message}", ex.Message);
+            }
+
+            result.Sort((a, b) => string.Compare(a.PersonaName, b.PersonaName, StringComparison.OrdinalIgnoreCase));
+            return result;
+        }
+
         private sealed class WorkerRequest
         {
             public string Mode { get; set; } = string.Empty;
@@ -352,6 +463,32 @@ namespace DeadCellsMultiplayerMod
                 catch
                 {
                 }
+            }
+        }
+
+        internal static void JoinLobbyBestEffort(ulong lobbyId)
+        {
+            if (lobbyId == 0UL)
+                return;
+
+            try
+            {
+                if (!ModEntry.EnsureSteamApiForNetworking("Steam friend lobby join"))
+                    return;
+
+                // FriendGameInfo already gave the caller the authoritative host id, so gameplay
+                // P2P does not have to wait for LobbyEnter_t. Still join the real Steam lobby in
+                // process so Steam membership/friend presence/invite UX behaves like a normal
+                // Steam Join Game action instead of a hidden direct-P2P connection.
+                ModEntry.RunSteamNetworkingSerialized(() =>
+                    SteamMatchmaking.JoinLobby(new CSteamID(lobbyId)));
+            }
+            catch (Exception ex)
+            {
+                ModEntry.Instance?.Logger?.Debug(
+                    "[NetMod][Steam] Best-effort in-process lobby join failed lobbyId={LobbyId}: {Message}",
+                    lobbyId,
+                    ex.Message);
             }
         }
 
@@ -893,7 +1030,7 @@ namespace DeadCellsMultiplayerMod
             var visibility = ParseLobbyVisibility(request.LobbyVisibility);
             var lobbyType = ToSteamLobbyType(visibility);
 
-            var createCall = SteamMatchmaking.CreateLobby(lobbyType, 2);
+            var createCall = SteamMatchmaking.CreateLobby(lobbyType, NetNode.MaxClientSlots + 1);
             if (!TryWaitForCallResult(
                     createCall,
                     out LobbyCreated_t created,
@@ -972,7 +1109,7 @@ namespace DeadCellsMultiplayerMod
             var ip = string.IsNullOrWhiteSpace(hostIp) ? "127.0.0.1" : hostIp.Trim();
             var lobbyType = ToSteamLobbyType(visibility);
 
-            var createCall = SteamMatchmaking.CreateLobby(lobbyType, 2);
+            var createCall = SteamMatchmaking.CreateLobby(lobbyType, NetNode.MaxClientSlots + 1);
             if (!TryWaitForCallResult(
                     createCall,
                     out LobbyCreated_t created,

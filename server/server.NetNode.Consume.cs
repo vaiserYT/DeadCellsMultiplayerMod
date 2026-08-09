@@ -186,6 +186,12 @@ public sealed partial class NetNode
         {
             foreach (var state in _remotes.Values)
             {
+                // The cached coordinates belong to the world being left. Keeping HasPosition=true
+                // let the ghost bootstrap immediately recreate a remote player at an old-world
+                // coordinate before the first fresh position packet arrived (especially visible
+                // after restart/Continue as a teammate inside a wall). Hide the remote until a new
+                // packet re-establishes both position and level identity.
+                state.HasPosition = false;
                 state.LevelId = null;
                 state.RoomLevelId = null;
                 state.RoomId = null;

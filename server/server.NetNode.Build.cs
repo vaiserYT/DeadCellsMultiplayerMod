@@ -159,10 +159,15 @@ public sealed partial class NetNode
             $"PREVIVE|{request.ReviverId}|{request.TargetId}\n");
     }
 
-    private static string BuildPosLine(int id, double cx, double cy, int dir)
+    private static string BuildPosLine(int id, double cx, double cy, int dir, string? levelId = null, long positionSequence = 0)
     {
+        var safeLevelId = (levelId ?? string.Empty)
+            .Replace("|", "/", StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
+
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"{id}|{cx}|{cy}|{dir}\n");
+            $"{id}|{cx}|{cy}|{dir}|{safeLevelId}|{positionSequence}\n");
     }
 }
