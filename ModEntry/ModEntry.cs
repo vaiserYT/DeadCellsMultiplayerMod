@@ -988,7 +988,7 @@ namespace DeadCellsMultiplayerMod
                 _levelStructForGraphSyncLevelId = levelId;
             }
 
-            return result;
+            return result!;
         }
 
         private RoomNode Hook_LevelGen_generateGraph(Hook_LevelGen.orig_generateGraph orig,

@@ -765,7 +765,7 @@ namespace DeadCellsMultiplayerMod
             if (rng == null || string.IsNullOrWhiteSpace(levelId))
                 return false;
 
-            var deadline = Environment.TickCount64 + Math.Max(0, timeoutMs);
+            var deadline = Environment.TickCount64 + System.Math.Max(0, timeoutMs);
             var nextRequestAt = 0L;
 
             while (true)
@@ -791,7 +791,7 @@ namespace DeadCellsMultiplayerMod
                 {
                     if (TryConsumeRemoteLevelSeedLocked(levelId, rng))
                         return true;
-                    Monitor.Wait(_levelSeedLock, (int)Math.Min(Math.Max(1, remaining), 250));
+                    Monitor.Wait(_levelSeedLock, (int)System.Math.Min(System.Math.Max(1, remaining), 250));
                 }
             }
         }

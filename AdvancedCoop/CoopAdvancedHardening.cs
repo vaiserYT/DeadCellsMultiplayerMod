@@ -191,7 +191,7 @@ public sealed class CoopAdvancedHardening :
                 // HasRemote can briefly flap while changing levels or while Steam renegotiates its
                 // P2P route. Treat the notification as session state, not a heartbeat, so chat is
                 // never flooded with repeated "connected" messages during an otherwise healthy run.
-                if (!_connectedHudMessageShown || (net.IsHost && remoteCount > Math.Max(0, previousRemoteCount)))
+                if (!_connectedHudMessageShown || (net.IsHost && remoteCount > System.Math.Max(0, previousRemoteCount)))
                 {
                     var status = net.IsHost
                         ? string.Format(CultureInfo.CurrentCulture, GameMenu.Localize("Co-op: {0} friend(s) connected"), remoteCount)
