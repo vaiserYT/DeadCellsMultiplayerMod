@@ -195,7 +195,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                                 entry.X,
                                 entry.Y,
                                 reservedMobs: null,
-                                out var bound) &&
+                                out var bound,
+                                out var duplicateTwin) &&
                             bound != null)
                         {
                             MobSyncTrace.LogBindSyncId(
@@ -204,6 +205,20 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                                 entry.Type ?? string.Empty,
                                 entry.X,
                                 entry.Y);
+                            continue;
+                        }
+
+                        if (duplicateTwin)
+                        {
+                            // A same-cell same-type mob already holds a different NetId for this
+                            // enemy (host wrapper/proxy duplication). Never build a duplicate
+                            // replica — the enemy is already present locally under the other id.
+                            MobSyncTrace.LogIncomingMappingMismatch(
+                                "registry_duplicate_twin",
+                                entry.NetId,
+                                entry.Type ?? string.Empty,
+                                string.Empty,
+                                "same_enemy_already_bound");
                             continue;
                         }
 
@@ -250,17 +265,44 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             HashSet<Mob>? reservedMobs,
             out Mob? bound)
         {
+            return TryBindUnboundMobByTypeAndSpawnLocked(netId, type, x, y, reservedMobs, out bound, out _);
+        }
+
+        /// <summary>
+        /// One-shot bind for an unbound local mob: matching type + nearest spawn within distance.
+        /// Never steals a healthy NetId mapping from another living mob.
+        /// </summary>
+        /// <param name="duplicateTwin">
+        /// True when no unbound candidate exists but a same-cell same-type mob that is ALREADY
+        /// bound to a different NetId was found. That means the host handed one native enemy two
+        /// NetIds (wrapper/proxy duplication); the enemy already exists locally, so the caller must
+        /// NOT build a replica for this entry.
+        /// </param>
+        private static bool TryBindUnboundMobByTypeAndSpawnLocked(
+            int netId,
+            string? type,
+            double x,
+            double y,
+            HashSet<Mob>? reservedMobs,
+            out Mob? bound,
+            out bool duplicateTwin)
+        {
             bound = null;
+            duplicateTwin = false;
             if (netId < 0 || string.IsNullOrWhiteSpace(type))
                 return false;
             if (!double.IsFinite(x) || !double.IsFinite(y))
                 return false;
 
             var maxDistanceSq = ClientRegistryBindMaxDistancePx * ClientRegistryBindMaxDistancePx;
+            QuantizeWorldPositionToCells(x, y, out var entryCx, out var entryCy);
             var bestDistanceSq = double.MaxValue;
             var secondBestDistanceSq = double.MaxValue;
             Mob? best = null;
+            var bestCellExact = false;
+            var secondBestCellExact = false;
             var candidateCount = 0;
+            var twinCount = 0;
 
             for (var i = 0; i < trackedMobs.Count; i++)
             {
@@ -268,8 +310,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (mob == null || (reservedMobs != null && reservedMobs.Contains(mob)))
                     continue;
                 if (!IsStateRebindCandidateLocked(mob))
-                    continue;
-                if (MobToId.TryGetValue(mob, out _))
                     continue;
                 if (!DoesMobMatchStateType(mob, type))
                     continue;
@@ -293,23 +333,51 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (distanceSq > maxDistanceSq)
                     continue;
 
-                candidateCount++;
-                if (distanceSq < bestDistanceSq)
+                GetMobWorldCells(mob, out var mobCx, out var mobCy);
+                var cellExact = mobCx == entryCx && mobCy == entryCy;
+
+                var isBound = MobToId.TryGetValue(mob, out _);
+                if (isBound)
                 {
-                    secondBestDistanceSq = bestDistanceSq;
+                    // Already owned by another NetId. A same-cell same-type "twin" means the host
+                    // gave one native enemy two ids; the enemy is already present, so remember the
+                    // twin for the caller instead of spawning a duplicate replica.
+                    if (cellExact)
+                        twinCount++;
+                    continue;
+                }
+
+                candidateCount++;
+                var prefer = best == null ||
+                             (cellExact && !bestCellExact) ||
+                             (cellExact == bestCellExact && distanceSq < bestDistanceSq);
+                if (prefer)
+                {
+                    if (best != null)
+                    {
+                        secondBestDistanceSq = bestDistanceSq;
+                        secondBestCellExact = bestCellExact;
+                    }
                     bestDistanceSq = distanceSq;
+                    bestCellExact = cellExact;
                     best = mob;
                 }
-                else if (distanceSq < secondBestDistanceSq)
+                else if (cellExact == bestCellExact && distanceSq < secondBestDistanceSq)
                 {
                     secondBestDistanceSq = distanceSq;
+                    secondBestCellExact = cellExact;
                 }
             }
 
             if (best == null)
+            {
+                duplicateTwin = twinCount > 0;
                 return false;
+            }
 
-            if (candidateCount > 1 && secondBestDistanceSq < double.MaxValue)
+            if (candidateCount > 1 &&
+                secondBestDistanceSq < double.MaxValue &&
+                secondBestCellExact == bestCellExact)
             {
                 var gap = Math.Sqrt(secondBestDistanceSq) - Math.Sqrt(bestDistanceSq);
                 if (!IsBossRelatedEntity(type) && gap < ClientStateRebindMinimumGapPx)

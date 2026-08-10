@@ -465,6 +465,12 @@ internal static class MobSyncTrace
 
     public static void LogStaleTrackedMapping(int syncId, int localIndex, string reason)
     {
+        var now = Environment.TickCount64;
+        var key = "stale|" + (reason ?? string.Empty);
+        if (s_mappingMismatchLastTickByKey.TryGetValue(key, out var last) && now - last < 1000)
+            return;
+        s_mappingMismatchLastTickByKey[key] = now;
+
         Log.Warning(
             "[MobSync] stale tracked sync mapping syncId={SyncId} localIndex={LocalIndex} reason={Reason}",
             syncId,
@@ -473,6 +479,13 @@ internal static class MobSyncTrace
     }
 
     private static long s_lastNetworkDrainBurstLogTick;
+
+    /// <summary>
+    /// Last-tick per (context|reason) for the warning spam throttles below. ConcurrentDictionary
+    /// so bursts of the same mapping failure collapse to ~1 line/sec instead of one line/frame.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> s_mappingMismatchLastTickByKey =
+        new();
 
     /// <summary>
     /// Logs when the reliable protocol queue backed up enough to trigger burst draining — the
@@ -646,6 +659,12 @@ internal static class MobSyncTrace
         string actualType,
         string reason)
     {
+        var now = Environment.TickCount64;
+        var key = "mismatch|" + (context ?? string.Empty) + "|" + (reason ?? string.Empty);
+        if (s_mappingMismatchLastTickByKey.TryGetValue(key, out var last) && now - last < 1000)
+            return;
+        s_mappingMismatchLastTickByKey[key] = now;
+
         Log.Warning(
             "[MobSync] mapping mismatch context={Context} syncId={SyncId} expectedType={ExpectedType} actualType={ActualType} reason={Reason}",
             context ?? string.Empty,

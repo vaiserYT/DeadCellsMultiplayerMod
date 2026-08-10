@@ -998,7 +998,15 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                 var dx = GetWorldX(left) - GetWorldX(right);
                 var dy = GetWorldY(left) - GetWorldY(right);
-                return double.IsFinite(dx) && double.IsFinite(dy) && dx * dx + dy * dy <= 0.25;
+                if (double.IsFinite(dx) && double.IsFinite(dy) && dx * dx + dy * dy <= PixelsPerCase * PixelsPerCase)
+                    return true;
+
+                // Pixel distance alone can rule out two copies of the SAME native enemy when the
+                // peers' coordinates drift by a fraction of a tile (spawn snapping, gravity
+                // landing, interpolation: 1000.0 vs 1000.1). Same-cell is the tie-breaker.
+                GetMobWorldCells(left, out var lcx, out var lcy);
+                GetMobWorldCells(right, out var rcx, out var rcy);
+                return lcx == rcx && lcy == rcy;
             }
             catch
             {
@@ -1112,6 +1120,77 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             if (!MobToId.TryGetValue(mappedMob, out var mappedSyncId) || mappedSyncId != syncId)
             {
+                // Two failure modes share this branch:
+                //  * the reverse mapping (MobToId) was lost while the forward entry survived, or
+                //  * the same enemy was rebound to a different id — host wrapper/proxy duplication
+                //    hands one native mob two NetIds, so IdToMob[syncId] points at a mob whose
+                //    MobToId now names another id.
+                // The old remove-and-fail turned both into dropped states and lost client damage,
+                // which is exactly the registry_mismatch / missing_sync_id churn. Heal instead.
+
+                // If another live tracked mob genuinely owns this id, repair the forward entry to
+                // point at it (the previous owner is a stale wrapper of the same native enemy).
+                Mob? trueOwner = null;
+                var ownerCount = 0;
+                for (var i = 0; i < trackedMobs.Count; i++)
+                {
+                    var candidate = trackedMobs[i];
+                    if (candidate == null || ReferenceEquals(candidate, mappedMob))
+                        continue;
+                    if (MobToId.TryGetValue(candidate, out var candidateId) &&
+                        candidateId == syncId &&
+                        IsStateRebindCandidateLocked(candidate))
+                    {
+                        trueOwner = candidate;
+                        ownerCount++;
+                        if (ownerCount > 1)
+                            break;
+                    }
+                }
+
+                if (ownerCount == 1 && trueOwner != null)
+                {
+                    IdToMob[syncId] = trueOwner;
+                    s_trackedMobValidationPending = true;
+                    MobSyncTrace.LogBindSyncId(
+                        "registry_mismatch_repaired",
+                        syncId,
+                        BuildMobStateTypeSignature(trueOwner),
+                        GetWorldX(trueOwner),
+                        GetWorldY(trueOwner));
+                    mob = trueOwner;
+                    return true;
+                }
+
+                // The forward entry points at a mob that now owns a different id — the same native
+                // enemy addressed under a stale duplicate id. Accept it so the state/hit is not
+                // dropped, then drop the stale forward entry so the alias orphans out instead of
+                // growing a permanent double mapping. The peer's own states for the real id will
+                // keep resolving through the healthy MobToId/IdToMob pair. When the reverse mapping
+                // is missing entirely (mob only reachable through this id), re-assert it instead.
+                if (IsStateRebindCandidateLocked(mappedMob))
+                {
+                    if (mappedSyncId < 0)
+                    {
+                        IdToMob[syncId] = mappedMob;
+                        MobToId[mappedMob] = syncId;
+                    }
+                    else
+                    {
+                        IdToMob.Remove(syncId);
+                    }
+
+                    s_trackedMobValidationPending = true;
+                    MobSyncTrace.LogIncomingMappingMismatch(
+                        "registry_alias",
+                        syncId,
+                        BuildMobStateTypeSignature(mappedMob),
+                        string.Empty,
+                        mappedSyncId >= 0 ? $"aliased_to:{mappedSyncId}" : "reverse_mapping_lost");
+                    mob = mappedMob;
+                    return true;
+                }
+
                 MobSyncTrace.LogStaleTrackedMapping(
                     syncId,
                     localIndex,
@@ -1643,21 +1722,47 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                    lowerType.Contains("ttcl");
         }
 
-        /// <summary>Rounds world coordinates to int32 pixels so host/client hit routing agrees despite float drift.</summary>
-        private static void QuantizeWorldPositionToPixelsInt32(double x, double y, out int qx, out int qy)
+        /// <summary>
+        /// Quantizes world coordinates to integer CELLS (floor(world / PixelsPerCase)). A mob's
+        /// cell is stable across host/client even when the peers' pixel coordinates drift by a
+        /// fraction of a tile (spawn snapping, gravity landing, interpolation: 1000.0 vs 1000.1
+        /// both live in the same cell), so cells are the correct granularity for cross-peer
+        /// identity/position matching. The old int32-pixel quantization flipped at a 0.5px
+        /// boundary, which is far below the real host/client coordinate divergence.
+        /// </summary>
+        private static void QuantizeWorldPositionToCells(double x, double y, out int cx, out int cy)
         {
             if (!double.IsFinite(x) || !double.IsFinite(y))
             {
-                qx = 0;
-                qy = 0;
+                cx = 0;
+                cy = 0;
                 return;
             }
 
             const double lim = int.MaxValue - 8;
-            var rx = System.Math.Clamp(System.Math.Round(x, MidpointRounding.AwayFromZero), -lim, lim);
-            var ry = System.Math.Clamp(System.Math.Round(y, MidpointRounding.AwayFromZero), -lim, lim);
-            qx = (int)rx;
-            qy = (int)ry;
+            cx = (int)System.Math.Clamp(System.Math.Floor(x / PixelsPerCase), -lim, lim);
+            cy = (int)System.Math.Clamp(System.Math.Floor(y / PixelsPerCase), -lim, lim);
+        }
+
+        /// <summary>Computes a mob's integer cell from its live world position.</summary>
+        private static void GetMobWorldCells(Mob? mob, out int cx, out int cy)
+        {
+            if (mob == null)
+            {
+                cx = 0;
+                cy = 0;
+                return;
+            }
+
+            try
+            {
+                QuantizeWorldPositionToCells(GetWorldX(mob), GetWorldY(mob), out cx, out cy);
+            }
+            catch
+            {
+                cx = 0;
+                cy = 0;
+            }
         }
 
         private static Mob? ResolveTrackedMobForIncomingAttackLocked(NetNode.MobAttack attack)

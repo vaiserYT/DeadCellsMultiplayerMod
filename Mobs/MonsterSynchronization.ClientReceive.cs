@@ -2622,7 +2622,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var maxDistanceSq = MobHitMissingSyncIdRebindDistancePx * MobHitMissingSyncIdRebindDistancePx;
             var bestDistanceSq = double.MaxValue;
             var secondBestDistanceSq = double.MaxValue;
+            var bestCellExact = false;
+            var secondBestCellExact = false;
             Mob? bestMob = null;
+            QuantizeWorldPositionToCells(hit.X, hit.Y, out var hitCx, out var hitCy);
 
             for (int i = 0; i < entities.length; i++)
             {
@@ -2633,10 +2636,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (!DoesMobMatchStateType(mob, hit.Type))
                     continue;
 
-                // Do not steal another valid sync id. This fallback is only for mobs that are
-                // alive locally but lost/unbound in the host registry.
+                // Do not steal a HEALTHY sync id bound to another living mob: that is a host
+                // wrapper duplicate of this enemy, still alive under its own id. This fallback
+                // only reclaims mobs that are alive locally but lost/unbound in the host registry —
+                // including a mob whose reverse mapping points at an id with no (or a stale)
+                // forward entry, which is orphaned garbage and safe to rebind.
                 if (MobToId.TryGetValue(mob, out var existingSyncId) && existingSyncId != hit.MobIndex)
-                    continue;
+                {
+                    if (IdToMob.TryGetValue(existingSyncId, out var forwardMob) &&
+                        ReferenceEquals(forwardMob, mob))
+                        continue;
+                }
 
                 double dx;
                 double dy;
@@ -2657,16 +2667,28 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (distanceSq > maxDistanceSq)
                     continue;
 
+                GetMobWorldCells(mob, out var mobCx, out var mobCy);
+                var cellExact = mobCx == hitCx && mobCy == hitCy;
+
                 candidateCount++;
-                if (distanceSq < bestDistanceSq)
+                var prefer = bestMob == null ||
+                             (cellExact && !bestCellExact) ||
+                             (cellExact == bestCellExact && distanceSq < bestDistanceSq);
+                if (prefer)
                 {
-                    secondBestDistanceSq = bestDistanceSq;
+                    if (bestMob != null)
+                    {
+                        secondBestDistanceSq = bestDistanceSq;
+                        secondBestCellExact = bestCellExact;
+                    }
                     bestDistanceSq = distanceSq;
+                    bestCellExact = cellExact;
                     bestMob = mob;
                 }
-                else if (distanceSq < secondBestDistanceSq)
+                else if (cellExact == bestCellExact && distanceSq < secondBestDistanceSq)
                 {
                     secondBestDistanceSq = distanceSq;
+                    secondBestCellExact = cellExact;
                 }
             }
 
@@ -2675,6 +2697,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             if (candidateCount > 1 &&
                 secondBestDistanceSq < double.MaxValue &&
+                secondBestCellExact == bestCellExact &&
                 System.Math.Sqrt(secondBestDistanceSq) - System.Math.Sqrt(bestDistanceSq) < MobFallbackMinimumScoreGap)
             {
                 lock (Sync)
@@ -2793,8 +2816,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static bool MobHitQuantizedPositionCloseEnoughLocked(Mob mob, NetNode.MobHit hit)
         {
-            QuantizeWorldPositionToPixelsInt32(hit.X, hit.Y, out var hx, out var hy);
-            QuantizeWorldPositionToPixelsInt32(GetWorldX(mob), GetWorldY(mob), out var mx, out var my);
+            QuantizeWorldPositionToCells(hit.X, hit.Y, out var hx, out var hy);
+            GetMobWorldCells(mob, out var mx, out var my);
             return mx == hx && my == hy;
         }
 
@@ -2803,8 +2826,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null)
                 return false;
 
-            QuantizeWorldPositionToPixelsInt32(hit.X, hit.Y, out var hx, out var hy);
-            QuantizeWorldPositionToPixelsInt32(GetWorldX(mob), GetWorldY(mob), out var mx, out var my);
+            QuantizeWorldPositionToCells(hit.X, hit.Y, out var hx, out var hy);
+            GetMobWorldCells(mob, out var mx, out var my);
 
             var grounded = true;
             try

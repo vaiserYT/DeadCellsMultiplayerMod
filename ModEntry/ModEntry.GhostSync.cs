@@ -1623,6 +1623,11 @@ namespace DeadCellsMultiplayerMod
                 }
             }
 
+            ClearCoopGhostRuntimeRefs();
+        }
+
+        private void ClearCoopGhostRuntimeRefs()
+        {
             var ghost = _ghost;
             _ghost = null!;
             _ghostOwnerHero = null;
@@ -1634,7 +1639,32 @@ namespace DeadCellsMultiplayerMod
         internal void DisposeCoopGhostRuntimeForWorldTeardown(dc.pr.Game? disposingGame = null)
         {
             _ = disposingGame;
-            DisposeCoopGhostRuntime();
+
+            try
+            {
+                ResetFakeDeathState(unlockLocalHero: false, sendNetworkUpState: false);
+            }
+            catch
+            {
+            }
+
+            // A world teardown (restart / exit) must NOT use the triple-dispose path of
+            // DisposeClientSlot (destroy+dispose+disposeGfx): it can leave a destroyed remote
+            // GhostKing in the level's process tree, and the next frame's Process._dispose then
+            // crashes on a null controller.manualLock. Use the same disposeImmediately-based path
+            // the sub-level transition guard relies on.
+            for (int i = 0; i < clients.Length; i++)
+            {
+                try
+                {
+                    DisposeClientSlotForSubLevelTransition(i, clearIdentity: true);
+                }
+                catch
+                {
+                }
+            }
+
+            ClearCoopGhostRuntimeRefs();
         }
 
         internal void HandleNetworkDisconnectGhostCleanup(NetRole role)
