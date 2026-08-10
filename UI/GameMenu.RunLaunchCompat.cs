@@ -373,7 +373,7 @@ internal static partial class GameMenu
                 _remoteSeed = seed;
                 _remoteSeedSequence = sequence;
                 _remoteLaunchKind = launchKind;
-                _consumedRemoteSeedSequence = sequence;
+                MarkRemoteLaunchSequenceConsumedLocked(sequence);
                 _seedArrived = true;
                 Monitor.PulseAll(Sync);
             }
@@ -386,6 +386,36 @@ internal static partial class GameMenu
         sequence = 0;
         launchKind = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// Marks a remote launch sequence as consumed so host rebroadcasts of the same
+    /// RUNEXEC/SEED cannot schedule a false in-run restart after the client already
+    /// started that launch.
+    /// </summary>
+    internal static void MarkRemoteLaunchSequenceConsumed(int sequence, string reason)
+    {
+        if (sequence <= 0)
+            return;
+
+        lock (Sync)
+        {
+            if (sequence <= _consumedRemoteSeedSequence)
+                return;
+
+            MarkRemoteLaunchSequenceConsumedLocked(sequence);
+        }
+
+        _log?.Information(
+            "[NetMod][RunLaunch] Marked remote launch consumed seq={Sequence} ({Reason})",
+            sequence,
+            reason);
+    }
+
+    private static void MarkRemoteLaunchSequenceConsumedLocked(int sequence)
+    {
+        if (sequence > _consumedRemoteSeedSequence)
+            _consumedRemoteSeedSequence = sequence;
     }
 
     public static void RefreshRoomStatusMenuIfVisible()

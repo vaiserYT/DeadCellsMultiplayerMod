@@ -304,6 +304,11 @@ internal static partial class GameMenu
         if (queued == null)
             return;
 
+        // The client is invoking the authoritative native loader for this sequence now.
+        // Consume it immediately so later host SEED/RUNEXEC rebroadcasts cannot schedule
+        // unconsumed_host_launch_seq_* after the world is already built.
+        MarkRemoteLaunchSequenceConsumed(sequence, "client_launch_queued");
+
         net.SendRunLaunchQueued(queued, flush: true);
         _log?.Information("[NetMod][RunLaunch] Client sent RUNQUEUED seq={Sequence}", sequence);
         BossSyncDiag.Trace("launch queued role=client seq={Sequence}", sequence);

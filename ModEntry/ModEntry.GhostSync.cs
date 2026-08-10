@@ -1,9 +1,12 @@
 using System.Diagnostics;
 using System.Reflection;
+using dc.en;
 using dc.pr;
 using ModCore.Utilities;
 using dc.tool;
 using HaxeProxy.Runtime;
+using HaxeProxy.Runtime.Internals;
+using HaxeProxy.Runtime.Internals.Cache;
 using DeadCellsMultiplayerMod.Ghost.GhostBase;
 using DeadCellsMultiplayerMod.KingHead;
 using DeadCellsMultiplayerMod.Tools;
@@ -901,6 +904,343 @@ namespace DeadCellsMultiplayerMod
             catch
             {
                 return false;
+            }
+        }
+
+        private static ObjFieldInfoCache _cachedProcessControllerField;
+        private const int HomunculusEntityClassId = 17969;
+
+        /// <summary>
+        /// Assigns a live ControllerAccess to a mod-created Process (GameCinematic / ui.Process).
+        /// Some native onDispose paths (and cines that assume Game.controller) read controller
+        /// state during teardown. Vanilla process types install a controller during init();
+        /// mod-created cines and UI processes may not, so giving the proxy a controller before
+        /// dispose keeps those paths on the normal vanilla route.
+        /// </summary>
+        public static bool TryAssignProcessController(object? process, dc.pr.Game? game)
+        {
+            if (process == null || game == null)
+                return false;
+
+            try
+            {
+                var controller = game.controller;
+                if (controller == null)
+                    return false;
+
+                HaxeProxyHelper.SetFieldById(
+                    (HaxeProxyBase)(object)process,
+                    controller,
+                    "controller",
+                    ref _cachedProcessControllerField);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static ObjFieldInfoCache _cachedProcessDestroyedField;
+
+        public static bool TryReadProcessDestroyed(object? process)
+        {
+            if (process == null)
+                return false;
+
+            try
+            {
+                var raw = HaxeProxyHelper.GetFieldById<object>(
+                    (HaxeProxyBase)(object)process,
+                    "destroyed",
+                    ref _cachedProcessDestroyedField);
+                if (raw is bool b)
+                    return b;
+                if (raw is int i)
+                    return i != 0;
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static ObjFieldInfoCache _cachedProcessControllerReadField;
+
+        public static bool TryReadProcessControllerNull(object? process)
+        {
+            if (process == null)
+                return true;
+
+            try
+            {
+                var raw = HaxeProxyHelper.GetFieldById<object>(
+                    (HaxeProxyBase)(object)process,
+                    "controller",
+                    ref _cachedProcessControllerReadField);
+                return raw == null;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static ObjFieldInfoCache _cachedProcessChildrenField;
+
+        /// <summary>
+        /// Homunculus.dispose always ends with `game.hero.controller.manualLock = false` with no
+        /// null check. During Level.onDispose → runEntitiesGC that becomes
+        /// `Null access .manualLock` whenever the live hero has no ControllerAccess (mid-run
+        /// restart, half-inited puppet, or hero disposed earlier in the same GC pass). Dispose
+        /// Homunculi first while we can still heal hero.controller, then strip them from the
+        /// level collections so the native GC pass cannot hit the bad path.
+        /// </summary>
+        internal static void PrepareLevelProcessTeardown(Level? level, string context)
+        {
+            var game = level?.game ?? dc.pr.Game.Class.ME;
+            try { LogProcessTeardownDiagnostics(context, game, level); } catch { }
+
+            try { EnsureHeroControllerForTeardown(game); } catch { }
+            try { SafeDisposeHomunculiForTeardown(level, game, context); } catch { }
+        }
+
+        private static void EnsureHeroControllerForTeardown(dc.pr.Game? game)
+        {
+            if (game == null)
+                return;
+
+            dc.en.Hero? hero = null;
+            try { hero = game.hero; } catch { }
+            if (hero == null)
+                return;
+
+            try
+            {
+                if (hero.controller != null)
+                    return;
+            }
+            catch
+            {
+                return;
+            }
+
+            try
+            {
+                var bootController = dc.Boot.Class.ME?.controller;
+                if (bootController == null)
+                    return;
+
+                hero.controller = bootController.createAccess("hero".AsHaxeString(), null);
+                ModEntry.Instance?.Logger?.Warning(
+                    "[ProcessTeardown] healed null hero.controller before level teardown");
+            }
+            catch (Exception ex)
+            {
+                ModEntry.Instance?.Logger?.Warning(
+                    "[ProcessTeardown] failed to heal hero.controller: {Message}",
+                    ex.Message);
+            }
+        }
+
+        private static void SafeDisposeHomunculiForTeardown(
+            Level? level,
+            dc.pr.Game? game,
+            string context)
+        {
+            if (level == null)
+                return;
+
+            var found = new HashSet<dc.en.Homunculus>();
+            CollectHomunculi(level.entities, found);
+            CollectHomunculi(level.qTreeEntities, found);
+            CollectHomunculi(level.entitiesGC, found);
+            CollectHomunculi(level.savedEntities, found);
+
+            try
+            {
+                if (level.entitiesByClass?.get(HomunculusEntityClassId) is dc.hl.types.ArrayObj bucket)
+                    CollectHomunculi(bucket, found);
+            }
+            catch
+            {
+            }
+
+            if (found.Count == 0)
+                return;
+
+            EnsureHeroControllerForTeardown(game);
+
+            var disposed = 0;
+            foreach (var hom in found)
+            {
+                if (hom == null)
+                    continue;
+
+                try
+                {
+                    try { RemoveHomunculusFromLevelCollections(level, hom); } catch { }
+
+                    try
+                    {
+                        if (!hom.destroyed)
+                            hom.destroy();
+                    }
+                    catch
+                    {
+                    }
+
+                    // Prefer native dispose only when hero.controller is safe; otherwise strip
+                    // the entity without invoking the unconditional manualLock write.
+                    var heroControllerSafe = false;
+                    try { heroControllerSafe = game?.hero?.controller != null; } catch { }
+
+                    if (heroControllerSafe)
+                    {
+                        try { hom.dispose(); } catch { }
+                    }
+
+                    disposed++;
+                }
+                catch
+                {
+                }
+            }
+
+            ModEntry.Instance?.Logger?.Warning(
+                "[ProcessTeardown][{Context}] pre-disposed Homunculus count={Count}",
+                context,
+                disposed);
+        }
+
+        private static void CollectHomunculi(dc.hl.types.ArrayObj? entries, HashSet<dc.en.Homunculus> into)
+        {
+            if (entries == null)
+                return;
+
+            try
+            {
+                for (var i = 0; i < entries.length; i++)
+                {
+                    if (entries.getDyn(i) is dc.en.Homunculus hom)
+                        into.Add(hom);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static void RemoveHomunculusFromLevelCollections(Level level, dc.en.Homunculus hom)
+        {
+            try { level.entities?.remove(hom); } catch { }
+            try { level.qTreeEntities?.remove(hom); } catch { }
+            try { level.savedEntities?.remove(hom); } catch { }
+            try { level.entitiesGC?.remove(hom); } catch { }
+
+            try
+            {
+                if (level.entitiesByClass?.get(HomunculusEntityClassId) is dc.hl.types.ArrayObj bucket)
+                    bucket.remove(hom);
+            }
+            catch
+            {
+            }
+        }
+
+        internal static void LogProcessTeardownDiagnostics(
+            string context,
+            dc.pr.Game? game,
+            Level? level = null)
+        {
+            try
+            {
+                var log = ModEntry.Instance?.Logger;
+                if (log == null)
+                    return;
+
+                var cine = game?.curCine;
+                var hero = game?.hero;
+                var heroControllerNull = true;
+                try { heroControllerNull = hero?.controller == null; } catch { }
+
+                var homunculusCount = 0;
+                try
+                {
+                    if (level?.entitiesByClass?.get(HomunculusEntityClassId) is dc.hl.types.ArrayObj bucket)
+                        homunculusCount = bucket.length;
+                }
+                catch
+                {
+                }
+
+                log.Warning(
+                    "[ProcessTeardown][{Context}] game={Game} gameControllerNull={GameCtrlNull} hero={Hero} heroControllerNull={HeroCtrlNull} homunculus={HomCount} curCine={Cine} curCineDestroyed={Destroyed} curCineControllerNull={ControllerNull}",
+                    context,
+                    game?.GetType().Name,
+                    game?.controller == null,
+                    hero?.GetType().Name,
+                    heroControllerNull,
+                    homunculusCount,
+                    cine?.GetType().Name,
+                    TryReadProcessDestroyed(cine),
+                    TryReadProcessControllerNull(cine));
+
+                var roots = dc.libs.Process.Class.ROOTS;
+                if (roots == null)
+                    return;
+
+                var list = roots.array;
+                var destroyedWithNullController = 0;
+                if (list != null)
+                {
+                    for (int i = 0; i < list.Count; i++)
+                        WalkProcessDiagnostics(list[i], 0, ref destroyedWithNullController);
+                }
+
+                log.Warning(
+                    "[ProcessTeardown][{Context}] process-tree scan done; destroyedWithNullController={Count}",
+                    context,
+                    destroyedWithNullController);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void WalkProcessDiagnostics(object? process, int depth, ref int destroyedCount)
+        {
+            if (process == null || depth > 12)
+                return;
+
+            try
+            {
+                if (TryReadProcessDestroyed(process) && TryReadProcessControllerNull(process))
+                {
+                    destroyedCount++;
+                    ModEntry.Instance?.Logger?.Warning(
+                        "[ProcessTeardown] destroyed+null-controller process depth={Depth} type={Type}",
+                        depth,
+                        process.GetType().FullName);
+                }
+
+                var childrenObj = HaxeProxyHelper.GetFieldById<object>(
+                    (HaxeProxyBase)(object)process,
+                    "children",
+                    ref _cachedProcessChildrenField);
+                if (childrenObj is not dc.hl.types.ArrayObj children)
+                    return;
+
+                var list = children.array;
+                if (list == null)
+                    return;
+
+                for (int i = 0; i < list.Count; i++)
+                    WalkProcessDiagnostics(list[i], depth + 1, ref destroyedCount);
+            }
+            catch
+            {
             }
         }
 

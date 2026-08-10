@@ -1085,6 +1085,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
             try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
             MobSyncTrace.LogLevelReset("dispose", levelId, trackedBeforeReset);
+            // Homunculus.dispose writes hero.controller.manualLock with no null check. Heal and
+            // pre-dispose Homunculi before the native Level.onDispose → runEntitiesGC path.
+            try { ModEntry.PrepareLevelProcessTeardown(self, "level_dispose_before"); } catch { }
 
             orig(self);
 

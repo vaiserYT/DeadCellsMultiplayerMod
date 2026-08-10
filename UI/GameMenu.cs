@@ -203,6 +203,7 @@ namespace DeadCellsMultiplayerMod
 
         public static void MarkInRun()
         {
+            int consumeSequence = 0;
             lock (Sync)
             {
                 _inActualRun = true;
@@ -211,8 +212,22 @@ namespace DeadCellsMultiplayerMod
                 _clientLevelGraphWaitStartedTicks = 0;
                 _clientLevelGraphWaitExpired = false;
                 MarkClientLaunchInRunLocked();
+
+                // Belt-and-suspenders: once the hero is live, the current remote execute/seed
+                // sequence is definitively consumed. Prevents late host rebroadcasts from
+                // forcing unconsumed_host_launch restarts on an already-built world.
+                consumeSequence = Math.Max(_structuredLaunchExecuteSequence, _remoteSeedSequence);
+                if (consumeSequence > 0)
+                    MarkRemoteLaunchSequenceConsumedLocked(consumeSequence);
             }
             ClearClientRestartPending();
+
+            if (consumeSequence > 0)
+            {
+                _log?.Information(
+                    "[NetMod][RunLaunch] Marked remote launch consumed seq={Sequence} (mark_in_run)",
+                    consumeSequence);
+            }
 
             // Terminal launch signal, outside the lock because it performs a network send.
             // On the client this also stops the host's launch beacon; on the host it publishes the
@@ -409,11 +424,17 @@ namespace DeadCellsMultiplayerMod
 
             try { ModEntry.Instance?.DisposeCoopGhostRuntimeForWorldTeardown(game); } catch { }
 
+            // Client same-run restart tears down PrisonStart via Level.onDispose. Pre-dispose
+            // Homunculi / heal hero.controller here so the later native GC pass cannot hit
+            // Homunculus.dispose's unconditional hero.controller.manualLock write.
+            try { ModEntry.PrepareLevelProcessTeardown(game.curLevel, "client_restart_prepare"); } catch { }
+
             try
             {
                 var cine = game.curCine;
                 if (cine != null)
                 {
+                    try { ModEntry.TryAssignProcessController(cine, game); } catch { }
                     try { cine.destroyed = true; } catch { }
                     try { cine.disposeImmediately(); } catch { }
                     if (ReferenceEquals(game.curCine, cine))
