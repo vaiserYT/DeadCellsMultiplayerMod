@@ -718,25 +718,24 @@ namespace DeadCellsMultiplayerMod
             {
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiButton(
                     GetText.Instance.GetString("Host game"),
                     () => ShowHostTransportMenu(screen),
                     GetText.Instance.GetString("Create a multiplayer session"));
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Join game"),
                     () => ShowJoinTransportMenu(screen),
                     GetText.Instance.GetString("Connect to an existing host"));
-                AddMenuButton(screen, GetText.Instance.GetString("Back"), () =>
+                UiButton(GetText.Instance.GetString("Back"), () =>
                 {
                     StopNetworkFromMenu();
                     screen.mainMenu();
                 }, GetText.Instance.GetString("Return to main menu"));
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(screen, GetText.Instance.GetString("Host game"), GetText.Instance.GetString("Join game"));
                 _inHostStatusMenu = false;
                 _inClientWaitingMenu = false;
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -760,30 +759,22 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiButton(
                     GetText.Instance.GetString("Lan host"),
                     () => ShowConnectionMenu(screen, NetRole.Host),
                     GetText.Instance.GetString("Use direct IP/port hosting"));
-
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Steam host"),
                     () => ShowSteamHostModeMenu(screen),
                     GetText.Instance.GetString("Choose who can discover the Steam lobby"));
-
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () => ShowMultiplayerMenu(screen),
                     GetText.Instance.GetString("Back to multiplayer menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Lan host"),
-                    GetText.Instance.GetString("Steam host"),
-                    GetText.Instance.GetString("Back"));
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -807,30 +798,24 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiButton(
                     GetText.Instance.GetString("Steam friends-only host"),
                     () => StartSteamHost(screen, SteamConnect.SteamLobbyVisibility.FriendsOnly),
-                    GetText.Instance.GetString("Create a Steam lobby visible to friends"));
-
-                AddMenuButton(
-                    screen,
+                    GetText.Instance.GetString("Create a Steam lobby visible to friends"),
+                    textColor: 0x59D5FF);
+                UiButton(
                     GetText.Instance.GetString("Steam public host"),
                     () => StartSteamHost(screen, SteamConnect.SteamLobbyVisibility.Public),
-                    GetText.Instance.GetString("Create a public Steam lobby with a shareable code"));
-
-                AddMenuButton(
-                    screen,
+                    GetText.Instance.GetString("Create a public Steam lobby with a shareable code"),
+                    textColor: 0x59D5FF);
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () => ShowHostTransportMenu(screen),
                     GetText.Instance.GetString("Back to hosting options"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Steam friends-only host"),
-                    GetText.Instance.GetString("Steam public host"),
-                    GetText.Instance.GetString("Back"));
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -855,8 +840,8 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiButton(
                     GetText.Instance.GetString("Lan join"),
                     () =>
                     {
@@ -865,12 +850,12 @@ namespace DeadCellsMultiplayerMod
                     },
                     GetText.Instance.GetString("Connect by IP/port"));
 
-                AddInfoLine(screen, Localize("Steam friends hosting this mod"), infoColor: 0xA8D8FF);
+                UiInfo(Localize("Steam friends hosting this mod"), 0xA8D8FF);
 
                 if (_steamFriendLobbies.Count == 0)
                 {
-                    AddInfoLine(screen, Localize("No Steam friends are hosting right now."), infoColor: 0xC8C8C8);
-                    AddInfoLine(screen, Localize("This list refreshes automatically."), infoColor: 0x9098A8);
+                    UiInfo(Localize("No Steam friends are hosting right now."), 0xC8C8C8);
+                    UiInfo(Localize("This list refreshes automatically."), 0x9098A8);
                 }
                 else
                 {
@@ -882,28 +867,24 @@ namespace DeadCellsMultiplayerMod
                             ? Localize("Steam friend")
                             : friendLobby.PersonaName.Trim();
 
-                        AddMenuButton(
-                            screen,
+                        UiButton(
                             $"{displayName} - {Localize("Join")}",
                             () =>
                             {
                                 _steamFriendJoinPageActive = false;
                                 HandleSteamFriendLobbyJoinRequest(capturedLobbyId, capturedHostSteamId);
                             },
-                            Localize("Join this friend's Steam lobby"));
+                            Localize("Join this friend's Steam lobby"),
+                            textColor: 0x59D5FF);
                     }
                 }
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     Localize("Open Steam friends"),
                     () => OpenSteamFriendsJoinOverlay(screen),
                     Localize("Open Steam friends and choose Join Game"));
 
-                // Keep the code route as a compatibility fallback, but it is no longer the primary
-                // Steam flow. Friends hosting the mod appear above automatically.
-                AddMenuButton(
-                    screen,
+                UiButton(
                     Localize("Join by Steam lobby code (fallback)"),
                     () =>
                     {
@@ -912,8 +893,7 @@ namespace DeadCellsMultiplayerMod
                     },
                     Localize("Connect by Steam lobby id/code from clipboard"));
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () =>
                     {
@@ -923,12 +903,7 @@ namespace DeadCellsMultiplayerMod
                     GetText.Instance.GetString("Back to multiplayer menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Lan join"),
-                    Localize("Open Steam friends"),
-                    Localize("Join by Steam lobby code (fallback)"),
-                    GetText.Instance.GetString("Back"));
+                UiCommit();
 
                 RequestSteamFriendLobbyRefresh(force: _steamFriendLobbies.Count == 0);
             }
@@ -1060,13 +1035,13 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiButton(
                     $"{GetText.Instance.GetString("Username: ")}{_username}",
                     () => EditUsername(screen),
                     GetText.Instance.GetString("Edit display name"));
 
-                AddMenuButton(screen, $"{GetText.Instance.GetString("IP: ")}{_mpIp}", () =>
+                UiButton($"{GetText.Instance.GetString("IP: ")}{_mpIp}", () =>
                 {
                     OpenTextInput(screen, GetText.Instance.GetString("IP address"), _mpIp, value =>
                     {
@@ -1076,7 +1051,7 @@ namespace DeadCellsMultiplayerMod
                     }, noSpaces: true);
                 }, GetText.Instance.GetString("Edit IP"));
 
-                AddMenuButton(screen, $"{GetText.Instance.GetString("Port: ")}{_mpPort}", () =>
+                UiButton($"{GetText.Instance.GetString("Port: ")}{_mpPort}", () =>
                 {
                     OpenTextInput(screen, GetText.Instance.GetString("Port"), _mpPort.ToString(), value =>
                     {
@@ -1093,25 +1068,24 @@ namespace DeadCellsMultiplayerMod
                     : GetText.Instance.GetString("Join");
                 if (role == NetRole.Host)
                 {
-                    AddMenuButton(screen, actionLabel, () =>
+                    UiButton(actionLabel, () =>
                     {
                         StartHostServerOnly();
                         ShowHostStatusMenu(screen);
                         screen.ShouldAutoHideConnectionUI(true);
-                    }, GetText.Instance.GetString("Start hosting"));
+                    }, GetText.Instance.GetString("Start hosting"), textColor: 0x59D5FF);
                 }
                 else
                 {
-                    AddMenuButton(screen, actionLabel, () =>
+                    UiButton(actionLabel, () =>
                     {
                         StartNetwork(role, screen);
                         ShowClientWaitingMenu(screen);
                         screen.ShouldAutoHideConnectionUI(true);
-                    }, GetText.Instance.GetString("Connect to host"));
+                    }, GetText.Instance.GetString("Connect to host"), textColor: 0x59D5FF);
                 }
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () =>
                     {
@@ -1123,17 +1097,13 @@ namespace DeadCellsMultiplayerMod
                     },
                     GetText.Instance.GetString("Back to multiplayer menu"));
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Host game"),
-                    GetText.Instance.GetString("Join game"),
-                    "About Core Modding");
                 _inHostStatusMenu = false;
                 _inClientWaitingMenu = false;
                 if (role == NetRole.Host)
                 {
                     SetRole(NetRole.None);
                 }
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -1296,6 +1266,7 @@ namespace DeadCellsMultiplayerMod
                 _inClientWaitingMenu = false;
                 _inHostStatusMenu = false;
                 screen.ShouldAutoHideConnectionUI(true);
+                UiLobby();
                 ConnectionUI.NotifyConnectionsChanged();
             }
             catch (Exception ex)
@@ -1372,20 +1343,20 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddInfoLine(screen, title, infoColor: 0xFF9090);
+                UiBegin();
+                UiInfo(title, 0xFF9090);
                 if (!string.IsNullOrWhiteSpace(details))
-                    AddInfoLine(screen, details, infoColor: 0xE0E0E0);
+                    UiInfo(details, 0xE0E0E0);
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("OK"),
                     onOk,
                     GetText.Instance.GetString("Return to previous menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(screen, GetText.Instance.GetString("OK"));
                 _inClientWaitingMenu = false;
                 _inHostStatusMenu = false;
+                UiCommit();
             }
             catch (Exception ex)
             {

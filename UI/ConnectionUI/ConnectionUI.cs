@@ -17,15 +17,64 @@ using DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI;
 
 namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 {
+    /// <summary>
+    /// Visual hub for the multiplayer menu. GameMenu keeps all networking/state logic; this
+    /// Process renders the pretty button screens (host/join LAN &amp; Steam, lobby status, errors).
+    /// GameMenu feeds it through <see cref="BeginMenu"/>/<see cref="AddPendingButton"/>/
+    /// <see cref="AddPendingInfo"/>/<see cref="CommitMenu"/>, and toggles the lobby display via
+    /// <see cref="ShowLobbyMode"/>.
+    /// </summary>
     public class ConnectionUI :
     Process,
     IEventReceiver
     {
+        // ---------------------------------------------------------------- palette
+        private static readonly int PanelBorder = 0xC98A4B;   // bronze frame
+        private static readonly int PanelInner = 0x14161F;    // near-black panel
+        private static readonly int PanelInnerEdge = 0x2A3A5E;
+        private static readonly int PanelInnerTop = 0x3A4A6E;
+        private static readonly int TitleColor = 0xF7FC65;
+        private static readonly int SubtitleColor = 0x919191;
+        private static readonly int AccentColor = 0x59D5FF;
+        private static readonly int TextColor = 0xC9C9C9;
+        private static readonly int HelpColor = 0x9098A8;
+        private static readonly int DisabledColor = 0x6A6A6A;
+        private static readonly int DisabledPlate = 0x232327;
+        private static readonly int SeparatorColor = 0x3A3A44;
+        private static readonly int ErrorColor = 0xFF9090;
+
+        private enum UiMode
+        {
+            Lobby,
+            Menu
+        }
+
+        private sealed class PendingButton
+        {
+            public string Label = string.Empty;
+            public string Help = string.Empty;
+            public bool Enabled = true;
+            public int Color = 0xFFFFFF;
+            public Action? OnClick;
+        }
+
+        private sealed class PendingInfo
+        {
+            public string Text = string.Empty;
+            public int Color = 0xFFFFFF;
+        }
+
+        // ---------------------------------------------------------------- pending menu (fed by GameMenu)
+        private static readonly List<PendingButton> PendingButtons = new();
+        private static readonly List<PendingInfo> PendingInfos = new();
+
+        // ---------------------------------------------------------------- instance state
         private Flow? rootFlow;
         private UIBox? bg;
         private dc.h2d.Interactive? inter;
         private Flow? spritesflow;
         private Flow? MainTitleflow;
+        private Flow? playersListWrapper;
         private readonly List<HSprite> sprites = new();
         private readonly List<dc.ui.Text> connectionLabels = new();
         private readonly List<string> lastConnections = new();
@@ -33,10 +82,16 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private dc.ui.Text? lobbyCodeTitleLabel;
         private dc.ui.Text? lobbyIdLabel;
         private string lastLobbyIdLabelText = string.Empty;
+        private UiMode _mode = UiMode.Lobby;
+        private bool _keepLobbyVisible;
+
+        // menu list rendering (absolute layout inside bg, sibling of MainTitleflow)
+        private dc.h2d.Object? _menuRoot;
+        private readonly List<(double X, double Y, double W, double H, Action Cb)> _menuHitRects = new();
+        private bool _menuVisible;
 
         private static ConnectionUI? Instance;
         private HSprite? spriteui;
-
 
         public ConnectionUI(Process parent) : base(parent)
         {
@@ -75,8 +130,6 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         /// <summary>
         /// Returns the current ConnectionUI only while its Process root is still alive.
-        /// Returning to the main menu mid-run destroys the old TitleScreen tree first; keeping a
-        /// stale Instance then NRE's on visibility toggles.
         /// </summary>
         private static ConnectionUI? TryGetLiveInstance()
         {
@@ -101,7 +154,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             return instance;
         }
 
-        /// <summary>After gamepad connect/disconnect, window metrics can change; re-run layout to avoid blurred/scaled UI.</summary>
+        /// <summary>After gamepad connect/disconnect, window metrics can change; re-run layout.</summary>
         public static void RefreshLayoutAfterDisconnect()
         {
             try
@@ -115,6 +168,81 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             }
         }
 
+        // ================================================================ menu screen API (called from GameMenu)
+
+        /// <summary>Clears the pending screen, ensures the hub is visible and switches to menu mode.</summary>
+        public static void BeginMenu()
+        {
+            PendingButtons.Clear();
+            PendingInfos.Clear();
+            var instance = TryGetLiveInstance();
+            if (instance != null)
+            {
+                instance._mode = UiMode.Menu;
+                instance._menuVisible = false;
+            }
+            set_visible = true;
+        }
+
+        /// <summary>Adds a pretty button to the pending screen.</summary>
+        public static void AddPendingButton(string label, string help, bool enabled, int color, Action onClick)
+        {
+            PendingButtons.Add(new PendingButton
+            {
+                Label = label ?? string.Empty,
+                Help = help ?? string.Empty,
+                Enabled = enabled,
+                Color = color,
+                OnClick = onClick
+            });
+        }
+
+        /// <summary>Adds an informational line to the pending screen.</summary>
+        public static void AddPendingInfo(string text, int color)
+        {
+            PendingInfos.Add(new PendingInfo
+            {
+                Text = text ?? string.Empty,
+                Color = color
+            });
+        }
+
+        /// <summary>Renders the accumulated pending screen. Call once at the end of a GameMenu Show* method.</summary>
+        public static void CommitMenu(bool showLobby = false)
+        {
+            var instance = TryGetLiveInstance();
+            if (instance == null)
+                return;
+            instance._mode = UiMode.Menu;
+            instance._keepLobbyVisible = showLobby;
+            instance.RebuildMenuScreen();
+        }
+
+        /// <summary>Switches to the lobby display (player list + lobby code).</summary>
+        public static void ShowLobbyMode()
+        {
+            var instance = TryGetLiveInstance();
+            if (instance == null)
+                return;
+            instance._mode = UiMode.Lobby;
+            instance._menuVisible = false;
+            instance._keepLobbyVisible = false;
+            if (instance._menuRoot != null)
+            {
+                try { instance._menuRoot.visible = false; } catch { }
+            }
+            if (instance.MainTitleflow != null)
+            {
+                try { instance.MainTitleflow.set_visible(true); } catch { }
+            }
+            if (instance.playersListWrapper != null)
+            {
+                try { instance.playersListWrapper.visible = true; } catch { }
+            }
+            instance.UpdateLobbyIdLabel(forceRefreshText: true);
+        }
+
+        // ================================================================ screen build
 
         private void BuildUI()
         {
@@ -125,261 +253,180 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             this.rootFlow.set_verticalAlign(new FlowAlign.Middle());
             this.rootFlow.set_horizontalAlign(new FlowAlign.Right());
 
-
             base.root.addChild(this.rootFlow);
             this.onResize();
-            List<(string loColor, string hiColor)> colorPairs = new List<(string, string)>
-            {
-                ("#FF0000", "#0000FF"),
-                ("#00FF00", "#FF00FF"),
-                ("#FFFF00", "#FF0000"),
-                ("#00FFFF", "#FF00FF"),
-                ("#FFA500", "#800080"),
-                ("#FF69B4", "#4169E1"),
-            };
-
-
         }
 
-        private List<double> sprx = new List<double> { 0.4, -1.0, -0.2, -0.6 };
-        private List<string> animlist = new List<string>
+        private void RebuildMenuScreen()
         {
-           "idle", "idle","idle","idle"
-        };
-        private List<string> sprmodu = new List<string>
-        {
-            "Tick4","PrisonerGold","KingWhite","PrisonerDefault"
-        };
-
-        private void loadspr(double x, string sprmuld, int count)
-        {
-            this.spritesflow = new Flow(null);
-            this.spritesflow.set_verticalAlign(new FlowAlign.Top());
-            this.spritesflow.set_horizontalAlign(new FlowAlign.Middle());
-            this.spritesflow.isVertical = false;
-
-
-
-            dc.String idle = "idle".AsHaxeString();
-            string skinanim = animlist[count];
-            SpriteLib g = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo(sprmuld.AsHaxeString()));
-            this.spriteui = new HSprite(g, skinanim.AsHaxeString(), Ref<int>.Null, null);
-
-
-
-            SpritePivot pivot = this.spriteui.pivot;
-            pivot.centerFactorX = x;
-            pivot.centerFactorY = 0.5;
-            pivot.usingFactor = true;
-            pivot.isUndefined = false;
-
-            initColorMap(sprmuld);
-
-
-            AnimManager animManager = this.spriteui.get_anim().play(skinanim.AsHaxeString(), null, null).loop(null);
-            animManager.genSpeed = 0.4;
-
-            this.spriteui.set_visible(true);
-            this.spritesflow.addChild(this.spriteui);
-            this.bg?.addChild(this.spritesflow);
-            this.sprites.Add(this.spriteui);
-        }
-
-        private string GetRandomAnimation(List<string> values)
-        {
-            Random fallbackRandom = new Random();
-            int fallbackIndex = fallbackRandom.Next(values.Count);
-            return values[fallbackIndex];
-        }
-
-
-        public void playallanims(HSprite hSprite)
-        {
-            try
-            {
-                var groups = hSprite.lib?.groups;
-                if (groups == null)
-                    return;
-
-                var keysIterator = groups.keys();
-                animlist.Clear();
-
-                while (keysIterator.hasNext())
-                {
-                    string key = keysIterator.next().ToString();
-                    if (!key.StartsWith("Atk", StringComparison.OrdinalIgnoreCase))
-                        animlist.Add(key);
-                }
-            }
-            catch
-            {
-            }
-        }
-
-
-        public void loadText()
-        {
-
-        }
-
-
-
-        public void initColorMap(string colorMap)
-        {
-            dc.shader.ColorMap shader = (dc.shader.ColorMap)this.spriteui!.getShader(dc.shader.ColorMap.Class);
-            if (shader != null)
-            {
-                this.spriteui.removeShader(shader);
-            }
-
-            dc.h3d.mat.Texture texture = Res.Class.load("atlas/beheaded_aladdin_s.png".AsHaxeString()).toTexture();
-            dc.h3d.mat.Filter filter = new dc.h3d.mat.Filter.Nearest();
-            filter = texture.set_filter(filter);
-
-            virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_ skinInfo = Cdb.Class.getSkinInfo(colorMap.AsHaxeString());
-            dc.h3d.mat.Texture heroColorMap = Assets.Class.getHeroColorMap(skinInfo);
-            dc.shader.ColorMap colorMapp = (ColorMap)this.spriteui.addShader(new dc.shader.ColorMap(heroColorMap));
-
-
-            DirLighted s2 = new DirLighted();
-            s2 = (DirLighted)this.spriteui.addShader(s2);
-
-
-            dc.h3d.mat.Texture normalMapFromGroup = this.spriteui.lib.getNormalMapFromSprite(this.spriteui);
-            dc.shader.NormalMap normal = new dc.shader.NormalMap(normalMapFromGroup);
-            this.spriteui.addShader(normal);
-        }
-
-
-        private void clean()
-        {
-            ClearLobbyCodeUi();
-            this.bg?.remove();
-            this.rootFlow?.remove();
-            this.inter?.remove();
-            this.sprites.Clear();
-        }
-
-
-        public override void onResize()
-        {
-            base.onResize();
-            if (this.rootFlow == null || base.root == null)
+            if (this.bg == null || this.MainTitleflow == null)
                 return;
 
-            var win = dc.hxd.Window.Class.getInstance();
-            double screenWidth = win.get_width();
-            double screenHeight = win.get_height();
             var uiScale = UiScale.GetResolutionScale();
-
-
-            this.rootFlow.set_minWidth((int)(screenWidth * 0.4)); //宽度 40%
-            this.rootFlow.set_minHeight((int)(screenHeight * 0.3)); // 高度 30%
-            this.rootFlow.reflow();
-
-
-            double flowW = this.rootFlow.get_innerWidth();
-            double flowH = this.rootFlow.get_innerHeight();
-
-            ClearLobbyCodeUi();
-            this.bg?.remove();
-            this.bg = UIBox.Class.drawBoxValidation(
-                (int)flowW,
-                (int)flowH,
-                Ref<int>.Null,
-                Ref<int>.Null,
-                null,
-                false
-            );
-            this.root.addChild(this.bg);
-
-            this.bg.set_visible(true);
-            this.bg.wid = (int)255;
-            this.bg.hei = (int)flowH;
-
-
-            double posX = screenWidth - flowW - base.get_pixelScale.Invoke() * 200.0; // 离右边 20 像素
-            posX = screenWidth - flowW - base.get_pixelScale.Invoke() * 200.0 * uiScale;
-            double posY = (screenHeight - flowH) / 1.35;
-            this.rootFlow.x = posX;
-            this.rootFlow.y = posY;
-
-
-            this.bg.x = posX;
-            this.bg.y = posY;
-
-
-            this.inter?.remove();
-            this.inter = new dc.h2d.Interactive(this.bg.wid, this.bg.hei, this.bg, null);
-            this.inter.onClick = new HlAction<Event>(this.OnClick);
-            BGtext();
-            UpdateLobbyIdLabel(forceRefreshText: true);
-        }
-
-
-        private void BGtext()
-        {
-            this.MainTitleflow = new Flow(null);
-            this.MainTitleflow.isVertical = true;
-            var uiScale = UiScale.GetResolutionScale();
-
-            FlowAlign flowAlign = this.MainTitleflow.set_horizontalAlign(new FlowAlign.Middle());
-            flowAlign = this.MainTitleflow.set_verticalAlign(new FlowAlign.Top());
-
-            double bgWidth = this.bg!.wid;
+            double bgWidth = this.bg.wid;
             double bgHeight = this.bg.hei;
-            this.MainTitleflow.set_minWidth((int)bgWidth);
-            this.MainTitleflow.set_minHeight((int)bgHeight);
 
+            // Rebuild the absolute-positioned menu list container.
+            this._menuRoot?.remove();
+            this._menuRoot = new dc.h2d.Object(null);
+            this.bg.addChild(this._menuRoot);
+            this._menuHitRects.Clear();
 
-            this.bg!.addChild(this.MainTitleflow);
-            dc.ui.Text title = Assets.Class.makeText(
-                GetText.Instance.GetString("Lobby menu").AsHaxeString(),
-                Tools.MultiColor.ColorFromHex("#f7fc65"),
-                true,
-                null
-            );
+            double padX = 14.0 * uiScale;
+            double listW = bgWidth - padX * 2.0;
+            double cursorY;
 
-            title.scaleX = 0.6 * uiScale;
-            title.scaleY = 0.6 * uiScale;
+            if (this._keepLobbyVisible)
+            {
+                // Lobby screens: keep the vanilla "Lobby menu" title + player list flow on top,
+                // and render the action buttons underneath it.
+                this.MainTitleflow.set_minWidth((int)bgWidth);
+                this.MainTitleflow.set_minHeight((int)bgHeight);
+                this.MainTitleflow.set_visible(true);
+                if (this.playersListWrapper != null)
+                {
+                    try { this.playersListWrapper.visible = true; } catch { }
+                }
+                this.MainTitleflow.reflow();
+                cursorY = System.Math.Max(this.MainTitleflow.get_innerHeight(), 60.0 * uiScale) + 4.0 * uiScale;
+            }
+            else
+            {
+                // Navigation screens: no own title, no player list.
+                this.MainTitleflow.set_visible(false);
+                if (this.playersListWrapper != null)
+                {
+                    try { this.playersListWrapper.visible = false; } catch { }
+                }
+                cursorY = 22.0 * uiScale;
+            }
 
-            this.MainTitleflow.addChild(title);
+            // Info lines first.
+            foreach (var info in PendingInfos)
+            {
+                var line = Assets.Class.makeText(
+                    info.Text.AsHaxeString(),
+                    Tools.MultiColor.ColorFromHex("#e0e0e0"),
+                    false,
+                    this._menuRoot);
+                line.customScale = 0.42 * uiScale;
+                line.onResize();
+                line.textColor = info.Color;
+                line.x = padX;
+                line.y = cursorY;
+                cursorY += 24.0 * uiScale;
+            }
 
+            if (PendingInfos.Count > 0)
+            {
+                DrawSeparator(cursorY, padX, listW, uiScale);
+                cursorY += 16.0 * uiScale;
+            }
 
-            Flow titleWrapper = new Flow(null);
-            titleWrapper.isVertical = false;
-            titleWrapper.set_horizontalAlign(new FlowAlign.Middle());
+            for (int i = 0; i < PendingButtons.Count; i++)
+            {
+                var btn = PendingButtons[i];
+                if (i > 0)
+                {
+                    DrawSeparator(cursorY, padX, listW, uiScale);
+                    cursorY += 12.0 * uiScale;
+                }
 
-            titleWrapper.addChild(title);
-            this.MainTitleflow.addChild(titleWrapper);
+                double btnH = (string.IsNullOrWhiteSpace(btn.Help) ? 34.0 : 50.0) * uiScale;
+                double y = cursorY;
+                DrawButtonPlate(btn, padX, y, listW, btnH, uiScale);
+                var label = Assets.Class.makeText(
+                    btn.Label.AsHaxeString(),
+                    Tools.MultiColor.ColorFromHex("#ffffff"),
+                    false,
+                    this._menuRoot);
+                label.customScale = 0.48 * uiScale;
+                label.onResize();
+                label.textColor = btn.Enabled ? (btn.Color == 0xFFFFFF ? TextColor : btn.Color) : DisabledColor;
+                label.x = padX + 10.0 * uiScale;
+                label.y = y + 7.0 * uiScale;
 
-            dc.ui.Text subtitle = Assets.Class.makeText(
-                GetText.Instance.GetString("Players' list").AsHaxeString(),
-                Tools.MultiColor.ColorFromHex("#919191"),
-                false,
-                null
-            );
-            subtitle.scaleX = 0.5 * uiScale;
-            subtitle.scaleY = 0.5 * uiScale;
+                if (!string.IsNullOrWhiteSpace(btn.Help))
+                {
+                    var help = Assets.Class.makeText(
+                        btn.Help.AsHaxeString(),
+                        Tools.MultiColor.ColorFromHex("#9098a8"),
+                        false,
+                        this._menuRoot);
+                    help.customScale = 0.34 * uiScale;
+                    help.onResize();
+                    help.textColor = HelpColor;
+                    help.x = padX + 10.0 * uiScale;
+                    help.y = y + btnH - 20.0 * uiScale;
+                }
 
+                if (btn.Enabled && btn.OnClick != null)
+                {
+                    this._menuHitRects.Add((padX, y, listW, btnH, btn.OnClick));
+                }
 
-            Flow subtitleWrapper = new Flow(null);
-            subtitleWrapper.isVertical = false;
-            subtitleWrapper.set_horizontalAlign(new FlowAlign.Middle());
+                cursorY += btnH + 6.0 * uiScale;
+            }
 
-            subtitleWrapper.addChild(subtitle);
-            this.MainTitleflow.addChild(subtitleWrapper);
+            // Hide lobby-code overlay while a menu screen is up.
+            if (this.lobbyCodeFlow != null)
+            {
+                try { this.lobbyCodeFlow.set_visible(false); } catch { }
+            }
 
-            Flow playersListWrapper = new Flow(null);
-            playersListWrapper.isVertical = true;
-            playersListWrapper.set_horizontalAlign(new FlowAlign.Middle());
-            playersListWrapper.set_verticalSpacing((int)(4 * uiScale));
-
-            this.MainTitleflow.addChild(playersListWrapper);
-            updateConnections();
-            this.MainTitleflow.reflow();
-
+            this._menuVisible = true;
+            this._menuRoot.set_visible(true);
         }
+
+        private void DrawSeparator(double y, double padX, double w, double uiScale)
+        {
+            if (this._menuRoot == null)
+                return;
+            var g = new Graphics(this._menuRoot);
+            int sepColor = SeparatorColor;
+            double sepAlpha = 1.0;
+            g.beginFill(Ref<int>.From(ref sepColor), Ref<double>.From(ref sepAlpha));
+            g.drawRect(padX + 4.0, y, w - 8.0, 1.0);
+            g.endFill();
+        }
+
+        private void DrawButtonPlate(PendingButton btn, double x, double y, double w, double h, double uiScale)
+        {
+            if (this._menuRoot == null)
+                return;
+            var g = new Graphics(this._menuRoot);
+            double fullAlpha = 1.0;
+            bool accent = btn.Enabled && btn.Color != 0xFFFFFF;
+
+            // outer edge
+            int edge = btn.Enabled ? PanelInnerEdge : DisabledPlate;
+            g.beginFill(Ref<int>.From(ref edge), Ref<double>.From(ref fullAlpha));
+            g.drawRect(x, y, w, h);
+            g.endFill();
+
+            // inner panel
+            int inner = btn.Enabled ? PanelInner : DisabledPlate;
+            g.beginFill(Ref<int>.From(ref inner), Ref<double>.From(ref fullAlpha));
+            g.drawRect(x + 2.0, y + 2.0, w - 4.0, h - 4.0);
+            g.endFill();
+
+            // top highlight
+            int top = accent ? AccentColor : PanelInnerTop;
+            g.beginFill(Ref<int>.From(ref top), Ref<double>.From(ref fullAlpha));
+            g.drawRect(x + 4.0, y + 3.0, w - 8.0, 2.0);
+            g.endFill();
+
+            // accent left notch for primary/action buttons
+            if (accent)
+            {
+                int accentColor = AccentColor;
+                g.beginFill(Ref<int>.From(ref accentColor), Ref<double>.From(ref fullAlpha));
+                g.drawRect(x, y + 4.0, 3.0, h - 8.0);
+                g.endFill();
+            }
+        }
+
+        // ================================================================ lobby display (existing)
 
         public void updateConnections()
         {
@@ -531,7 +578,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             var flowHeight = this.lobbyCodeFlow.get_innerHeight();
             this.lobbyCodeFlow.x = this.bg.x + leftPadding;
             this.lobbyCodeFlow.y = this.bg.y + this.bg.hei - flowHeight - bottomPadding;
-            this.lobbyCodeFlow.set_visible(true);
+            this.lobbyCodeFlow.set_visible(this._mode == UiMode.Lobby);
         }
 
         private bool NeedsConnectionsRefresh(List<string> names)
@@ -548,38 +595,272 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             return false;
         }
 
+        // ================================================================ legacy visual extras (kept for compat)
+
+        private List<double> sprx = new List<double> { 0.4, -1.0, -0.2, -0.6 };
+        private List<string> animlist = new List<string>
+        {
+           "idle", "idle","idle","idle"
+        };
+        private List<string> sprmodu = new List<string>
+        {
+            "Tick4","PrisonerGold","KingWhite","PrisonerDefault"
+        };
+
+        private void loadspr(double x, string sprmuld, int count)
+        {
+            this.spritesflow = new Flow(null);
+            this.spritesflow.set_verticalAlign(new FlowAlign.Top());
+            this.spritesflow.set_horizontalAlign(new FlowAlign.Middle());
+            this.spritesflow.isVertical = false;
+
+            dc.String idle = "idle".AsHaxeString();
+            string skinanim = animlist[count];
+            SpriteLib g = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo(sprmuld.AsHaxeString()));
+            this.spriteui = new HSprite(g, skinanim.AsHaxeString(), Ref<int>.Null, null);
+
+            SpritePivot pivot = this.spriteui.pivot;
+            pivot.centerFactorX = x;
+            pivot.centerFactorY = 0.5;
+            pivot.usingFactor = true;
+            pivot.isUndefined = false;
+
+            initColorMap(sprmuld);
+
+            AnimManager animManager = this.spriteui.get_anim().play(skinanim.AsHaxeString(), null, null).loop(null);
+            animManager.genSpeed = 0.4;
+
+            this.spriteui.set_visible(true);
+            this.spritesflow.addChild(this.spriteui);
+            this.bg?.addChild(this.spritesflow);
+            this.sprites.Add(this.spriteui);
+        }
+
+        private string GetRandomAnimation(List<string> values)
+        {
+            Random fallbackRandom = new Random();
+            int fallbackIndex = fallbackRandom.Next(values.Count);
+            return values[fallbackIndex];
+        }
+
+        public void playallanims(HSprite hSprite)
+        {
+            try
+            {
+                var groups = hSprite.lib?.groups;
+                if (groups == null)
+                    return;
+
+                var keysIterator = groups.keys();
+                animlist.Clear();
+
+                while (keysIterator.hasNext())
+                {
+                    string key = keysIterator.next().ToString();
+                    if (!key.StartsWith("Atk", StringComparison.OrdinalIgnoreCase))
+                        animlist.Add(key);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public void initColorMap(string colorMap)
+        {
+            dc.shader.ColorMap shader = (dc.shader.ColorMap)this.spriteui!.getShader(dc.shader.ColorMap.Class);
+            if (shader != null)
+            {
+                this.spriteui.removeShader(shader);
+            }
+
+            dc.h3d.mat.Texture texture = Res.Class.load("atlas/beheaded_aladdin_s.png".AsHaxeString()).toTexture();
+            dc.h3d.mat.Filter filter = new dc.h3d.mat.Filter.Nearest();
+            filter = texture.set_filter(filter);
+
+            virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_ skinInfo = Cdb.Class.getSkinInfo(colorMap.AsHaxeString());
+            dc.h3d.mat.Texture heroColorMap = Assets.Class.getHeroColorMap(skinInfo);
+            dc.shader.ColorMap colorMapp = (ColorMap)this.spriteui.addShader(new dc.shader.ColorMap(heroColorMap));
+
+            DirLighted s2 = new DirLighted();
+            s2 = (DirLighted)this.spriteui.addShader(s2);
+
+            dc.h3d.mat.Texture normalMapFromGroup = this.spriteui.lib.getNormalMapFromSprite(this.spriteui);
+            dc.shader.NormalMap normal = new dc.shader.NormalMap(normalMapFromGroup);
+            this.spriteui.addShader(normal);
+        }
+
+        // ================================================================ lifecycle
+
+        private void clean()
+        {
+            ClearLobbyCodeUi();
+            this._menuRoot?.remove();
+            this._menuRoot = null;
+            this.bg?.remove();
+            this.rootFlow?.remove();
+            this.inter?.remove();
+            this.sprites.Clear();
+        }
+
+        public override void onResize()
+        {
+            base.onResize();
+            if (this.rootFlow == null || base.root == null)
+                return;
+
+            var win = dc.hxd.Window.Class.getInstance();
+            double screenWidth = win.get_width();
+            double screenHeight = win.get_height();
+            var uiScale = UiScale.GetResolutionScale();
+
+            this.rootFlow.set_minWidth((int)(screenWidth * 0.90));
+            this.rootFlow.set_minHeight((int)(screenHeight * 0.82));
+            this.rootFlow.reflow();
+
+            double flowW = this.rootFlow.get_innerWidth();
+            double flowH = this.rootFlow.get_innerHeight();
+
+            ClearLobbyCodeUi();
+            this.bg?.remove();
+            this.bg = UIBox.Class.drawBoxValidation(
+                (int)flowW,
+                (int)flowH,
+                Ref<int>.Null,
+                Ref<int>.Null,
+                null,
+                false
+            );
+            this.root.addChild(this.bg);
+
+            this.bg.set_visible(true);
+            this.bg.wid = (int)255;
+            this.bg.hei = (int)flowH;
+
+            // Left-center placement: anchored to the left edge with a small margin, vertically centered.
+            double posX = base.get_pixelScale.Invoke() * 22.0 * uiScale;
+            double posY = (screenHeight - flowH) / 2.0;
+            this.rootFlow.x = posX;
+            this.rootFlow.y = posY;
+
+            this.bg.x = posX;
+            this.bg.y = posY;
+
+            this.inter?.remove();
+            this.inter = new dc.h2d.Interactive(this.bg.wid, this.bg.hei, this.bg, null);
+            this.inter.onClick = new HlAction<Event>(this.OnClick);
+            BGtext();
+            if (this._mode == UiMode.Menu && this._menuVisible)
+                RebuildMenuScreen();
+            UpdateLobbyIdLabel(forceRefreshText: true);
+        }
+
+        private void BGtext()
+        {
+            this.MainTitleflow = new Flow(null);
+            this.MainTitleflow.isVertical = true;
+            var uiScale = UiScale.GetResolutionScale();
+
+            FlowAlign flowAlign = this.MainTitleflow.set_horizontalAlign(new FlowAlign.Middle());
+            flowAlign = this.MainTitleflow.set_verticalAlign(new FlowAlign.Top());
+
+            double bgWidth = this.bg!.wid;
+            double bgHeight = this.bg.hei;
+            this.MainTitleflow.set_minWidth((int)bgWidth);
+            this.MainTitleflow.set_minHeight((int)bgHeight);
+
+            this.bg!.addChild(this.MainTitleflow);
+            dc.ui.Text title = Assets.Class.makeText(
+                GetText.Instance.GetString("Lobby menu").AsHaxeString(),
+                Tools.MultiColor.ColorFromHex("#f7fc65"),
+                true,
+                null
+            );
+
+            title.scaleX = 0.6 * uiScale;
+            title.scaleY = 0.6 * uiScale;
+
+            this.MainTitleflow.addChild(title);
+
+            Flow titleWrapper = new Flow(null);
+            titleWrapper.isVertical = false;
+            titleWrapper.set_horizontalAlign(new FlowAlign.Middle());
+
+            titleWrapper.addChild(title);
+            this.MainTitleflow.addChild(titleWrapper);
+
+            dc.ui.Text subtitle = Assets.Class.makeText(
+                GetText.Instance.GetString("Players' list").AsHaxeString(),
+                Tools.MultiColor.ColorFromHex("#919191"),
+                false,
+                null
+            );
+            subtitle.scaleX = 0.5 * uiScale;
+            subtitle.scaleY = 0.5 * uiScale;
+
+            Flow subtitleWrapper = new Flow(null);
+            subtitleWrapper.isVertical = false;
+            subtitleWrapper.set_horizontalAlign(new FlowAlign.Middle());
+
+            subtitleWrapper.addChild(subtitle);
+            this.MainTitleflow.addChild(subtitleWrapper);
+
+            this.playersListWrapper = new Flow(null);
+            this.playersListWrapper.isVertical = true;
+            this.playersListWrapper.set_horizontalAlign(new FlowAlign.Middle());
+            this.playersListWrapper.set_verticalSpacing((int)(4 * uiScale));
+
+            this.MainTitleflow.addChild(this.playersListWrapper);
+            updateConnections();
+            this.MainTitleflow.reflow();
+        }
 
         public override void update()
         {
             base.update();
-            var names = _ConnectionUI.GetAllPlayerNames();
-            if (NeedsConnectionsRefresh(names))
-                RefreshConnections(names);
-            else
-                UpdateLobbyIdLabel(forceRefreshText: false);
 
-            if (dc.hxd.Key.Class.isPressed(80))
+            if (this._mode != UiMode.Menu || this._keepLobbyVisible)
             {
-                clean();
-                Log.Debug("destory ui");
-
-
+                var names = _ConnectionUI.GetAllPlayerNames();
+                if (NeedsConnectionsRefresh(names))
+                    RefreshConnections(names);
+                else
+                    UpdateLobbyIdLabel(forceRefreshText: false);
             }
-        }
-
-        public override void postUpdate()
-        {
-            base.postUpdate();
-
+            else if (this._menuVisible)
+            {
+                UpdateLobbyIdLabel(forceRefreshText: false);
+            }
         }
 
         private void OnClick(Event e)
         {
-            if (this.lobbyCodeFlow == null || !this.lobbyCodeFlow.visible || this.bg == null)
+            if (this.bg == null)
                 return;
 
-            var x = e.relX;
-            var y = e.relY;
+            // Menu buttons (hit rects are relative to bg).
+            if (this._menuVisible && this._menuRoot != null && this._menuRoot.visible)
+            {
+                var x = e.relX;
+                var y = e.relY;
+                for (int i = 0; i < this._menuHitRects.Count; i++)
+                {
+                    var r = this._menuHitRects[i];
+                    if (x >= r.X && x <= r.X + r.W && y >= r.Y && y <= r.Y + r.H)
+                    {
+                        try { r.Cb(); }
+                        catch (Exception ex) { Log.Debug("[ConnectionUI] Button callback failed: {Message}", ex.Message); }
+                        return;
+                    }
+                }
+            }
+
+            // Lobby code copy.
+            if (this.lobbyCodeFlow == null || !this.lobbyCodeFlow.visible)
+                return;
+
+            var relX = e.relX;
+            var relY = e.relY;
             var width = this.lobbyCodeFlow.get_innerWidth();
             var height = this.lobbyCodeFlow.get_innerHeight();
             var minX = this.lobbyCodeFlow.x - this.bg.x;
@@ -587,14 +868,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             var maxX = minX + width;
             var maxY = minY + height;
 
-            if (x < minX || x > maxX || y < minY || y > maxY)
+            if (relX < minX || relX > maxX || relY < minY || relY > maxY)
                 return;
 
             if (GameMenu.TryCopySteamLobbyCodeFromUi())
                 MultiplayerUI.PushSystemMessage("Lobby id copied to clipboard");
-
         }
-
 
         public static void Initialize(ModEntry entry)
         {
@@ -602,8 +881,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         }
 
         /// <summary>
-        /// Ensures ConnectionUI exists on the given TitleScreen. Called from mainMenu hook
-        /// to avoid Hashlink marshaling crash in TitleScreen constructor (bool? titleLib).
+        /// Ensures ConnectionUI exists on the given TitleScreen. Called from mainMenu hook.
         /// </summary>
         public static void EnsureCreated(TitleScreen screen)
         {
@@ -622,8 +900,5 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             {
             }
         }
-
-
-
     }
 }

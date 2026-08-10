@@ -100,6 +100,7 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
+                UiBegin();
                 var multiplayerSaveLabel = GetMultiplayerSaveButtonLabel();
                 var continueLabel = GetContinueButtonLabel(screen);
                 var startLabel = GetStartNormalModeButtonLabel();
@@ -107,20 +108,19 @@ namespace DeadCellsMultiplayerMod
                 var continueCompatible = IsHostContinueCompatible(out var continueBlockReason);
                 var canContinue = canLaunch && continueCompatible;
                 var disabledContinueReason = canLaunch ? continueBlockReason : "Not all players ready";
-                AddMenuButton(screen, continueLabel, () => ContinueHostRun(screen), canContinue ? Localize("Continue the selected multiplayer save") : Localize(disabledContinueReason), canContinue);
-                AddMenuButton(screen, startLabel, () => StartHostRunNormalMode(screen), GetText.Instance.GetString("Launch game"), canLaunch);
-                AddMenuButton(screen, "Custom Mode", () => OpenHostCustomMode(screen), Localize("Configure and launch multiplayer custom mode"), canLaunch);
-                AddMenuButton(screen, GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
-                AddMenuButton(screen, multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
+                UiButton(continueLabel, () => ContinueHostRun(screen), canContinue ? Localize("Continue the selected multiplayer save") : Localize(disabledContinueReason), canContinue);
+                UiButton(startLabel, () => StartHostRunNormalMode(screen), GetText.Instance.GetString("Launch game"), canLaunch, 0x59D5FF);
+                UiButton("Custom Mode", () => OpenHostCustomMode(screen), Localize("Configure and launch multiplayer custom mode"), canLaunch);
+                UiButton(GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
+                UiButton(multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
                 if (_menuTransport == ConnectionTransport.Steam && _steamLobbyId != 0UL)
                 {
-                    AddMenuButton(
-                        screen,
+                    UiButton(
                         Localize("Invite Steam friends"),
                         () => OpenSteamHostInviteOverlay(screen),
                         Localize("Open the Steam friends invite list"));
                 }
-                AddMenuButton(screen, GetText.Instance.GetString("Back"), () =>
+                UiButton(GetText.Instance.GetString("Back"), () =>
                 {
                     StopNetworkFromMenu();
                     SetRole(NetRole.None);
@@ -130,17 +130,9 @@ namespace DeadCellsMultiplayerMod
                 }, GetText.Instance.GetString("Back to host setup"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    continueLabel,
-                    startLabel,
-                    "Custom Mode",
-                    GetReadyButtonLabel(),
-                    multiplayerSaveLabel,
-                    Localize("Invite Steam friends"),
-                    GetText.Instance.GetString("Back"));
                 _inHostStatusMenu = true;
                 _inClientWaitingMenu = false;
+                UiCommit(showLobby: true);
             }
             catch (Exception ex)
             {
@@ -180,20 +172,20 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddInfoLine(screen, $"Selected mode: {GetPendingLaunchSummaryLabel(screen)}", infoColor: 0xE0E0E0);
-                AddMenuButton(screen, GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
+                UiBegin();
+                UiInfo($"Selected mode: {GetPendingLaunchSummaryLabel(screen)}", 0xE0E0E0);
+                UiButton(GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
                 var multiplayerSaveLabel = GetMultiplayerSaveButtonLabel();
-                AddMenuButton(screen, multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
-                AddMenuButton(
-                    screen,
+                UiButton(multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
+                UiButton(
                     GetText.Instance.GetString("Disconnect"),
-                    () => {DisconnectFromMenu(screen); screen.ShouldAutoHideConnectionUI(false);},
+                    () => { DisconnectFromMenu(screen); screen.ShouldAutoHideConnectionUI(false); },
                     GetText.Instance.GetString("Disconnect and return to main menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(screen, GetReadyButtonLabel(), multiplayerSaveLabel, GetText.Instance.GetString("Disconnect"));
                 _inClientWaitingMenu = true;
                 _inHostStatusMenu = false;
+                UiCommit(showLobby: true);
             }
             catch (Exception ex)
             {
@@ -217,17 +209,17 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddInfoLine(screen, GetText.Instance.GetString("Can't find lobby"), infoColor: 0xFF9090);
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiInfo(GetText.Instance.GetString("Can't find lobby"), 0xFF9090);
+                UiButton(
                     GetText.Instance.GetString("OK"),
                     () => ShowConnectionMenu(screen, NetRole.Client),
                     GetText.Instance.GetString("Return to join menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(screen, GetText.Instance.GetString("OK"));
                 _inClientWaitingMenu = false;
                 _inHostStatusMenu = false;
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -1359,6 +1351,38 @@ namespace DeadCellsMultiplayerMod
             var color = Ref<int>.From(ref colorVal);
             var cb = new HlAction(() => { });
             screen.addMenu(labelStr, cb, helpStr, false, color);
+        }
+
+        // ---------------------------------------------------------------- ConnectionUI routing
+
+        /// <summary>Starts a ConnectionUI screen (clears the pending model, makes the hub visible).</summary>
+        private static void UiBegin()
+        {
+            ConnectionUI.BeginMenu();
+        }
+
+        /// <summary>Adds a pretty button to the current ConnectionUI screen.</summary>
+        private static void UiButton(string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null)
+        {
+            ConnectionUI.AddPendingButton(label, help ?? string.Empty, isEnabled ?? true, textColor ?? 0xFFFFFF, onClick);
+        }
+
+        /// <summary>Adds an informational line to the current ConnectionUI screen.</summary>
+        private static void UiInfo(string text, int? infoColor = null)
+        {
+            ConnectionUI.AddPendingInfo(text, infoColor ?? 0xFFFFFF);
+        }
+
+        /// <summary>Renders the current ConnectionUI screen.</summary>
+        private static void UiCommit(bool showLobby = false)
+        {
+            ConnectionUI.CommitMenu(showLobby);
+        }
+
+        /// <summary>Shows the ConnectionUI lobby display (player list + lobby code).</summary>
+        private static void UiLobby()
+        {
+            ConnectionUI.ShowLobbyMode();
         }
 
         private static object? GetMemberValue(object? obj, string name, bool ignoreCase)

@@ -466,18 +466,19 @@ internal static partial class GameMenu
                 return;
 
             screen.clearMenu();
-            AddInfoLine(screen, Localize("Co-op version mismatch"), 0xFF9090);
-            AddInfoLine(screen, detail, 0xE0E0E0);
-            AddInfoLine(
-                screen,
+            UiBegin();
+            UiInfo(Localize("Co-op version mismatch"), 0xFF9090);
+            UiInfo(detail, 0xE0E0E0);
+            UiInfo(
                 Localize("Install the exact same DeadCellsMultiplayerMod build on both computers."),
                 0xE0E0E0);
-            AddMenuButton(screen, GetText.Instance.GetString("OK"), () =>
+            UiButton(GetText.Instance.GetString("OK"), () =>
             {
                 screen.clearMenu();
                 ShowJoinTransportMenu(screen);
             }, Localize("Return to join menu"));
             screen.ShouldAutoHideConnectionUI(false);
+            UiCommit();
         });
     }
 }
