@@ -68,48 +68,62 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             // Scene lighting globals must be present for DirLighted (title-screen hero path).
             EnsureLobbyBeheadedLighting();
 
-            // User-tuned layout (keep these unless the user asks to move them).
+            // Beheaded positions are the anchor. Boxes/nicks are offset to frame them
+            // (do not move the sprites to chase the plates — move the plates).
             const double beheadedScale = 2.75;
-            const double gapBetweenBeheaded = 20.0;
+            const double gapBetweenBeheaded = 24.0;
             const double approxTileWidth = 48.0;
-            const double nickGap = 8.0;
-            const double boxPadX = 14.0;
-            const double boxPadTop = 20.0;
-            const double boxPadBottom = 14.0;
-            const double rootXNudge = -100.0;
+            const double approxTileHeight = 56.0;
+            const double nickGap = 6.0;
+            const double boxPadX = 20.0;
+            const double boxPadY = 18.0;
+            // Whole row on screen (negative = left).
+            const double rootXNudge = -5.0;
+            // Plate vs beheaded — tune so the art sits in the middle of the box.
+            // Negative X = box left; negative Y = box up.
+            const double boxOffsetX = 5.0;
+            const double boxOffsetY = -75.0;
 
             double scale = beheadedScale * uiScale;
             double bodyW = approxTileWidth * scale;
-            double bodyH = approxTileWidth * scale;
-            double slotW = bodyW + boxPadX * 2.0 * uiScale;
-            double slotH = bodyH + (boxPadTop + boxPadBottom) * uiScale;
-            double step = slotW + gapBetweenBeheaded;
-            double padTop = boxPadTop * uiScale;
-            double padBottom = boxPadBottom * uiScale;
+            double bodyH = approxTileHeight * scale;
+            double padX = boxPadX * uiScale;
+            double padY = boxPadY * uiScale;
+            double slotW = bodyW + padX * 2.0;
+            double slotH = bodyH + padY * 2.0;
+            double step = slotW + gapBetweenBeheaded * uiScale;
+            double plateDX = boxOffsetX * uiScale;
+            double plateDY = boxOffsetY * uiScale;
 
             this._lobbyBeheadedRoot = new dc.h2d.Object(null);
             this._panelRoot.addChild(this._lobbyBeheadedRoot);
 
             int slotCount = System.Math.Max(slots.Count, _ConnectionUI.LobbySlotCount);
-            double rowW = step * slotCount - gapBetweenBeheaded;
+            double rowW = step * slotCount - gapBetweenBeheaded * uiScale;
             this._lobbyBeheadedRoot.x = this._layoutW - System.Math.Max(panelW, rowW) - screenPad + rootXNudge;
 
             double belowCode = this._lobbyPanelHeight > 0
-                ? this._lobbyPanelHeight + 24.0 * uiScale
-                : 220.0 * uiScale;
-            // Bottom-pivoted body grows UP from y=0 — feet baseline sits below body height.
-            this._lobbyBeheadedRoot.y = screenPad + belowCode + bodyH + padTop;
+                ? this._lobbyPanelHeight + 12.0 * uiScale
+                : 72.0 * uiScale;
+            // Near the top, but not flush against the window edge.
+            this._lobbyBeheadedRoot.y = screenPad * 0.85 + belowCode;
 
-            // Pass 1: plates (behind).
             for (int i = 0; i < slotCount; i++)
             {
                 var slot = i < slots.Count ? slots[i] : _ConnectionUI.LobbyPlayerSlot.Empty;
                 bool occupied = slot.Occupied && !slot.IsConnecting;
+                double slotX = i * step;
+                // Beheaded stays on the geometric slot center — do not nudge these.
+                double sprX = slotX + slotW * 0.5;
+                double sprY = slotH * 0.5;
+                double plateX = slotX + plateDX;
+                double plateY = plateDY;
+
                 var plate = new Graphics(this._lobbyBeheadedRoot);
                 UiChrome.DrawRaisedPlate(
                     plate,
-                    i * step,
-                    -bodyH - padTop,
+                    plateX,
+                    plateY,
                     slotW,
                     slotH,
                     FieldCornerRadius * uiScale,
@@ -117,15 +131,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     occupied ? PanelInner : 0x1A2233,
                     occupied && slot.IsHost ? 0x4A6A8E : PanelInnerTop,
                     enabled: true);
-            }
 
-            // Pass 2: beheaded sprites (direct children of root — same parenting that title path uses).
-            for (int i = 0; i < slotCount; i++)
-            {
                 try
                 {
-                    var slot = i < slots.Count ? slots[i] : _ConnectionUI.LobbyPlayerSlot.Empty;
-                    bool occupied = slot.Occupied && !slot.IsConnecting;
                     string skinId = occupied ? slot.Skin : DefaultLobbySkin;
                     if (string.IsNullOrWhiteSpace(skinId))
                         skinId = DefaultLobbySkin;
@@ -134,26 +142,22 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     if (spr == null)
                     {
                         Log.Warning("[ConnectionUI] Lobby beheaded[{Index}] create returned null", i);
-                        continue;
                     }
-
-                    this._lobbyBeheadedRoot.addChild(spr);
-                    spr.x = i * step + slotW * 0.5;
-                    spr.y = 0;
-                    if (!occupied)
-                        ApplyLobbyBeheadedSilhouette(spr);
-                    this.sprites.Add(spr);
+                    else
+                    {
+                        this._lobbyBeheadedRoot.addChild(spr);
+                        spr.x = sprX;
+                        spr.y = sprY;
+                        if (!occupied)
+                            ApplyLobbyBeheadedSilhouette(spr);
+                        this.sprites.Add(spr);
+                    }
                 }
                 catch (Exception ex)
                 {
                     Log.Warning("[ConnectionUI] Lobby beheaded[{Index}] failed: {Message}", i, ex.Message);
                 }
-            }
 
-            // Pass 3: nicks under plates.
-            for (int i = 0; i < slotCount; i++)
-            {
-                var slot = i < slots.Count ? slots[i] : _ConnectionUI.LobbyPlayerSlot.Empty;
                 string nick = ResolveLobbySlotNick(slot);
                 if (string.IsNullOrWhiteSpace(nick))
                     continue;
@@ -170,13 +174,14 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 try
                 {
                     double textW = nickText.textWidth;
-                    nickText.x = i * step + (slotW - textW) * 0.5;
+                    nickText.x = plateX + (slotW - textW) * 0.5;
                 }
                 catch
                 {
-                    nickText.x = i * step + 4.0 * uiScale;
+                    nickText.x = plateX + 4.0 * uiScale;
                 }
-                nickText.y = padBottom + nickGap * uiScale;
+                // Nick follows the box, not the geometric slot.
+                nickText.y = plateY + slotH + nickGap * uiScale;
                 this.connectionLabels.Add(nickText);
             }
 
@@ -231,8 +236,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             var spr = new HSprite(g, skinanim.AsHaxeString(), Ref<int>.Null, null);
 
             SpritePivot pivot = spr.pivot;
+            // Center pivot so negative scaleX keeps the body in the middle of the plate.
             pivot.centerFactorX = 0.5;
-            pivot.centerFactorY = 1.0;
+            pivot.centerFactorY = 0.5;
             pivot.usingFactor = true;
             pivot.isUndefined = false;
 
@@ -245,7 +251,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             animManager.genSpeed = 0.4;
 
             double absScale = System.Math.Abs(scale);
-            spr.scaleX = -absScale; // face left
+            // Default idle faces right; negative scaleX faces left.
+            spr.scaleX = -absScale;
             spr.scaleY = absScale;
             spr.set_visible(true);
             return spr;
