@@ -1257,6 +1257,7 @@ namespace DeadCellsMultiplayerMod
             var hitchStart = RuntimeHitchWatch.Start();
             PumpSteamCallbacksForOverlay();
             GameMenu.ProcessMainThreadQueue();
+            PlayPopupWindowGuard.Tick();
             CheckRemoteKingRenderSafety("frame");
             GameMenu.TickMenu(dt);
             DetectAndSendBossCine();

@@ -101,6 +101,10 @@ namespace DeadCellsMultiplayerMod
                 screen.clearMenu();
 
                 UiBegin();
+                if (_menuTransport == ConnectionTransport.Steam)
+                    UiInfo(Localize("Steam lobby — invite friends, then launch when everyone is Ready."), 0x9098A8);
+                else
+                    UiInfo(Localize("LAN lobby — waiting for players. Launch unlocks when everyone is Ready."), 0x9098A8);
                 var multiplayerSaveLabel = GetMultiplayerSaveButtonLabel();
                 var continueLabel = GetContinueButtonLabel(screen);
                 var startLabel = GetStartNormalModeButtonLabel();
@@ -122,11 +126,16 @@ namespace DeadCellsMultiplayerMod
                 }
                 UiButton(GetText.Instance.GetString("Back"), () =>
                 {
+                    var transport = _menuTransport;
                     StopNetworkFromMenu();
                     SetRole(NetRole.None);
                     _menuSelection = NetRole.None;
-                    ShowMultiplayerMenu(screen);
-                    screen.ShouldAutoHideConnectionUI(false);
+                    // Return to the setup screen that led here — never hide ConnectionUI after Show*.
+                    if (transport == ConnectionTransport.Lan)
+                        ShowConnectionMenu(screen, NetRole.Host);
+                    else
+                        ShowHostTransportMenu(screen);
+                    screen.ShouldAutoHideConnectionUI(true);
                 }, GetText.Instance.GetString("Back to host setup"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
@@ -173,14 +182,28 @@ namespace DeadCellsMultiplayerMod
                 screen.clearMenu();
 
                 UiBegin();
+                UiInfo(Localize("Connected — ready up and wait for the host to launch."), 0x9098A8);
                 UiInfo($"Selected mode: {GetPendingLaunchSummaryLabel(screen)}", 0xE0E0E0);
+                if (_menuTransport == ConnectionTransport.Steam)
+                    UiInfo(Localize("Transport: Steam"), 0x8A93A6);
+                else
+                    UiInfo(Localize("Transport: LAN"), 0x8A93A6);
                 UiButton(GetReadyButtonLabel(), () => ToggleLocalReadyFromMenu(screen), Localize("Toggle your ready state"));
                 var multiplayerSaveLabel = GetMultiplayerSaveButtonLabel();
                 UiButton(multiplayerSaveLabel, () => OpenMultiplayerSlotMenu(screen), Localize("Choose multiplayer save slot"));
                 UiButton(
                     GetText.Instance.GetString("Disconnect"),
-                    () => { DisconnectFromMenu(screen); screen.ShouldAutoHideConnectionUI(false); },
-                    GetText.Instance.GetString("Disconnect and return to main menu"));
+                    () =>
+                    {
+                        var transport = _menuTransport;
+                        DisconnectFromMenu(screen, restoreTitle: false);
+                        if (transport == ConnectionTransport.Lan)
+                            ShowConnectionMenu(screen, NetRole.Client);
+                        else
+                            ShowJoinTransportMenu(screen);
+                        screen.ShouldAutoHideConnectionUI(true);
+                    },
+                    GetText.Instance.GetString("Disconnect and return to join options"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
                 _inClientWaitingMenu = true;
@@ -232,7 +255,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void DisconnectFromMenu(TitleScreen screen)
+        private static void DisconnectFromMenu(TitleScreen screen, bool restoreTitle = true)
         {
             StopNetworkFromMenu();
             ResetClientConnectState();
@@ -240,7 +263,20 @@ namespace DeadCellsMultiplayerMod
             ResetSteamState();
             _inHostStatusMenu = false;
             _inClientWaitingMenu = false;
-            screen.mainMenu();
+            if (restoreTitle)
+            {
+                try
+                {
+                    ConnectionUI.DismissAndHide();
+                    SetIsMainMenu(screen, false);
+                    try { screen.clearMenu(); } catch { }
+                    screen.mainMenu();
+                }
+                catch
+                {
+                    try { screen.mainMenu(); } catch { }
+                }
+            }
         }
 
         private static void StopNetworkFromMenu()
@@ -1352,9 +1388,9 @@ namespace DeadCellsMultiplayerMod
         }
 
         /// <summary>Adds a pretty button to the current ConnectionUI screen.</summary>
-        private static void UiButton(string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null)
+        private static void UiButton(string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null, bool fieldStyle = false)
         {
-            ConnectionUI.AddPendingButton(label, help ?? string.Empty, isEnabled ?? true, textColor ?? 0xFFFFFF, onClick);
+            ConnectionUI.AddPendingButton(label, help ?? string.Empty, isEnabled ?? true, textColor ?? 0xFFFFFF, onClick, fieldStyle);
         }
 
         /// <summary>Adds an informational line to the current ConnectionUI screen.</summary>
@@ -1364,9 +1400,38 @@ namespace DeadCellsMultiplayerMod
         }
 
         /// <summary>Renders the current ConnectionUI screen.</summary>
-        private static void UiCommit(bool showLobby = false)
+        private static void UiCommit(bool showLobby = false, bool hubLayout = false)
         {
-            ConnectionUI.CommitMenu(showLobby);
+            ConnectionUI.CommitMenu(showLobby, hubLayout);
+        }
+
+        /// <summary>
+        /// Leaves the multiplayer hub and forces a real TitleScreen main-menu rebuild.
+        /// ShowMultiplayerMenu clears menu items then restores isMainMenu=true, so a bare
+        /// <c>mainMenu()</c> can no-op and leave an empty title under a leftover hub.
+        /// </summary>
+        private static void ReturnFromMultiplayerHubToTitle(TitleScreen screen)
+        {
+            try
+            {
+                StopNetworkFromMenu();
+                ConnectionUI.DismissAndHide();
+                // Force TitleScreen to treat this as a fresh main-menu build.
+                SetIsMainMenu(screen, false);
+                try { screen.clearMenu(); } catch { }
+                screen.mainMenu();
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Return to title failed: {Message}", ex.Message);
+                try
+                {
+                    ConnectionUI.DismissAndHide();
+                    SetIsMainMenu(screen, false);
+                    screen.mainMenu();
+                }
+                catch { }
+            }
         }
 
         /// <summary>Shows the ConnectionUI lobby display (player list + lobby code).</summary>

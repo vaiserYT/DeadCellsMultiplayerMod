@@ -477,7 +477,7 @@ internal static partial class GameMenu
                 screen.clearMenu();
                 ShowJoinTransportMenu(screen);
             }, Localize("Return to join menu"));
-            screen.ShouldAutoHideConnectionUI(false);
+            screen.ShouldAutoHideConnectionUI(true);
             UiCommit();
         });
     }

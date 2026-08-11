@@ -719,6 +719,8 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
                 UiBegin();
+                UiInfo(Localize("Co-op multiplayer"), 0xF7FC65);
+                UiInfo(Localize("Host a session or join a friend over LAN or Steam."), 0x9098A8);
                 UiButton(
                     GetText.Instance.GetString("Host game"),
                     () => ShowHostTransportMenu(screen),
@@ -727,15 +729,15 @@ namespace DeadCellsMultiplayerMod
                     GetText.Instance.GetString("Join game"),
                     () => ShowJoinTransportMenu(screen),
                     GetText.Instance.GetString("Connect to an existing host"));
-                UiButton(GetText.Instance.GetString("Back"), () =>
-                {
-                    StopNetworkFromMenu();
-                    ConnectionUI.ReturnToMainMenu(screen);
-                }, GetText.Instance.GetString("Return to main menu"));
+                UiButton(
+                    GetText.Instance.GetString("Back"),
+                    () => ReturnFromMultiplayerHubToTitle(screen),
+                    GetText.Instance.GetString("Return to main menu"));
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
                 _inHostStatusMenu = false;
                 _inClientWaitingMenu = false;
-                UiCommit();
+                // hubLayout: only this first Host/Join screen uses the wide centered panel.
+                UiCommit(hubLayout: true);
             }
             catch (Exception ex)
             {
@@ -760,6 +762,8 @@ namespace DeadCellsMultiplayerMod
                 screen.clearMenu();
 
                 UiBegin();
+                UiInfo(Localize("Host options"), 0xF7FC65);
+                UiInfo(Localize("LAN uses IP/port. Steam uses friends or a lobby code."), 0x9098A8);
                 UiButton(
                     GetText.Instance.GetString("Lan host"),
                     () => ShowConnectionMenu(screen, NetRole.Host),
@@ -799,6 +803,8 @@ namespace DeadCellsMultiplayerMod
                 screen.clearMenu();
 
                 UiBegin();
+                UiInfo(Localize("Steam lobby visibility"), 0xF7FC65);
+                UiInfo(Localize("Friends-only stays private. Public creates a shareable lobby code."), 0x9098A8);
                 UiButton(
                     GetText.Instance.GetString("Steam friends-only host"),
                     () => StartSteamHost(screen, SteamConnect.SteamLobbyVisibility.FriendsOnly),
@@ -841,6 +847,11 @@ namespace DeadCellsMultiplayerMod
                 screen.clearMenu();
 
                 UiBegin();
+                UiInfo(Localize("Join a session"), 0xF7FC65);
+                if (_steamFriendLobbies.Count > 0)
+                    UiInfo(Localize("Friends hosting right now appear below."), 0x9098A8);
+                else
+                    UiInfo(Localize("No friends currently hosting — list refreshes automatically."), 0x9098A8);
                 UiButton(
                     GetText.Instance.GetString("Lan join"),
                     () =>
@@ -850,14 +861,7 @@ namespace DeadCellsMultiplayerMod
                     },
                     GetText.Instance.GetString("Connect by IP/port"));
 
-                UiInfo(Localize("Steam friends hosting this mod"), 0xA8D8FF);
-
-                if (_steamFriendLobbies.Count == 0)
-                {
-                    UiInfo(Localize("No Steam friends are hosting right now."), 0xC8C8C8);
-                    UiInfo(Localize("This list refreshes automatically."), 0x9098A8);
-                }
-                else
+                if (_steamFriendLobbies.Count > 0)
                 {
                     foreach (var friendLobby in _steamFriendLobbies)
                     {
@@ -1036,10 +1040,21 @@ namespace DeadCellsMultiplayerMod
                 screen.clearMenu();
 
                 UiBegin();
+                if (role == NetRole.Host)
+                {
+                    UiInfo(Localize("LAN host setup"), 0xF7FC65);
+                    UiInfo(Localize("Share your IP and port with players on the same network."), 0x9098A8);
+                }
+                else
+                {
+                    UiInfo(Localize("LAN join setup"), 0xF7FC65);
+                    UiInfo(Localize("Enter the host IP and port, then Join."), 0x9098A8);
+                }
                 UiButton(
                     $"{GetText.Instance.GetString("Username: ")}{_username}",
                     () => EditUsername(screen),
-                    GetText.Instance.GetString("Edit display name"));
+                    GetText.Instance.GetString("Edit display name"),
+                    fieldStyle: true);
 
                 UiButton($"{GetText.Instance.GetString("IP: ")}{_mpIp}", () =>
                 {
@@ -1049,7 +1064,7 @@ namespace DeadCellsMultiplayerMod
                         SaveConfig();
                         ShowConnectionMenu(screen, role);
                     }, noSpaces: true);
-                }, GetText.Instance.GetString("Edit IP"));
+                }, GetText.Instance.GetString("Edit IP"), fieldStyle: true);
 
                 UiButton($"{GetText.Instance.GetString("Port: ")}{_mpPort}", () =>
                 {
@@ -1061,7 +1076,7 @@ namespace DeadCellsMultiplayerMod
                         SaveConfig();
                         ShowConnectionMenu(screen, role);
                     }, noSpaces: true);
-                }, GetText.Instance.GetString("Edit port"));
+                }, GetText.Instance.GetString("Edit port"), fieldStyle: true);
 
                 var actionLabel = role == NetRole.Host
                     ? GetText.Instance.GetString("Host")
@@ -1089,13 +1104,18 @@ namespace DeadCellsMultiplayerMod
                     GetText.Instance.GetString("Back"),
                     () =>
                     {
+                        // Previous screen is the transport picker (LAN / Steam), not the hub.
+                        // Do NOT call ShouldAutoHideConnectionUI(false): that sets ConnectionUI
+                        // invisible and makes it look like the menu "just closed".
                         if (role == NetRole.Host)
                             ShowHostTransportMenu(screen);
                         else
                             ShowJoinTransportMenu(screen);
-                        screen.ShouldAutoHideConnectionUI(false);
+                        screen.ShouldAutoHideConnectionUI(true);
                     },
-                    GetText.Instance.GetString("Back to multiplayer menu"));
+                    role == NetRole.Host
+                        ? GetText.Instance.GetString("Back to hosting options")
+                        : GetText.Instance.GetString("Back to join options"));
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
                 _inHostStatusMenu = false;
                 _inClientWaitingMenu = false;
