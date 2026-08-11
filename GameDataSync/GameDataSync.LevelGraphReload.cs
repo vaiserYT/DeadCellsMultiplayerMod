@@ -102,7 +102,7 @@ namespace DeadCellsMultiplayerMod
             if (string.IsNullOrWhiteSpace(levelId) || reason == LevelReloadReason.None)
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (net == null || !net.IsAlive || net.IsHost)
                 return;
 
@@ -118,7 +118,7 @@ namespace DeadCellsMultiplayerMod
                     _pendingLevelReloadPayloads[levelId] = null;
             }
 
-            GameMenu.EnqueueMainThreadCoalesced("level:reload:" + levelId, () =>
+            MainThreadPump.EnqueueMainThreadCoalesced("level:reload:" + levelId, () =>
             {
                 try
                 {
@@ -143,7 +143,7 @@ namespace DeadCellsMultiplayerMod
             {
                 if (ModEntry.IsLocalPlayerDowned())
                     return true;
-                if (GameMenu.IsClientRestartPending())
+                if (LobbySession.IsClientRestartPending())
                     return true;
             }
             catch
@@ -175,7 +175,7 @@ namespace DeadCellsMultiplayerMod
                 _pendingLevelReloadPayloads.Remove(graphLevelId);
             }
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (net == null || !net.IsAlive || net.IsHost)
                 return;
 

@@ -5,9 +5,9 @@ using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
-        private static void ResetLobbyReadyState()
+        internal static void ResetLobbyReadyState()
         {
             lock (Sync)
             {
@@ -15,13 +15,13 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ResetLobbyReadyStateLocked()
+        internal static void ResetLobbyReadyStateLocked()
         {
             _localReady = false;
             _playersDisplay.Clear();
         }
 
-        private static void ResetLobbyLaunchStateLocked()
+        internal static void ResetLobbyLaunchStateLocked()
         {
             StopHostRunLaunchBeacon("lobby_launch_state_reset");
             _clientLevelGraphWaitStartedTicks = 0;
@@ -46,7 +46,7 @@ namespace DeadCellsMultiplayerMod
             ResetClientLaunchSessionLocked();
         }
 
-        private static void PrepareLobbyForNewNetworkSession(bool clearRemoteCoopState = false)
+        internal static void PrepareLobbyForNewNetworkSession(bool clearRemoteCoopState = false)
         {
             lock (Sync)
             {
@@ -58,13 +58,13 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ToggleLocalReadyFromMenu(TitleScreen screen)
+        internal static void ToggleLocalReadyFromMenu(TitleScreen screen)
         {
             SetLocalReady(!_localReady, sendToRemote: true, refreshMenu: true);
             screen.ShouldAutoHideConnectionUI(true);
         }
 
-        private static void SetLocalReady(bool ready, bool sendToRemote, bool refreshMenu)
+        internal static void SetLocalReady(bool ready, bool sendToRemote, bool refreshMenu)
         {
             if (_localReady == ready && !refreshMenu)
                 return;
@@ -76,7 +76,7 @@ namespace DeadCellsMultiplayerMod
                 RequestLobbyMenuRefresh();
         }
 
-        private static void SendLocalReadyState()
+        internal static void SendLocalReadyState()
         {
             var net = NetRef;
             if (net == null || !net.IsAlive || net.id <= 0)
@@ -100,9 +100,9 @@ namespace DeadCellsMultiplayerMod
             RequestLobbyMenuRefresh();
         }
 
-        private static void RequestLobbyMenuRefresh()
+        internal static void RequestLobbyMenuRefresh()
         {
-            EnqueueMainThreadCoalesced("ui:lobby-ready-refresh", () =>
+            MainThreadPump.EnqueueMainThreadCoalesced("ui:lobby-ready-refresh", () =>
             {
                 lock (Sync)
                 {
@@ -125,7 +125,7 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
-        private static void RefreshPlayersDisplayFromNetwork()
+        internal static void RefreshPlayersDisplayFromNetwork()
         {
             _playersDisplay.Clear();
 
@@ -193,12 +193,12 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
-        private static string GetReadyButtonLabel()
+        internal static string GetReadyButtonLabel()
         {
             return _localReady ? "Ready: On" : "Ready: Off";
         }
 
-        private static string GetPendingLaunchSummaryLabel(TitleScreen? screen)
+        internal static string GetPendingLaunchSummaryLabel(TitleScreen? screen)
         {
             PendingLaunchAction action;
             bool custom;

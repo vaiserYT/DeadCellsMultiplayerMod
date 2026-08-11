@@ -17,7 +17,7 @@ public partial class InteractionSync
 {
     private bool Hook_SwitchBossRune_canBeActivated(Hook_SwitchBossRune.orig_canBeActivated orig, SwitchBossRune self, Hero by)
     {
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if(net != null && !net.IsHost)
             return false;
         return orig(self, by);
@@ -27,7 +27,7 @@ public partial class InteractionSync
     {
         orig(self);
 
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (!IsNetReadyForSend(net) || !net!.IsHost)
             return;
 
@@ -48,7 +48,7 @@ public partial class InteractionSync
 
     private void Hook_SwitchBossRune_updateCells(Hook_SwitchBossRune.orig_updateCells orig, SwitchBossRune self, bool add)
     {
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
 
         // updateCells performs a native main-level rebuild. Dispose the old remote render shells
         // before that rebuild starts; otherwise Boot.tryRender can visit a GhostKing whose sprite
@@ -87,7 +87,7 @@ public partial class InteractionSync
 
     private void TrySendTreasureChestEvent(TreasureChest self)
     {
-        TrySendInteractEvent(self, (x, y) => GameMenu.NetRef!.SendInterTreasureChest(x, y, GetCurrentInteractionLevelId()), "TreasureChest");
+        TrySendInteractEvent(self, (x, y) => LobbySession.NetRef!.SendInterTreasureChest(x, y, GetCurrentInteractionLevelId()), "TreasureChest");
     }
 
     private void Hook_VineLadder_activate(Hook_VineLadder.orig_activate orig, VineLadder self)
@@ -102,7 +102,7 @@ public partial class InteractionSync
     {
         if (_applyingRemoteVineLadderEvents)
             return;
-        TrySendInteractEvent(self, (x, y) => GameMenu.NetRef!.SendInterVineLadder(x, y, GetCurrentInteractionLevelId()), "VineLadder");
+        TrySendInteractEvent(self, (x, y) => LobbySession.NetRef!.SendInterVineLadder(x, y, GetCurrentInteractionLevelId()), "VineLadder");
     }
 
     private void Hook_Teleport_open(Hook_Teleport.orig_open orig, Teleport self)
@@ -117,7 +117,7 @@ public partial class InteractionSync
         orig(self, x, y);
         if (_applyingRemoteBreakableGroundEvents)
             return;
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (!IsNetReadyForSend(net) || ModEntry.me == null || !ReferenceEquals(self, ModEntry.me))
             return;
         try
@@ -134,7 +134,7 @@ public partial class InteractionSync
     {
         if (_applyingRemoteTeleportEvents)
             return;
-        TrySendInteractEvent(self, (x, y) => GameMenu.NetRef!.SendInterTeleport(x, y, GetCurrentInteractionLevelId()), "Teleport");
+        TrySendInteractEvent(self, (x, y) => LobbySession.NetRef!.SendInterTeleport(x, y, GetCurrentInteractionLevelId()), "Teleport");
     }
 
     private void Hook_Portal_show(Hook_Portal.orig_show orig, Portal self)
@@ -153,12 +153,12 @@ public partial class InteractionSync
     {
         if (_applyingRemotePortalEvents)
             return;
-        if (!IsNetReadyForSend(GameMenu.NetRef))
+        if (!IsNetReadyForSend(LobbySession.NetRef))
             return;
         try
         {
             var (x, y) = GetEntityPixelPos(self);
-            GameMenu.NetRef!.SendInterPortal(x, y, action, GetCurrentInteractionLevelId());
+            LobbySession.NetRef!.SendInterPortal(x, y, action, GetCurrentInteractionLevelId());
         }
         catch (Exception ex)
         {

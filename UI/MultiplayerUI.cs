@@ -243,7 +243,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI
                     var displayName = ModEntry.GetClientLabel(slotIndex);
                     if (string.IsNullOrWhiteSpace(displayName) ||
                         string.Equals(displayName, "Guest", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(displayName, GameMenu.RemoteUsername, StringComparison.Ordinal))
+                        string.Equals(displayName, LobbySession.RemoteUsername, StringComparison.Ordinal))
                     {
                         if (!string.IsNullOrWhiteSpace(remote.Username))
                             displayName = remote.Username.Trim();

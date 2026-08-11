@@ -21,7 +21,7 @@ namespace DeadCellsMultiplayerMod
                     ulong.TryParse(args[i + 1], out var lobbyId) && lobbyId > 0)
                 {
                     Instance?.Logger.Information("[NetMod][Steam] Launch parameter +connect_lobby detected lobbyId={LobbyId}", lobbyId);
-                    GameMenu.EnqueueMainThreadCoalesced("steam:overlay-join", () => GameMenu.HandleSteamOverlayJoinRequest(lobbyId));
+                    MainThreadPump.EnqueueMainThreadCoalesced("steam:overlay-join", () => LobbySession.HandleSteamOverlayJoinRequest(lobbyId));
                     return;
                 }
             }
@@ -140,7 +140,7 @@ namespace DeadCellsMultiplayerMod
             s_lastOverlayJoinLobbyId = lobbyId;
             s_lastOverlayJoinTicks = nowTicks;
             Instance?.Logger.Information("[NetMod][Steam] Queueing overlay join request lobbyId={LobbyId} source={Source}", lobbyId, source);
-            GameMenu.EnqueueMainThreadCoalesced("steam:overlay-join", () => GameMenu.HandleSteamOverlayJoinRequest(lobbyId));
+            MainThreadPump.EnqueueMainThreadCoalesced("steam:overlay-join", () => LobbySession.HandleSteamOverlayJoinRequest(lobbyId));
         }
 
         private static ulong TryParseLobbyIdFromConnectString(string connect)
@@ -187,7 +187,7 @@ namespace DeadCellsMultiplayerMod
         }
 
         /// <summary>
-        /// Call from GameMenu when at main menu so Steam overlay join callbacks are pumped even if frame update is throttled.
+        /// Call from LobbySession when at main menu so Steam overlay join callbacks are pumped even if frame update is throttled.
         /// </summary>
         internal static void PumpSteamCallbacksForOverlay()
         {
@@ -372,8 +372,8 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
-                var node = GameMenu.NetRef ?? _net;
-                GameMenu.NetRef = null;
+                var node = LobbySession.NetRef ?? _net;
+                LobbySession.NetRef = null;
                 _net = null;
                 node?.Dispose();
             }
@@ -382,7 +382,7 @@ namespace DeadCellsMultiplayerMod
                 // Never let shutdown cleanup throw out of a ProcessExit handler.
             }
 
-            try { GameMenu.ClearPendingNetworkMainThreadActions(); } catch { }
+            try { MainThreadPump.ClearPendingNetworkMainThreadActions(); } catch { }
 
             try
             {

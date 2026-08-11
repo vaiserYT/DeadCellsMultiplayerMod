@@ -77,7 +77,7 @@ internal static class BeholderArenaSync
         if (self == null)
             return native;
 
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive)
             return native;
 
@@ -106,7 +106,7 @@ internal static class BeholderArenaSync
         if (self == null)
             return;
 
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive)
             return;
 
@@ -141,7 +141,7 @@ internal static class BeholderArenaSync
         if (mob is not Beholder beholder)
             return;
 
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive || net.IsHost)
             return;
 

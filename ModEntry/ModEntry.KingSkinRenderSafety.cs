@@ -303,7 +303,7 @@ namespace DeadCellsMultiplayerMod
             DrainRemoteCombatQueuesAfterLevelChange();
             MarkDiveNetGuardAfterSpawnOrRoomChange();
             SendCurrentRoomTarget(force: true);
-            GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
+            MainThreadPump.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
 
             Logger.Information(
                 "[NetMod][SubLevelGuard] completed reason={CompletionReason} armedBy={ArmedReason}",

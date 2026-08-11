@@ -41,7 +41,7 @@ namespace DeadCellsMultiplayerMod
 
         private void ArmJoinSpawnForCurrentLevel(string? levelId)
         {
-            if (!GameMenu.TryConsumeMidRunJoinSpawn())
+            if (!RunLaunchFlow.TryConsumeMidRunJoinSpawn())
                 return;
 
             _joinSpawnArmed = true;

@@ -22,7 +22,7 @@ public partial class InteractionSync
         orig(self);
         if (_applyingRemoteElevatorEvents || _applyingRemoteElevatorStateEvents)
             return;
-        if (!IsNetReadyForSend(GameMenu.NetRef))
+        if (!IsNetReadyForSend(LobbySession.NetRef))
             return;
         try
         {
@@ -31,7 +31,7 @@ public partial class InteractionSync
                 return;
             _elevatorLastInterSendTickMs[self] = now;
 
-            var net = GameMenu.NetRef!;
+            var net = LobbySession.NetRef!;
             var (x, y) = GetElevatorStableAnchor(self);
             var sequence = ++_nextElevatorSequence;
             var levelId = GetCurrentInteractionLevelId();
@@ -80,7 +80,7 @@ public partial class InteractionSync
         if (level == null || events == null || events.Count == 0)
             return;
 
-        var localId = GameMenu.NetRef?.id ?? 0;
+        var localId = LobbySession.NetRef?.id ?? 0;
         _applyingRemoteElevatorEvents = true;
         try
         {
@@ -135,7 +135,7 @@ public partial class InteractionSync
         if (level == null || events == null || events.Count == 0)
             return;
 
-        var localId = GameMenu.NetRef?.id ?? 0;
+        var localId = LobbySession.NetRef?.id ?? 0;
         _applyingRemoteElevatorStateEvents = true;
         try
         {

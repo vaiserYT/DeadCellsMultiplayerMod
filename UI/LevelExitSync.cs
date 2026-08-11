@@ -204,7 +204,7 @@ public class LevelExitSync :
             return;
 
         var localHero = ModEntry.me;
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (localHero == null || !ReferenceEquals(by, localHero) ||
             net == null || !net.IsAlive || !net.IsHost)
         {
@@ -222,7 +222,7 @@ public class LevelExitSync :
             return;
 
         var bossRushType = SafeRead(() => door.bossRushType?.ToString() ?? string.Empty, string.Empty);
-        if (GameMenu.PrecommitHostBossRushRunSeed(
+        if (LobbySession.PrecommitHostBossRushRunSeed(
                 bossRushType,
                 door.cx,
                 door.cy,
@@ -297,7 +297,7 @@ public class LevelExitSync :
             return;
         }
 
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive || net.id <= 0)
         {
             origActivate();
@@ -356,7 +356,7 @@ public class LevelExitSync :
     void IOnHeroUpdate.OnHeroUpdate(double dt)
     {
         var hero = ModEntry.me;
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (hero == null || net == null || !net.IsAlive || net.id <= 0)
         {
             if (_lastLevel != null || _doorVisuals.Count > 0 || _playerStates.Count > 0 || _exitPointer != null)
@@ -799,7 +799,7 @@ public class LevelExitSync :
     /// </summary>
     private bool TryPassBossRushLaunchGate(Entity target)
     {
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive)
             return true;
 
@@ -812,7 +812,7 @@ public class LevelExitSync :
             return true;
         }
 
-        if (GameMenu.TryBeginLocalBossRushLoad(out var reason))
+        if (LobbySession.TryBeginLocalBossRushLoad(out var reason))
         {
             // Validate the real, runtime-sourced Boss Rush variant (this door's bossRushType) against
             // the authoritative host Route before the client invokes the native loader. A mismatch is
@@ -820,7 +820,7 @@ public class LevelExitSync :
             if (!net.IsHost)
             {
                 var localVariant = SafeRead(() => (target as BossRushDoor)?.bossRushType?.ToString() ?? string.Empty, string.Empty);
-                GameMenu.ValidateClientBossRushVariant(localVariant);
+                LobbySession.ValidateClientBossRushVariant(localVariant);
             }
             if (!string.IsNullOrEmpty(_bossRushGateDoorKey))
                 BossSyncDiag.Trace("launch gate cleared role={Role} door={Door}", BossSyncDiag.Role(net), _bossRushGateDoorKey);
@@ -851,7 +851,7 @@ public class LevelExitSync :
                 BossSyncDiag.Role(net),
                 key,
                 reason);
-            GameMenu.CancelBossRushLaunchGate($"boss rush launch sync timed out ({reason})");
+            LobbySession.CancelBossRushLaunchGate($"boss rush launch sync timed out ({reason})");
             MultiplayerUI.PushSystemMessage(
                 Localize("Boss Rush could not synchronize with your friend. Approach the door again to retry."),
                 7.0,
@@ -1164,7 +1164,7 @@ public class LevelExitSync :
             return Localize("Guest");
 
         if (net.id > 0 && userId == net.id)
-            return string.IsNullOrWhiteSpace(GameMenu.Username) ? Localize("Guest") : GameMenu.Username.Trim();
+            return string.IsNullOrWhiteSpace(LobbySession.Username) ? Localize("Guest") : LobbySession.Username.Trim();
 
         if (net.TryGetRemoteUsername(userId, out var username))
         {
@@ -1173,8 +1173,8 @@ public class LevelExitSync :
                 return name;
         }
 
-        if (userId == 1 && !string.IsNullOrWhiteSpace(GameMenu.RemoteUsername))
-            return GameMenu.RemoteUsername.Trim();
+        if (userId == 1 && !string.IsNullOrWhiteSpace(LobbySession.RemoteUsername))
+            return LobbySession.RemoteUsername.Trim();
 
         return FormatLocalized("Player {0}", userId);
     }
@@ -1303,7 +1303,7 @@ public class LevelExitSync :
             return false;
         
         // Prevent boss arena doors from being available for clients during active boss fights
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net != null && !net.IsHost && IsInBossFight())
             return false;
             
@@ -1368,7 +1368,7 @@ public class LevelExitSync :
 
             try
             {
-                var net = GameMenu.NetRef;
+                var net = LobbySession.NetRef;
                 if (net != null && net.IsAlive)
                     EnsureReadyStateCache(net);
 

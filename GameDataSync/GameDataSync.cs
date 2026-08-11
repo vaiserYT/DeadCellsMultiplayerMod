@@ -125,11 +125,11 @@ namespace DeadCellsMultiplayerMod
             //   2) the native Restart flow after the old world has already been disposed.
             //
             // Case (2) is the important restart crash guard: by the time User.newGame is called,
-            // GameMenu._inActualRun may already be false even though RunLaunchCoordinator still
+            // LobbySession._inActualRun may already be false even though RunLaunchCoordinator still
             // owns the committed run in LoadingLevel/Playing.  Generating a fresh seed there used
             // to attempt a second RUNCOMMIT and throw "Cannot commit a host launch while session
             // phase is LoadingLevel", taking down the host and force-disconnecting the client.
-            var currentNet = GameMenu.NetRef;
+            var currentNet = LobbySession.NetRef;
 
             // A Boss Rush entry is ALSO a newGame raised from inside a live run, so it looks
             // identical to a nested/sublevel re-entry to the checks below. It is not: the door
@@ -138,8 +138,8 @@ namespace DeadCellsMultiplayerMod
             // door never progresses because the peers are on different runs.
             var bossRushLaunchPending =
                 IsBossRushLaunchKind(GetLaunchKind(gdata)) ||
-                (currentNet?.IsHost == true && GameMenu.HasPrecommittedHostBossRushLaunch()) ||
-                (currentNet != null && !currentNet.IsHost && GameMenu.HasPendingRemoteBossRushLaunch());
+                (currentNet?.IsHost == true && LobbySession.HasPrecommittedHostBossRushLaunch()) ||
+                (currentNet != null && !currentNet.IsHost && LobbySession.HasPendingRemoteBossRushLaunch());
 
             if (!sameRunRestart &&
                 !bossRushLaunchPending &&
@@ -147,7 +147,7 @@ namespace DeadCellsMultiplayerMod
                 currentNet.IsAlive &&
                 gdata is LaunchMode.NewGame)
             {
-                if (GameMenu.IsInActualRun())
+                if (LobbySession.IsInActualRun())
                 {
                     _log?.Information(
                         "[NetMod][RunLaunch] Bypassing nested User.newGame launch sync inside active run seed={Seed}",
@@ -175,7 +175,7 @@ namespace DeadCellsMultiplayerMod
                     {
                         try
                         {
-                            // Manual/native Restart can bypass GameMenu.QueueHostRestartFromDeath.
+                            // Manual/native Restart can bypass LobbySession.QueueHostRestartFromDeath.
                             // Fence the old generated world here as well so the same level id cannot
                             // replay the previous run's seed/graph to a client during the restart.
                             currentNet.ClearCachedGeneratedLevelStateForRestart();
@@ -201,7 +201,7 @@ namespace DeadCellsMultiplayerMod
                     effectiveStreamEnabled = ResolveCurrentRunStreamEnabled();
                     effectiveLaunch = new LaunchMode.NewGame(effectiveCustomMode, effectiveStreamEnabled);
                 }
-                else if (GameMenu.TryGetAuthoritativePendingNewGameLaunch(out var selectedCustom, out var selectedStreamEnabled))
+                else if (LobbySession.TryGetAuthoritativePendingNewGameLaunch(out var selectedCustom, out var selectedStreamEnabled))
                 {
                     effectiveCustomMode = selectedCustom;
                     effectiveStreamEnabled = selectedStreamEnabled;
@@ -231,13 +231,13 @@ namespace DeadCellsMultiplayerMod
             _lastHeroSkinSyncPayload = null;
             _lastHeroHeadSkinSyncNet = null;
             _lastHeroHeadSkinSyncPayload = null;
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var launchKind = GetLaunchKind(gdata);
             var nativeBossRushLaunch = IsBossRushLaunchKind(launchKind);
             var expectedBossRushLaunch = !sameRunRestart &&
                                          (nativeBossRushLaunch ||
-                                          (net?.IsHost == true && GameMenu.HasPrecommittedHostBossRushLaunch()) ||
-                                          (net != null && !net.IsHost && GameMenu.HasPendingRemoteBossRushLaunch()));
+                                          (net?.IsHost == true && LobbySession.HasPrecommittedHostBossRushLaunch()) ||
+                                          (net != null && !net.IsHost && LobbySession.HasPendingRemoteBossRushLaunch()));
             if (expectedBossRushLaunch && !nativeBossRushLaunch)
             {
                 // Some generated bindings expose the Boss Rush launch variant with a runtime name
@@ -258,7 +258,7 @@ namespace DeadCellsMultiplayerMod
                     Seed = restartSeed;
                 }
                 else if (shouldSynchronizeSeed &&
-                    GameMenu.TryConsumePrecommittedHostRunSeed(launchKind, out var precommittedSeed, out var precommittedSequence))
+                    LobbySession.TryConsumePrecommittedHostRunSeed(launchKind, out var precommittedSeed, out var precommittedSequence))
                 {
                     Seed = precommittedSeed;
                     seedSequence = precommittedSequence;
@@ -271,7 +271,7 @@ namespace DeadCellsMultiplayerMod
                 }
                 else if (shouldSynchronizeSeed && ShouldGenerateFreshHostSeed(gdata))
                 {
-                    Seed = GameMenu.ForceGenerateServerSeed("NewGame_hook");
+                    Seed = LobbySession.ForceGenerateServerSeed("NewGame_hook");
                 }
                 else
                 {
@@ -283,7 +283,7 @@ namespace DeadCellsMultiplayerMod
                 if (shouldSynchronizeSeed)
                 {
                     if (!reusedPrecommittedSeed)
-                        seedSequence = GameMenu.RegisterHostRunSeed(Seed, launchKind, "user.newGame");
+                        seedSequence = LobbySession.RegisterHostRunSeed(Seed, launchKind, "user.newGame");
 
                     // Commit/ACK/execute is now the authoritative launch barrier. The legacy seed
                     // remains as a migration/debug packet, but cannot make a v0.8.90 client load by itself.
@@ -294,7 +294,7 @@ namespace DeadCellsMultiplayerMod
                     // client. Degrade to an un-synchronized local launch and say so loudly instead.
                     try
                     {
-                        GameMenu.CommitHostRunLaunchFromHook(Seed, seedSequence, launchKind);
+                        LobbySession.CommitHostRunLaunchFromHook(Seed, seedSequence, launchKind);
                     }
                     catch (Exception ex)
                     {
@@ -305,7 +305,7 @@ namespace DeadCellsMultiplayerMod
                             launchKind,
                             ex.Message);
                         DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI.MultiplayerUI.PushSystemMessage(
-                            GameMenu.Localize("Run failed to synchronize with your friend. Please return to the menu and retry."),
+                            LobbySession.Localize("Run failed to synchronize with your friend. Please return to the menu and retry."),
                             8.0,
                             1.0);
                     }
@@ -313,7 +313,7 @@ namespace DeadCellsMultiplayerMod
                     // Resending the same precommitted sequence is intentional: it refreshes the
                     // host cache and covers a client that completed its handshake during the intro.
                     net.SendSeed(seedSequence, Seed, launchKind);
-                    GameMenu.MarkRunLaunchLoading(seedSequence, $"host_user.newGame:{launchKind}");
+                    LobbySession.MarkRunLaunchLoading(seedSequence, $"host_user.newGame:{launchKind}");
                 }
             }
             else if (net != null)
@@ -323,10 +323,10 @@ namespace DeadCellsMultiplayerMod
                     Seed = restartSeed;
                 }
                 else if (shouldSynchronizeSeed &&
-                    GameMenu.TryConsumeNextRemoteRunSeed(out var remoteSeed, out var remoteSequence, out var remoteLaunchKind))
+                    LobbySession.TryConsumeNextRemoteRunSeed(out var remoteSeed, out var remoteSequence, out var remoteLaunchKind))
                 {
                     Seed = remoteSeed;
-                    GameMenu.MarkRunLaunchLoading(remoteSequence, $"client_user.newGame:{remoteLaunchKind}");
+                    LobbySession.MarkRunLaunchLoading(remoteSequence, $"client_user.newGame:{remoteLaunchKind}");
                     if (!string.IsNullOrWhiteSpace(remoteLaunchKind) &&
                         !string.Equals(remoteLaunchKind, launchKind, StringComparison.Ordinal))
                     {
@@ -337,7 +337,7 @@ namespace DeadCellsMultiplayerMod
                             launchKind);
                     }
                 }
-                else if (GameMenu.TryGetPendingRemoteBossRushSeed(out var authoritativeBossRushSeed))
+                else if (LobbySession.TryGetPendingRemoteBossRushSeed(out var authoritativeBossRushSeed))
                 {
                     // Authoritative host seed already received but not consumed via the coordinator
                     // (e.g. arrived a frame late). This is still the host's seed, not a local one.
@@ -349,7 +349,7 @@ namespace DeadCellsMultiplayerMod
                 else if (shouldSynchronizeSeed)
                 {
                     // Protocol 17: never silently generate a local Boss Rush / run on the client. The
-                    // launch gate (GameMenu.TryBeginLocalBossRushLoad / structured auto-start) is meant
+                    // launch gate (LobbySession.TryBeginLocalBossRushLoad / structured auto-start) is meant
                     // to guarantee the authoritative seed is present before newGame runs, so reaching
                     // here is a hard desync. Keep the native seed only as an unavoidable last resort and
                     // surface it loudly instead of quietly diverging.
@@ -359,7 +359,7 @@ namespace DeadCellsMultiplayerMod
                         expectedBossRushLaunch,
                         lvl);
                     DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI.MultiplayerUI.PushSystemMessage(
-                        GameMenu.Localize("Run failed to synchronize with your friend. Please return to the menu and retry."),
+                        LobbySession.Localize("Run failed to synchronize with your friend. Please return to the menu and retry."),
                         8.0,
                         1.0);
                 }
@@ -408,7 +408,7 @@ namespace DeadCellsMultiplayerMod
                 // Custom Mode GameData ctor calls CustomGameData.checkIntegrity(user) which
                 // immediately touches user.itemMeta. Main.getGame loads User via Save.tryLoad,
                 // so TitleScreen prep alone is not enough on the client auto-start path.
-                if (!GameMenu.PrepareUserForCustomModeLaunch(self))
+                if (!LobbySession.PrepareUserForCustomModeLaunch(self))
                 {
                     _log?.Warning(
                         "[NetMod] Custom Mode newGame: User.itemMeta could not be prepared (role={Role})",
@@ -422,7 +422,7 @@ namespace DeadCellsMultiplayerMod
             }
             finally
             {
-                GameMenu.ClearAuthoritativePendingNewGameLaunch();
+                LobbySession.ClearAuthoritativePendingNewGameLaunch();
                 if (sameRunRestart)
                     ClearSameRunRestart();
             }
@@ -436,7 +436,7 @@ namespace DeadCellsMultiplayerMod
             // shared seed each side fights different encounters. The historical double-load race
             // this gate used to prevent came from the client-side reconcile restart firing on an
             // unconsumed nested seed; that restart is now suppressed for Boss Rush kinds in
-            // GameMenu.ReceiveHostRunSeed, so sharing the seed is safe. Challenge rooms, daily
+            // RunLaunchFlow.ReceiveHostRunSeed, so sharing the seed is safe. Challenge rooms, daily
             // modes and other nested launches stay local.
             lock (_sameRunRestartSync)
             {
@@ -643,7 +643,7 @@ namespace DeadCellsMultiplayerMod
 
         public static void TriggerRemoteDeath()
         {
-            GameMenu.EnqueueCriticalMainThreadCoalesced("game:remote-death", () =>
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced("game:remote-death", () =>
             {
                 if (ModEntry.IsLocalPlayerDowned())
                     return;
@@ -783,7 +783,7 @@ namespace DeadCellsMultiplayerMod
 
                 if (now >= nextRequestAt)
                 {
-                    try { GameMenu.NetRef?.RequestLevelSeed(levelId); } catch { }
+                    try { LobbySession.NetRef?.RequestLevelSeed(levelId); } catch { }
                     nextRequestAt = now + 1000;
                 }
 
@@ -801,7 +801,7 @@ namespace DeadCellsMultiplayerMod
             if (net == null || !net.IsAlive || rng == null || string.IsNullOrWhiteSpace(levelId))
                 return;
 
-            GameMenu.PublishInitialLevelSeed(levelId, rng.seed, net);
+            LobbySession.PublishInitialLevelSeed(levelId, rng.seed, net);
             SendSerializerSync(net);
             net.SendLevelSeed(levelId, rng.seed);
         }
@@ -965,10 +965,10 @@ namespace DeadCellsMultiplayerMod
                     if (serializerClass == null)
                         return;
 
-                    var net = GameMenu.NetRef;
+                    var net = LobbySession.NetRef;
                     var canRestorePrevious =
                         _restorePrevious &&
-                        GameMenu.CurrentRole == NetRole.Client &&
+                        LobbySession.CurrentRole == NetRole.Client &&
                         net != null &&
                         net.IsAlive &&
                         !net.IsHost &&
@@ -1032,9 +1032,9 @@ namespace DeadCellsMultiplayerMod
                 if (previousSeq == _localSerializerSeq && previousUid == _localSerializerUid)
                     return default;
 
-                var net = GameMenu.NetRef;
+                var net = LobbySession.NetRef;
                 var restorePrevious =
-                    GameMenu.CurrentRole == NetRole.Client &&
+                    LobbySession.CurrentRole == NetRole.Client &&
                     net != null &&
                     net.IsAlive &&
                     !net.IsHost &&
@@ -1045,7 +1045,7 @@ namespace DeadCellsMultiplayerMod
                 _log?.Information(
                     "[NetMod][Save] serializer scope begin reason={Reason} role={Role} fromSeq={FromSeq} fromUid={FromUid} toSeq={ToSeq} toUid={ToUid}",
                     reason,
-                    GameMenu.CurrentRole,
+                    LobbySession.CurrentRole,
                     previousSeq,
                     previousUid,
                     _localSerializerSeq,
@@ -1145,12 +1145,12 @@ namespace DeadCellsMultiplayerMod
             }
             _hasRemoteBossRune = true;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (net != null && net.IsHost)
                 return;
 
             // Lobby auto-start waits on HasRemoteBossRune; re-arm if seed/exec already arrived.
-            GameMenu.NotifyClientLaunchPrerequisiteProgress();
+            LobbySession.NotifyClientLaunchPrerequisiteProgress();
 
             RequestBossRuneHudRefresh(bossRune);
 
@@ -1161,7 +1161,7 @@ namespace DeadCellsMultiplayerMod
                 MarkPendingBossRuneReload(bossRune);
             // _log?.Information("[NetMod] Received remote boss rune {BossRune}", bossRune);
 
-            GameMenu.EnqueueCriticalMainThreadCoalesced("game:boss-rune-apply", () =>
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced("game:boss-rune-apply", () =>
             {
                 try
                 {
@@ -1180,7 +1180,7 @@ namespace DeadCellsMultiplayerMod
                 // applying the value so the coalesced, throttled reload path can run once both exist.
                 try
                 {
-                    var n = GameMenu.NetRef;
+                    var n = LobbySession.NetRef;
                     if (n != null && n.IsAlive && !n.IsHost)
                         TryScheduleBossRuneReloadForCurrentLevel();
                 }
@@ -1406,7 +1406,7 @@ namespace DeadCellsMultiplayerMod
 
         private static void RequestBossRuneHudRefresh(int bossRune)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (net == null || !net.IsAlive || net.IsHost)
                 return;
 
@@ -1421,7 +1421,7 @@ namespace DeadCellsMultiplayerMod
 
         internal static void PumpBossRuneHudRefresh()
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (net == null || !net.IsAlive || net.IsHost)
             {
                 ClearBossRuneHudRefresh();

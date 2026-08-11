@@ -6,30 +6,30 @@ using dc.ui;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
-        private enum PendingLaunchAction
+        internal enum PendingLaunchAction
         {
             None,
             LoadSave,
             NewGame
         }
 
-        private static bool _launchHooksAttached;
-        private static PendingLaunchAction _pendingLaunchAction = PendingLaunchAction.NewGame;
-        private static bool _pendingLaunchCustom;
-        private static bool _pendingLaunchStreamEnabled;
-        private static bool _hasAuthoritativePendingNewGameLaunch;
-        private static bool _authoritativePendingNewGameCustom;
-        private static bool _authoritativePendingNewGameStreamEnabled;
-        private static string _cachedGeneratePayloadSignature = string.Empty;
-        private static string? _cachedGeneratePayloadJson;
+        internal static bool _launchHooksAttached;
+        internal static PendingLaunchAction _pendingLaunchAction = PendingLaunchAction.NewGame;
+        internal static bool _pendingLaunchCustom;
+        internal static bool _pendingLaunchStreamEnabled;
+        internal static bool _hasAuthoritativePendingNewGameLaunch;
+        internal static bool _authoritativePendingNewGameCustom;
+        internal static bool _authoritativePendingNewGameStreamEnabled;
+        internal static string _cachedGeneratePayloadSignature = string.Empty;
+        internal static string? _cachedGeneratePayloadJson;
         // Host Custom Mode rules live in save/customGameData_{slot}.json. The client must receive
         // that file before startNewGame(true); otherwise GameData.load/checkIntegrity null-derefs.
-        private static bool _remoteCustomGameDataReady;
-        private static string? _pendingRemoteCustomGameDataJson;
+        internal static bool _remoteCustomGameDataReady;
+        internal static string? _pendingRemoteCustomGameDataJson;
 
-        private static void InitializeMultiplayerLaunchHooks()
+        internal static void InitializeMultiplayerLaunchHooks()
         {
             if (_launchHooksAttached)
                 return;
@@ -39,7 +39,7 @@ namespace DeadCellsMultiplayerMod
             _launchHooksAttached = true;
         }
 
-        private static void Hook_TitleScreen_startNewGame(Hook_TitleScreen.orig_startNewGame orig, TitleScreen self, bool custom)
+        internal static void Hook_TitleScreen_startNewGame(Hook_TitleScreen.orig_startNewGame orig, TitleScreen self, bool custom)
         {
             var streamEnabled = TryGetStreamEnabled(self);
             NormalizePendingNewGameLaunch(ref custom, ref streamEnabled);
@@ -51,7 +51,7 @@ namespace DeadCellsMultiplayerMod
             orig(self, custom);
         }
 
-        private static void Hook_TitleScreen_confirmNewGame(Hook_TitleScreen.orig_confirmNewGame orig, TitleScreen self, bool custom)
+        internal static void Hook_TitleScreen_confirmNewGame(Hook_TitleScreen.orig_confirmNewGame orig, TitleScreen self, bool custom)
         {
             var streamEnabled = TryGetStreamEnabled(self);
             NormalizePendingNewGameLaunch(ref custom, ref streamEnabled);
@@ -61,7 +61,7 @@ namespace DeadCellsMultiplayerMod
             orig(self, custom);
         }
 
-        private static void RememberPendingLaunch(PendingLaunchAction action, bool custom, bool streamEnabled, bool sendToRemote, bool assignNewCoopWorld = true)
+        internal static void RememberPendingLaunch(PendingLaunchAction action, bool custom, bool streamEnabled, bool sendToRemote, bool assignNewCoopWorld = true)
         {
             if (sendToRemote && (action != PendingLaunchAction.NewGame || assignNewCoopWorld))
                 PrepareCoopIdentityForPendingLaunch(action);
@@ -85,7 +85,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void NormalizePendingNewGameLaunch(ref bool custom, ref bool streamEnabled)
+        internal static void NormalizePendingNewGameLaunch(ref bool custom, ref bool streamEnabled)
         {
             lock (Sync)
             {
@@ -97,7 +97,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void SetAuthoritativePendingNewGameLaunch(bool custom, bool streamEnabled)
+        internal static void SetAuthoritativePendingNewGameLaunch(bool custom, bool streamEnabled)
         {
             lock (Sync)
             {
@@ -134,13 +134,13 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private static void InvalidateGeneratePayloadCacheLocked()
+        internal static void InvalidateGeneratePayloadCacheLocked()
         {
             _cachedGeneratePayloadSignature = string.Empty;
             _cachedGeneratePayloadJson = null;
         }
 
-        private static bool TryGetStreamEnabled(TitleScreen? screen)
+        internal static bool TryGetStreamEnabled(TitleScreen? screen)
         {
             try
             {
@@ -152,12 +152,12 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static string GetModeLabel(bool isCustom)
+        internal static string GetModeLabel(bool isCustom)
         {
             return isCustom ? "Custom Mode" : "Normal Mode";
         }
 
-        private static bool ResolveCurrentSaveIsCustom(TitleScreen? screen)
+        internal static bool ResolveCurrentSaveIsCustom(TitleScreen? screen)
         {
             try
             {
@@ -175,21 +175,21 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static string GetContinueButtonLabel(TitleScreen? screen)
+        internal static string GetContinueButtonLabel(TitleScreen? screen)
         {
             return string.Create(
                 System.Globalization.CultureInfo.InvariantCulture,
                 $"Continue ({GetModeLabel(ResolveCurrentSaveIsCustom(screen))})");
         }
 
-        private static string GetStartNormalModeButtonLabel()
+        internal static string GetStartNormalModeButtonLabel()
         {
             return string.Create(
                 System.Globalization.CultureInfo.InvariantCulture,
                 $"{GetModeLabel(isCustom: false)}");
         }
 
-        private static void ContinueHostRun(TitleScreen screen)
+        internal static void ContinueHostRun(TitleScreen screen)
         {
             if (!CanHostStartContinue(out var reason))
             {
@@ -208,7 +208,7 @@ namespace DeadCellsMultiplayerMod
             TryLaunchContinue(screen);
         }
 
-        private static void OpenHostCustomMode(TitleScreen screen)
+        internal static void OpenHostCustomMode(TitleScreen screen)
         {
             if (!AllPlayersReady())
                 return;
@@ -244,7 +244,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool EnsureCustomModeScreenUser(TitleScreen? screen)
+        internal static bool EnsureCustomModeScreenUser(TitleScreen? screen)
         {
             if (screen == null)
                 return false;
@@ -296,7 +296,7 @@ namespace DeadCellsMultiplayerMod
             return TryPrepareCustomModeUser(user, out _);
         }
 
-        private static bool TryPrepareCustomModeUser(User? candidate, out User preparedUser)
+        internal static bool TryPrepareCustomModeUser(User? candidate, out User preparedUser)
         {
             preparedUser = null!;
             if (candidate == null)
@@ -345,14 +345,14 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static string GetCustomGameDataRelativePath(int? slot = null)
+        internal static string GetCustomGameDataRelativePath(int? slot = null)
         {
             return string.Create(
                 System.Globalization.CultureInfo.InvariantCulture,
                 $"customGameData_{ResolveSaveSlotNumber(slot)}.json");
         }
 
-        private static bool TryReadLocalCustomGameDataJson(out string json)
+        internal static bool TryReadLocalCustomGameDataJson(out string json)
         {
             json = string.Empty;
             try
@@ -384,7 +384,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool TryWriteLocalCustomGameDataJson(string json)
+        internal static bool TryWriteLocalCustomGameDataJson(string json)
         {
             if (string.IsNullOrWhiteSpace(json))
                 return false;
@@ -430,7 +430,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void SendCustomGameDataToRemote()
+        internal static void SendCustomGameDataToRemote()
         {
             var net = NetRef;
             if (net == null || !net.IsAlive || !net.IsHost)
@@ -484,7 +484,7 @@ namespace DeadCellsMultiplayerMod
             }
 
             // Disk write must happen on the game thread-safe path before auto-start consumes it.
-            EnqueueCriticalMainThreadCoalesced(
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced(
                 "game:apply-custom-game-data",
                 () =>
                 {
@@ -520,7 +520,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void StartHostRunNormalMode(TitleScreen screen)
+        internal static void StartHostRunNormalMode(TitleScreen screen)
         {
             if (!AllPlayersReady())
                 return;
@@ -537,7 +537,7 @@ namespace DeadCellsMultiplayerMod
             TryLaunchNewGame(screen, custom: false, TryGetStreamEnabled(screen));
         }
 
-        private static void TryLaunchContinue(TitleScreen? screen)
+        internal static void TryLaunchContinue(TitleScreen? screen)
         {
             if (!TryBeginContinueLaunch())
                 return;
@@ -570,7 +570,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool TryBeginContinueLaunch()
+        internal static bool TryBeginContinueLaunch()
         {
             var now = DateTime.UtcNow;
             lock (Sync)
@@ -587,7 +587,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ClearContinueLaunchGuard()
+        internal static void ClearContinueLaunchGuard()
         {
             lock (Sync)
             {
@@ -596,7 +596,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void TrySendContinueLaunchPrerequisites(TitleScreen? screen)
+        internal static void TrySendContinueLaunchPrerequisites(TitleScreen? screen)
         {
             var net = NetRef;
             if (net == null || !net.IsAlive || !net.IsHost)
@@ -610,7 +610,7 @@ namespace DeadCellsMultiplayerMod
             GameDataSync.SendCurrentHeroCosmetics(user, net, force: true);
         }
 
-        private static User? TryResolveContinueUser(TitleScreen? screen)
+        internal static User? TryResolveContinueUser(TitleScreen? screen)
         {
             try
             {
@@ -640,7 +640,7 @@ namespace DeadCellsMultiplayerMod
             return null;
         }
 
-        private static void TryLaunchNewGame(TitleScreen? screen, bool custom, bool streamEnabled)
+        internal static void TryLaunchNewGame(TitleScreen? screen, bool custom, bool streamEnabled)
         {
             SetAuthoritativePendingNewGameLaunch(custom, streamEnabled);
 
@@ -726,7 +726,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static string BuildGeneratePayloadJson(LevelDescSync? levelDesc)
+        internal static string BuildGeneratePayloadJson(LevelDescSync? levelDesc)
         {
             PendingLaunchAction action;
             bool custom;
@@ -777,7 +777,7 @@ namespace DeadCellsMultiplayerMod
             return json;
         }
 
-        private static void ApplyReceivedPendingLaunch(string? actionText, bool launchCustom, bool launchStreamEnabled)
+        internal static void ApplyReceivedPendingLaunch(string? actionText, bool launchCustom, bool launchStreamEnabled)
         {
             PendingLaunchAction action;
             if (!Enum.TryParse(actionText, ignoreCase: true, out action))
@@ -836,7 +836,7 @@ namespace DeadCellsMultiplayerMod
             RequestLobbyMenuRefresh();
         }
 
-        private static void SendLaunchModeToRemote()
+        internal static void SendLaunchModeToRemote()
         {
             var net = NetRef;
             if (net == null || !net.IsAlive || !net.IsHost)
@@ -872,8 +872,8 @@ namespace DeadCellsMultiplayerMod
         /// with everything in hand; if it is not, we still start and let the generation-time wait
         /// (which is where the data is actually needed) do its job.
         /// </remarks>
-        private const int ClientLevelGraphPreferenceGraceMs = 5000;
-        private static long _clientLevelGraphWaitStartedTicks;
+        internal const int ClientLevelGraphPreferenceGraceMs = 5000;
+        internal static long _clientLevelGraphWaitStartedTicks;
         /// <summary>
         /// Sticky for the current launch once the grace window expires.
         /// </summary>
@@ -885,11 +885,11 @@ namespace DeadCellsMultiplayerMod
         /// then report "not ready" to the claim a microsecond later, arming and disarming forever
         /// on a 5s cycle without ever launching. Cleared with the rest of the launch state.
         /// </remarks>
-        private static bool _clientLevelGraphWaitExpired;
-        private static long _nextClientLaunchBlockLogTicks;
-        private const int ClientLaunchBlockLogIntervalMs = 5000;
+        internal static bool _clientLevelGraphWaitExpired;
+        internal static long _nextClientLaunchBlockLogTicks;
+        internal const int ClientLaunchBlockLogIntervalMs = 5000;
 
-        private static bool IsPendingLaunchReadyForAutoStartLocked()
+        internal static bool IsPendingLaunchReadyForAutoStartLocked()
         {
             if (_pendingLaunchAction == PendingLaunchAction.LoadSave)
             {
@@ -921,7 +921,7 @@ namespace DeadCellsMultiplayerMod
             return IsRemoteRunSyncReadyForLaunchLocked();
         }
 
-        private static bool IsRemoteRunSyncReadyForLaunchLocked()
+        internal static bool IsRemoteRunSyncReadyForLaunchLocked()
         {
             if (!GameDataSync.HasRemoteBossRune())
             {
@@ -966,7 +966,7 @@ namespace DeadCellsMultiplayerMod
         /// Rate-limited report of the single prerequisite currently blocking the client auto-start.
         /// Without this, "the client stayed in the lobby" produced no evidence at all.
         /// </summary>
-        private static void LogClientLaunchBlockLocked(string reason)
+        internal static void LogClientLaunchBlockLocked(string reason)
         {
             if (_role != NetRole.Client)
                 return;
@@ -995,7 +995,7 @@ namespace DeadCellsMultiplayerMod
         /// both branches below fall back to Main.launchGame — because the alternative is a client
         /// that holds a fully valid authoritative launch and never leaves the menu.
         /// </summary>
-        private static void TryAutoStartPendingLaunch(TitleScreen? screen)
+        internal static void TryAutoStartPendingLaunch(TitleScreen? screen)
         {
             PendingLaunchAction action;
             bool custom;

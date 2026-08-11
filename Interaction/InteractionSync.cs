@@ -249,7 +249,7 @@ public partial class InteractionSync :
 
     private bool TrySendInteractEvent(Entity entity, Action<double, double> send, string logContext)
     {
-        if (!IsNetReadyForSend(GameMenu.NetRef))
+        if (!IsNetReadyForSend(LobbySession.NetRef))
             return false;
         try
         {
@@ -266,7 +266,7 @@ public partial class InteractionSync :
 
     void IOnHeroUpdate.OnHeroUpdate(double dt)
     {
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive)
             return;
 

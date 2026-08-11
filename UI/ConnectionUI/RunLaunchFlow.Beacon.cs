@@ -23,19 +23,19 @@ namespace DeadCellsMultiplayerMod;
 /// It deliberately runs on its own task rather than from TickMenu: the window where this matters
 /// most is exactly when the host's main thread is busy generating the first level.
 /// </remarks>
-internal static partial class GameMenu
+internal static partial class LobbySession
 {
-    private const int RunLaunchBeaconIntervalMs = 1200;
+    internal const int RunLaunchBeaconIntervalMs = 1200;
     /// <summary>
     /// Upper bound on how long the host keeps trying. Long enough to cover a slow client's whole
     /// load, short enough that an abandoned launch stops producing traffic and log noise.
     /// </summary>
-    private const int RunLaunchBeaconMaxDurationMs = 120_000;
-    private const int RunLaunchBeaconLogIntervalMs = 6000;
+    internal const int RunLaunchBeaconMaxDurationMs = 120_000;
+    internal const int RunLaunchBeaconLogIntervalMs = 6000;
 
-    private static readonly object RunLaunchBeaconSync = new();
-    private static CancellationTokenSource? _runLaunchBeaconCts;
-    private static Task? _runLaunchBeaconTask;
+    internal static readonly object RunLaunchBeaconSync = new();
+    internal static CancellationTokenSource? _runLaunchBeaconCts;
+    internal static Task? _runLaunchBeaconTask;
 
     /// <summary>
     /// Starts (or restarts) the beacon for the sequence the host just committed. Safe to call from
@@ -68,7 +68,7 @@ internal static partial class GameMenu
             StopHostRunLaunchBeaconLocked(reason);
     }
 
-    private static void StopHostRunLaunchBeaconLocked(string reason)
+    internal static void StopHostRunLaunchBeaconLocked(string reason)
     {
         var cts = _runLaunchBeaconCts;
         _runLaunchBeaconCts = null;
@@ -81,7 +81,7 @@ internal static partial class GameMenu
         _log?.Debug("[NetMod][RunLaunch] Launch beacon stopped ({Reason})", reason);
     }
 
-    private static async Task RunHostLaunchBeaconAsync(int sequence, CancellationToken ct)
+    internal static async Task RunHostLaunchBeaconAsync(int sequence, CancellationToken ct)
     {
         var deadline = Environment.TickCount64 + RunLaunchBeaconMaxDurationMs;
         var nextLogTick = 0L;

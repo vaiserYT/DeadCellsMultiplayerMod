@@ -9,28 +9,28 @@ namespace DeadCellsMultiplayerMod;
 /// <summary>
 /// Sequenced seed / precommit / protocol-mismatch helpers for run launch.
 /// </summary>
-internal static partial class GameMenu
+internal static partial class LobbySession
 {
-    private static int _serverSeedSequence;
-    private static int _remoteSeedSequence;
-    private static int _consumedRemoteSeedSequence;
-    private static string _remoteLaunchKind = string.Empty;
+    internal static int _serverSeedSequence;
+    internal static int _remoteSeedSequence;
+    internal static int _consumedRemoteSeedSequence;
+    internal static string _remoteLaunchKind = string.Empty;
 
-    private const int RemoteRunSeedWaitMs = 2000;
-    private const int RunSeedTransitionGraceMs = 2000;
+    internal const int RemoteRunSeedWaitMs = 2000;
+    internal const int RunSeedTransitionGraceMs = 2000;
 
-    private static long _clientRestartPendingUntilTicks;
-    private const int ClientRestartPendingTtlMs = 12000;
+    internal static long _clientRestartPendingUntilTicks;
+    internal const int ClientRestartPendingTtlMs = 12000;
 
-    private static int? _precommittedHostSeed;
-    private static int _precommittedHostSeedSequence;
-    private static string _precommittedHostLaunchKind = string.Empty;
-    private static long _precommittedHostSeedExpiresAtTicks;
-    private const int PrecommittedHostSeedTtlMs = 300000;
+    internal static int? _precommittedHostSeed;
+    internal static int _precommittedHostSeedSequence;
+    internal static string _precommittedHostLaunchKind = string.Empty;
+    internal static long _precommittedHostSeedExpiresAtTicks;
+    internal const int PrecommittedHostSeedTtlMs = 300000;
 
-    private static DateTime _lastRoomStatusAutoRefresh = DateTime.MinValue;
+    internal static DateTime _lastRoomStatusAutoRefresh = DateTime.MinValue;
 
-    private static void ResetRunLaunchCompatStateLocked()
+    internal static void ResetRunLaunchCompatStateLocked()
     {
         _serverSeedSequence = 0;
         _remoteSeedSequence = 0;
@@ -249,7 +249,7 @@ internal static partial class GameMenu
             CancelHostStructuredLaunch(sequence, reason);
     }
 
-    private static void ClearPrecommittedHostRunSeedLocked()
+    internal static void ClearPrecommittedHostRunSeedLocked()
     {
         _precommittedHostSeed = null;
         _precommittedHostSeedSequence = 0;
@@ -329,12 +329,12 @@ internal static partial class GameMenu
             ScheduleClientRunSeedReconcile(sequence, seed);
     }
 
-    private static void ScheduleClientRunSeedReconcile(int sequence, int seed)
+    internal static void ScheduleClientRunSeedReconcile(int sequence, int seed)
     {
         _ = Task.Run(async () =>
         {
             await Task.Delay(RunSeedTransitionGraceMs).ConfigureAwait(false);
-            EnqueueCriticalMainThreadCoalesced("game:run-seed-reconcile", () =>
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced("game:run-seed-reconcile", () =>
             {
                 var shouldRestart = false;
                 lock (Sync)
@@ -412,7 +412,7 @@ internal static partial class GameMenu
             reason);
     }
 
-    private static void MarkRemoteLaunchSequenceConsumedLocked(int sequence)
+    internal static void MarkRemoteLaunchSequenceConsumedLocked(int sequence)
     {
         if (sequence > _consumedRemoteSeedSequence)
             _consumedRemoteSeedSequence = sequence;
@@ -426,7 +426,7 @@ internal static partial class GameMenu
             return;
         _lastRoomStatusAutoRefresh = DateTime.UtcNow;
 
-        EnqueueMainThreadCoalesced("ui:auto-refresh-room-status", () =>
+        MainThreadPump.EnqueueMainThreadCoalesced("ui:auto-refresh-room-status", () =>
         {
             var screen = GetTitleScreen();
             if (screen == null)
@@ -459,7 +459,7 @@ internal static partial class GameMenu
         if (localRole != NetRole.Client)
             return;
 
-        EnqueueMainThreadCoalesced("ui:protocol-mismatch", () =>
+        MainThreadPump.EnqueueMainThreadCoalesced("ui:protocol-mismatch", () =>
         {
             var screen = GetTitleScreen();
             if (screen == null)

@@ -18,9 +18,9 @@ using DeadCellsMultiplayerMod.MultiplayerModUI.lifeUI;
 namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 {
     /// <summary>
-    /// Visual hub for the multiplayer menu. GameMenu keeps all networking/state logic; this
+    /// Visual hub for the multiplayer menu. LobbySession keeps all networking/state logic; this
     /// Process renders the pretty button screens (host/join LAN &amp; Steam, lobby status, errors).
-    /// GameMenu feeds it through <see cref="BeginMenu"/>/<see cref="AddPendingButton"/>/
+    /// LobbySession feeds it through <see cref="BeginMenu"/>/<see cref="AddPendingButton"/>/
     /// <see cref="AddPendingInfo"/>/<see cref="CommitMenu"/>, and toggles the lobby display via
     /// <see cref="ShowLobbyMode"/>.
     /// </summary>
@@ -49,7 +49,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private const double FieldCornerRadius = 8.0;
         private const double CardCornerRadius = 16.0;
 
-        private enum UiMode
+        internal enum UiMode
         {
             Lobby,
             Menu
@@ -66,7 +66,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private static int _cachedFullScreenMode = int.MinValue;
         private static double _cachedTextBoost = 1.0;
 
-        private sealed class PendingButton
+        internal sealed class PendingButton
         {
             public string Label = string.Empty;
             public string Help = string.Empty;
@@ -77,13 +77,13 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             public Action? OnClick;
         }
 
-        private sealed class PendingInfo
+        internal sealed class PendingInfo
         {
             public string Text = string.Empty;
             public int Color = 0xFFFFFF;
         }
 
-        // ---------------------------------------------------------------- pending menu (fed by GameMenu)
+        // ---------------------------------------------------------------- pending menu (fed by LobbySession)
         private static readonly List<PendingButton> PendingButtons = new();
         private static readonly List<PendingInfo> PendingInfos = new();
 
@@ -247,7 +247,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             }
         }
 
-        // ================================================================ menu screen API (called from GameMenu)
+        // ================================================================ menu screen API (called from LobbySession)
 
         /// <summary>Clears the pending screen, ensures the hub is visible and switches to menu mode.</summary>
         public static void BeginMenu()
@@ -288,7 +288,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         }
 
         /// <summary>
-        /// Renders the accumulated pending screen. Call once at the end of a GameMenu Show* method.
+        /// Renders the accumulated pending screen. Call once at the end of a LobbySession Show* method.
         /// <paramref name="hubLayout"/> is only for the first Host/Join screen.
         /// </summary>
         public static void CommitMenu(bool showLobby = false, bool hubLayout = false)
@@ -1052,7 +1052,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             string? lobbyCode = null;
             try
             {
-                lobbyCode = GameMenu.GetSteamLobbyCodeForUi();
+                lobbyCode = LobbySession.GetSteamLobbyCodeForUi();
                 if (string.IsNullOrWhiteSpace(lobbyCode))
                     lobbyCode = null;
                 else
@@ -1275,7 +1275,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             string? lobbyCode = null;
             try
             {
-                lobbyCode = GameMenu.GetSteamLobbyCodeForUi();
+                lobbyCode = LobbySession.GetSteamLobbyCodeForUi();
                 if (string.IsNullOrWhiteSpace(lobbyCode))
                     lobbyCode = null;
                 else
@@ -1608,7 +1608,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             if (relX < cardX || relX > cardX + cardW || relY < cardY || relY > cardY + cardH)
                 return;
 
-            if (GameMenu.TryCopySteamLobbyCodeFromUi())
+            if (LobbySession.TryCopySteamLobbyCodeFromUi())
                 MultiplayerUI.PushSystemMessage("Lobby id copied to clipboard");
         }
 

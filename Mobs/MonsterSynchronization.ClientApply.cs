@@ -645,7 +645,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null)
                 return false;
-            if (IsHost(GameMenu.NetRef))
+            if (IsHost(LobbySession.NetRef))
                 return false;
 
             // Only defer truly culled/sleeping mobs. Visible or locally awake mobs can run the

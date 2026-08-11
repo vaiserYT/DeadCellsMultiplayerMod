@@ -33,7 +33,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || string.IsNullOrWhiteSpace(skillId))
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (!IsHost(net))
                 return;
 
@@ -132,7 +132,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var candidateIdentityToken = ComputeLevelIdentityToken(level);
             var candidateEntityCount = 0;
             var candidateTrackedMobs = new List<Mob>();
-            var role = MobSyncNetRoleForTrace(GameMenu.NetRef);
+            var role = MobSyncNetRoleForTrace(LobbySession.NetRef);
             var levelId = GetLevelTraceIdSafe(level);
             var levelKey = GetLevelRuntimeKey(level);
             if (level?.entities != null)
@@ -510,7 +510,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // Clients must not append an unbound transient proxy wrapper. Their sync ids come
             // from the level registry/host; adding a wrapper with no id bloats trackedMobs and can
             // later displace the canonical entry. Hosts may allocate ids for runtime spawns.
-            if (syncId < 0 && GameMenu.NetRef?.IsHost != true)
+            if (syncId < 0 && LobbySession.NetRef?.IsHost != true)
                 return -1;
 
             trackedMobs.Add(mob);
@@ -534,7 +534,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             s_lastResetTrackedCount = trackedMobs.Count;
             MobSyncTrace.LogTrackingReset(
                 s_lastResetReason,
-                MobSyncNetRoleForTrace(GameMenu.NetRef),
+                MobSyncNetRoleForTrace(LobbySession.NetRef),
                 GetLevelTraceIdSafe(currentLevel),
                 GetLevelRuntimeKey(currentLevel),
                 trackedMobs.Count,
@@ -573,7 +573,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 s_levelIdentityGeneration = 0;
             }
 
-            try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
+            try { LobbySession.NetRef?.ClearMobSyncQueues(); } catch { }
         }
 
         private static void ResetMobTrackingStateLocked()
@@ -1446,7 +1446,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     return false;
 
                 // Clients never invent NetIds — host is the sole authority (native ids diverge).
-                if (GameMenu.NetRef?.IsHost != true)
+                if (LobbySession.NetRef?.IsHost != true)
                     return false;
 
                 syncId = nextRuntimeSyncId++;
@@ -2668,7 +2668,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null)
                 return;
 
-            var currentTargetUserId = ResolveHostTargetUserId(ResolveCurrentHostPlayerCombatTarget(mob), GameMenu.NetRef?.id ?? 0);
+            var currentTargetUserId = ResolveHostTargetUserId(ResolveCurrentHostPlayerCombatTarget(mob), LobbySession.NetRef?.id ?? 0);
             lock (Sync)
             {
                 if (currentTargetUserId <= 0)
@@ -2749,7 +2749,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static Entity? ResolveHostPlayerCombatEntity(int userId)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (!IsHost(net) || userId <= 0)
                 return null;
 

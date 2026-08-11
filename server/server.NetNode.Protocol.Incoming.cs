@@ -418,12 +418,12 @@ public sealed partial class NetNode
                 _log.Information("[NetNode] Assigned ID {Id}", ID);
                 if (!_useSteamTransport)
                 {
-                    GameMenu.EnqueueCriticalMainThreadCoalesced("net:client-connected", () =>
+                    MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:client-connected", () =>
                     {
                         if (!IsCurrentNetworkSession())
                             return;
-                        GameMenu.SetRole(_role);
-                        GameMenu.NotifyRemoteConnected(_role);
+                        LobbySession.SetRole(_role);
+                        LobbySession.NotifyRemoteConnected(_role);
                     });
                 }
             }
@@ -474,7 +474,7 @@ public sealed partial class NetNode
         {
             var payload = line[(RunLaunchWireCodec.CommitTag.Length + 1)..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveRunLaunchCommitPayload(payload);
+            RunLaunchFlow.ReceiveRunLaunchCommitPayload(payload);
             return true;
         }
 
@@ -482,7 +482,7 @@ public sealed partial class NetNode
         {
             var payload = line[(RunLaunchWireCodec.AckTag.Length + 1)..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveRunLaunchAckPayload(payload);
+            RunLaunchFlow.ReceiveRunLaunchAckPayload(payload);
             return true;
         }
 
@@ -490,7 +490,7 @@ public sealed partial class NetNode
         {
             var payload = line[(RunLaunchWireCodec.ExecuteTag.Length + 1)..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveRunLaunchExecutePayload(payload);
+            RunLaunchFlow.ReceiveRunLaunchExecutePayload(payload);
             return true;
         }
 
@@ -498,7 +498,7 @@ public sealed partial class NetNode
         {
             var payload = line[(RunLaunchWireCodec.QueuedTag.Length + 1)..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveRunLaunchQueuedPayload(payload);
+            RunLaunchFlow.ReceiveRunLaunchQueuedPayload(payload);
             return true;
         }
 
@@ -506,7 +506,7 @@ public sealed partial class NetNode
         {
             var payload = line[(RunLaunchWireCodec.ReadyTag.Length + 1)..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveRunLevelReadyPayload(payload);
+            RunLaunchFlow.ReceiveRunLevelReadyPayload(payload);
             return true;
         }
 
@@ -514,7 +514,7 @@ public sealed partial class NetNode
         {
             var payload = line[(RunLaunchWireCodec.CancelTag.Length + 1)..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveRunLaunchCancelPayload(payload);
+            RunLaunchFlow.ReceiveRunLaunchCancelPayload(payload);
             return true;
         }
 
@@ -527,7 +527,7 @@ public sealed partial class NetNode
             {
                 var launchKind = partsSeed[3];
                 lock (_sync) _hasRemote = true;
-                GameMenu.ReceiveHostRunSeed(sequence, hostSeed, launchKind);
+                RunLaunchFlow.ReceiveHostRunSeed(sequence, hostSeed, launchKind);
                 _log.Information(
                     "[NetNode] Received host run seed seq={Sequence} seed={Seed} launch={LaunchKind}",
                     sequence,
@@ -547,7 +547,7 @@ public sealed partial class NetNode
             if (int.TryParse(payload, NumberStyles.Integer, CultureInfo.InvariantCulture, out var restartSeed))
             {
                 lock (_sync) _hasRemote = true;
-                GameMenu.ReceiveHostRunRestart(restartSeed);
+                RunLaunchFlow.ReceiveHostRunRestart(restartSeed);
             }
             else
             {
@@ -615,7 +615,7 @@ public sealed partial class NetNode
                 }
 
                 if (effectiveId.Value == primaryId)
-                    GameMenu.ReceiveRemoteUsername(username);
+                    LobbySession.ReceiveRemoteUsername(username);
 
                 if (_role == NetRole.Host && senderId.HasValue)
                     forwardLine = BuildTaggedLine("USER", effectiveId.Value, username);
@@ -644,7 +644,7 @@ public sealed partial class NetNode
                             _primaryRemoteId = effectiveId.Value;
                     }
 
-                    GameMenu.ReceiveRemoteReady(effectiveId.Value, ready);
+                    ReadySync.ReceiveRemoteReady(effectiveId.Value, ready);
 
                     if (_role == NetRole.Host && senderId.HasValue)
                         forwardLine = BuildReadyLine(effectiveId.Value, ready);
@@ -675,7 +675,7 @@ public sealed partial class NetNode
                         _primaryRemoteId = effectiveId.Value;
                 }
 
-                GameMenu.ReceiveRemoteCoopState(effectiveId.Value, coopId, hasContinueSave);
+                CoopIdentity.ReceiveRemoteCoopState(effectiveId.Value, coopId, hasContinueSave);
 
                 if (_role == NetRole.Host && senderId.HasValue)
                     forwardLine = BuildCoopStateLine(effectiveId.Value, coopId, hasContinueSave);
@@ -700,7 +700,7 @@ public sealed partial class NetNode
                 lock (_sync)
                     _hasRemote = true;
 
-                GameMenu.ReceiveLaunchMode(
+                RunLaunchFlow.ReceiveLaunchMode(
                     actionValue,
                     custom,
                     streamEnabled,
@@ -749,7 +749,7 @@ public sealed partial class NetNode
         {
             var payload = line["LDESC|".Length..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveLevelDesc(payload);
+            LobbySession.ReceiveLevelDesc(payload);
             return true;
         }
 
@@ -792,7 +792,7 @@ public sealed partial class NetNode
 
                 var skinId = effectiveId.Value;
                 var skinValue = skin;
-                GameMenu.EnqueueMainThreadCoalesced(string.Create(CultureInfo.InvariantCulture, $"net:skin:{skinId}"), () =>
+                MainThreadPump.EnqueueMainThreadCoalesced(string.Create(CultureInfo.InvariantCulture, $"net:skin:{skinId}"), () =>
                 {
                     if (!IsCurrentNetworkSession())
                         return;
@@ -837,7 +837,7 @@ public sealed partial class NetNode
 
                 var headId = effectiveId.Value;
                 var headSkinValue = skinHead;
-                GameMenu.EnqueueMainThreadCoalesced(string.Create(CultureInfo.InvariantCulture, $"net:head:{headId}"), () =>
+                MainThreadPump.EnqueueMainThreadCoalesced(string.Create(CultureInfo.InvariantCulture, $"net:head:{headId}"), () =>
                 {
                     if (!IsCurrentNetworkSession())
                         return;
@@ -863,7 +863,7 @@ public sealed partial class NetNode
         {
             var payload = line["GEN|".Length..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveGeneratePayload(payload);
+            LobbySession.ReceiveGeneratePayload(payload);
             return true;
         }
 
@@ -871,7 +871,7 @@ public sealed partial class NetNode
         {
             var payload = line["CGDATA|".Length..];
             lock (_sync) _hasRemote = true;
-            GameMenu.ReceiveCustomGameData(payload);
+            RunLaunchFlow.ReceiveCustomGameData(payload);
             return true;
         }
 

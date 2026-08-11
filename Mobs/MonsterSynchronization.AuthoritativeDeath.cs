@@ -149,7 +149,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void FlushPendingClientAuthoritativeDeaths()
         {
-            if (!IsClient(GameMenu.NetRef))
+            if (!IsClient(LobbySession.NetRef))
                 return;
 
             var pending = new List<Mob>();

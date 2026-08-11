@@ -82,7 +82,7 @@ public class SettingsUI :
 
             // Insert before vanilla entries so it appears at the top.
             self.addSimpleWidget(
-                GameMenu.Localize("Multiplayer settings").AsHaxeString(),
+                LobbySession.Localize("Multiplayer settings").AsHaxeString(),
                 null,
                 onSelect,
                 Ref<int>.From(ref leftPadding),
@@ -158,7 +158,7 @@ public class SettingsUI :
             if (!IsMultiplayerSettingsContext(self))
                 return;
 
-            self.title?.set_text(GameMenu.Localize("Multiplayer settings").AsHaxeString());
+            self.title?.set_text(LobbySession.Localize("Multiplayer settings").AsHaxeString());
             self.createScroller(0.0);
 
             var widgetParent = self.scrollerFlow;
@@ -176,7 +176,7 @@ public class SettingsUI :
             });
 
             self.addSimpleWidget(
-                GameMenu.Localize("Back").AsHaxeString(),
+                LobbySession.Localize("Back").AsHaxeString(),
                 null,
                 onBack,
                 Ref<int>.From(ref leftPadding),
@@ -199,7 +199,7 @@ public class SettingsUI :
 
         bool enabledNow = MultiplayerSettingsStorage.EnableMobsSync;
         self.addToggleWidget(
-            GameMenu.Localize("Enable mobs sync").AsHaxeString(),
+            LobbySession.Localize("Enable mobs sync").AsHaxeString(),
             null,
             new HlFunc<bool>(ToggleMobsSyncSetting),
             Ref<bool>.From(ref enabledNow),
@@ -213,7 +213,7 @@ public class SettingsUI :
         double mobsHpMax = 8.00;
 
         self.addSliderWidget(
-            GameMenu.Localize("Mobs HP multiplier").AsHaxeString(),
+            LobbySession.Localize("Mobs HP multiplier").AsHaxeString(),
             new HlAction<double>(OnMobsHpSliderChanged),
             mobsHpValue,
             Ref<double>.From(ref mobsHpStep),
@@ -233,7 +233,7 @@ public class SettingsUI :
         double bossesHpMax = 8.00;
 
         self.addSliderWidget(
-            GameMenu.Localize("Bosses HP multiplier").AsHaxeString(),
+            LobbySession.Localize("Bosses HP multiplier").AsHaxeString(),
             new HlAction<double>(OnBossesHpSliderChanged),
             bossesHpValue,
             Ref<double>.From(ref bossesHpStep),
@@ -247,8 +247,8 @@ public class SettingsUI :
 
         bool verticalSyncNow = MultiplayerSettingsStorage.SyncVerticalPosition;
         self.addToggleWidget(
-            GameMenu.Localize("Sync vertical position").AsHaxeString(),
-            GameMenu.Localize(
+            LobbySession.Localize("Sync vertical position").AsHaxeString(),
+            LobbySession.Localize(
                     "Applies host vertical position to gravity mobs. Off: X-only for walkers; flying mobs still sync Y. On: can reduce desync but may snap ground mobs.")
                 .AsHaxeString(),
             new HlFunc<bool>(ToggleVerticalSyncSetting),
@@ -260,16 +260,16 @@ public class SettingsUI :
     {
         return id switch
         {
-            DebugModuleId.MultiplayerModLang => GameMenu.Localize("Module: language"),
-            DebugModuleId.CineHooks => GameMenu.Localize("Module: cinematics hooks"),
-            DebugModuleId.MultiplayerUI => GameMenu.Localize("Module: multiplayer UI"),
-            DebugModuleId.LevelInit => GameMenu.Localize("Module: level init"),
-            DebugModuleId.MobsSynchronization => GameMenu.Localize("Module: mobs sync"),
-            DebugModuleId.MinimapReveal => GameMenu.Localize("Module: minimap reveal"),
-            DebugModuleId.LevelExitSync => GameMenu.Localize("Module: level exit sync"),
-            DebugModuleId.InteractionSync => GameMenu.Localize("Module: interaction sync"),
-            DebugModuleId.ConnectionUI => GameMenu.Localize("Module: connection UI"),
-            _ => GameMenu.Localize("Module")
+            DebugModuleId.MultiplayerModLang => LobbySession.Localize("Module: language"),
+            DebugModuleId.CineHooks => LobbySession.Localize("Module: cinematics hooks"),
+            DebugModuleId.MultiplayerUI => LobbySession.Localize("Module: multiplayer UI"),
+            DebugModuleId.LevelInit => LobbySession.Localize("Module: level init"),
+            DebugModuleId.MobsSynchronization => LobbySession.Localize("Module: mobs sync"),
+            DebugModuleId.MinimapReveal => LobbySession.Localize("Module: minimap reveal"),
+            DebugModuleId.LevelExitSync => LobbySession.Localize("Module: level exit sync"),
+            DebugModuleId.InteractionSync => LobbySession.Localize("Module: interaction sync"),
+            DebugModuleId.ConnectionUI => LobbySession.Localize("Module: connection UI"),
+            _ => LobbySession.Localize("Module")
         };
     }
 
@@ -293,7 +293,7 @@ public class SettingsUI :
 
         bool immortalNow = MultiplayerSettingsStorage.DebugPlayerImmortal;
         self.addToggleWidget(
-            GameMenu.Localize("Player immortal").AsHaxeString(),
+            LobbySession.Localize("Player immortal").AsHaxeString(),
             null,
             new HlFunc<bool>(ToggleDebugImmortalSetting),
             Ref<bool>.From(ref immortalNow),
@@ -301,7 +301,7 @@ public class SettingsUI :
 
         bool explorersRuneNow = MultiplayerSettingsStorage.DebugUseExplorersRune;
         self.addToggleWidget(
-            GameMenu.Localize("Use Explorer's Rune").AsHaxeString(),
+            LobbySession.Localize("Use Explorer's Rune").AsHaxeString(),
             null,
             new HlFunc<bool>(ToggleDebugUseExplorersRuneSetting),
             Ref<bool>.From(ref explorersRuneNow),
@@ -309,7 +309,7 @@ public class SettingsUI :
 
         bool mobsSyncTraceNow = MultiplayerSettingsStorage.DebugMobsSyncTrace;
         self.addToggleWidget(
-            GameMenu.Localize("Mobs sync trace logging").AsHaxeString(),
+            LobbySession.Localize("Mobs sync trace logging").AsHaxeString(),
             null,
             new HlFunc<bool>(ToggleDebugMobsSyncTraceSetting),
             Ref<bool>.From(ref mobsSyncTraceNow),
@@ -317,7 +317,7 @@ public class SettingsUI :
 
         bool bossSyncTraceNow = MultiplayerSettingsStorage.DebugBossSyncTrace;
         self.addToggleWidget(
-            GameMenu.Localize("Boss sync trace logging").AsHaxeString(),
+            LobbySession.Localize("Boss sync trace logging").AsHaxeString(),
             null,
             new HlFunc<bool>(ToggleDebugBossSyncTraceSetting),
             Ref<bool>.From(ref bossSyncTraceNow),
@@ -325,8 +325,8 @@ public class SettingsUI :
 
         bool showPerfLogsNow = MultiplayerSettingsStorage.ShowPerfLogs;
         self.addToggleWidget(
-            GameMenu.Localize("Show perf logs").AsHaxeString(),
-            GameMenu.Localize("Controls threshold-based [Perf] hitch and slowdown logging.").AsHaxeString(),
+            LobbySession.Localize("Show perf logs").AsHaxeString(),
+            LobbySession.Localize("Controls threshold-based [Perf] hitch and slowdown logging.").AsHaxeString(),
             new HlFunc<bool>(ToggleShowPerfLogsSetting),
             Ref<bool>.From(ref showPerfLogsNow),
             widgetParent);
@@ -337,21 +337,21 @@ public class SettingsUI :
 
         int leftPadding = 5;
         self.addSimpleWidget(
-            GameMenu.Localize("Start perk").AsHaxeString(),
+            LobbySession.Localize("Start perk").AsHaxeString(),
             selectedPerk.AsHaxeString(),
             new HlAction(() => { }),
             Ref<int>.From(ref leftPadding),
             widgetParent);
 
         self.addSimpleWidget(
-            GameMenu.Localize("Previous perk").AsHaxeString(),
+            LobbySession.Localize("Previous perk").AsHaxeString(),
             null,
             new HlAction(() => CycleDebugStartPerk(self, -1)),
             Ref<int>.From(ref leftPadding),
             widgetParent);
 
         self.addSimpleWidget(
-            GameMenu.Localize("Next perk").AsHaxeString(),
+            LobbySession.Localize("Next perk").AsHaxeString(),
             null,
             new HlAction(() => CycleDebugStartPerk(self, +1)),
             Ref<int>.From(ref leftPadding),
@@ -363,7 +363,7 @@ public class SettingsUI :
         if (self == null || widgetParent == null || string.IsNullOrWhiteSpace(label))
             return;
 
-        var localized = GameMenu.Localize(label).AsHaxeString();
+        var localized = LobbySession.Localize(label).AsHaxeString();
         try
         {
             // Native game header widget (centered title + separator line).
@@ -493,7 +493,7 @@ public class SettingsUI :
         if (!enabled)
         {
             MobsSynchronization.ClearTrackingForLevelChange();
-            try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
+            try { LobbySession.NetRef?.ClearMobSyncQueues(); } catch { }
         }
 
         return enabled;

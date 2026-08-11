@@ -22,7 +22,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static int s_hostMobRegistryResendsRemaining;
 
         private static bool IsHostAuthorityForNetIds() =>
-            GameMenu.NetRef?.IsHost == true;
+            LobbySession.NetRef?.IsHost == true;
 
         /// <summary>
         /// Host assigns NetIds in walk order (assignment order only). Clients track unbound mobs

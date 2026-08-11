@@ -839,7 +839,7 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
-                var net = GameMenu.NetRef;
+                var net = LobbySession.NetRef;
                 if (net != null && net.IsAlive && net.IsHost && clientIds[slot] > 0)
                 {
                     global::DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization
@@ -2104,7 +2104,7 @@ namespace DeadCellsMultiplayerMod
         private void ResetNetworkState()
         {
             GameDataSync.RestoreOrigHpMultipliers();
-            GameMenu.ClearPendingNetworkMainThreadActions();
+            MainThreadPump.ClearPendingNetworkMainThreadActions();
             GameDataSync.ResetTransientNetworkState();
             global::DeadCellsMultiplayerMod.AdvancedCoop.CoopAdvancedHardening.ResetSessionState();
             try { global::DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.ClearTrackingForLevelChange(); } catch { }

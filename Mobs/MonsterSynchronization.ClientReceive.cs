@@ -660,7 +660,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // Affects run vanilla calls (setAffectS etc.) on the mob; never do that on a mob
             // culled locally on a client (same .cx hazard class as culled deaths/attacks).
             // Checked BEFORE the dedupe cache so the payload re-applies once the mob wakes.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
                 return;
 
             lock (Sync)
@@ -1069,7 +1069,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // the culled-death .cx fatal). A locally-culled mob is far from the local hero, so
             // the replay is off-screen and its target is out of reach here anyway; position/life
             // still sync via state snapshots.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
             {
                 MobSyncTrace.LogClientAttackRoute("skipped_culled_" + traceRoute, traceSyncId, skillId);
                 return;
@@ -1751,7 +1751,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || targetUserId <= 0 || !IsMobHostileToPlayers(mob))
                 return false;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var localId = net?.id ?? 0;
             if (localId <= 0)
                 return false;
@@ -1979,7 +1979,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 // local kill), corrupting their death state - the source of the level-transition
                 // render fatal. The deferred flush skips mobs that finish destroying themselves
                 // and only completes genuinely stuck ghosts.
-                if (!IsHost(GameMenu.NetRef) && !BossSyncHelpers.IsBossMob(mob) && TryDeferCulledClientMobDeath(mob))
+                if (!IsHost(LobbySession.NetRef) && !BossSyncHelpers.IsBossMob(mob) && TryDeferCulledClientMobDeath(mob))
                     continue;
 
                 TryWakeMobForForcedSimulation(mob);
@@ -2044,7 +2044,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (start < 0 || end > hits.Count)
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var isHost = IsHost(net);
             s_pendingMobHitAppliesScratch.Clear();
             var rejectedGeneration = 0;
@@ -2389,7 +2389,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // Cosmetic replay only: skip it on clients for mobs culled locally. Running vanilla
             // hit resolution on a sleeping, never-initialized mob is hazardous, and the reaction
             // is off-screen anyway. The authoritative life still arrives via state snapshots.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
                 return;
 
             try
@@ -2400,7 +2400,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         ? System.Math.Clamp(damageHint, 1.0, System.Math.Max(1.0, GetMobLifeOrFallback(mob, 1) * 8.0))
                         : 1.0;
                     Hero? replaySourceHero = null;
-                    if (IsHost(GameMenu.NetRef))
+                    if (IsHost(LobbySession.NetRef))
                     {
                         replaySourceHero = ModEntry.me ?? ModCore.Modules.Game.Instance?.HeroInstance;
                         try
@@ -2446,7 +2446,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // The wake is required on the authoritative HOST (it must simulate mobs that remote
             // players are fighting). On clients it only served cosmetic hit/death replays; waking
             // a locally culled mob there runs vanilla behavior logic on uninitialized state and crashes.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
                 return;
 
             PromoteMobToSyncVisibleState(mob);
@@ -2457,7 +2457,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null)
                 return false;
 
-            var userId = ResolveHostTargetUserId(target ?? ResolveCurrentHostPlayerCombatTarget(mob), GameMenu.NetRef?.id ?? 0);
+            var userId = ResolveHostTargetUserId(target ?? ResolveCurrentHostPlayerCombatTarget(mob), LobbySession.NetRef?.id ?? 0);
             if (userId <= 0)
                 return false;
 
@@ -2580,7 +2580,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null || syncId < 0)
                 return;
-            if (!IsHost(GameMenu.NetRef))
+            if (!IsHost(LobbySession.NetRef))
                 return;
 
             var now = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -2605,7 +2605,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             uniqueMob = null;
             candidateCount = 0;
 
-            if (!IsHost(GameMenu.NetRef))
+            if (!IsHost(LobbySession.NetRef))
                 return false;
             if (hit.MobIndex < 0)
                 return false;

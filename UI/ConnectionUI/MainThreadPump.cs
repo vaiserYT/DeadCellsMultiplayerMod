@@ -10,7 +10,7 @@ namespace DeadCellsMultiplayerMod;
 /// <summary>
 /// Unified main-thread pump: Critical coalesce, then Network Channel, then Normal UI queue.
 /// </summary>
-internal static partial class GameMenu
+internal static class MainThreadPump
 {
     private readonly struct MainThreadWorkItem
     {
@@ -56,7 +56,7 @@ internal static partial class GameMenu
     private const int MainThreadQueueBurstBacklogThreshold = 96;
     private static long _lastMainThreadCoalescedDropLogTicks;
 
-    private static void ResetMainThreadQueuesLocked()
+    internal static void ResetMainThreadQueuesLocked()
     {
         while (_networkMainThreadQueue.Reader.TryRead(out _)) { }
         while (_criticalCoalescedKeys.TryDequeue(out _)) { }
@@ -151,7 +151,7 @@ internal static partial class GameMenu
         if (Interlocked.CompareExchange(ref _lastMainThreadCoalescedDropLogTicks, now, previous) != previous)
             return;
 
-        _log?.Warning(
+        LobbySession.Log?.Warning(
             "[NetMod] Rejected critical coalesced main-thread work because its queue is full (key={Key})",
             key);
     }
@@ -204,7 +204,7 @@ internal static partial class GameMenu
             }
             catch (Exception ex)
             {
-                _log?.Warning("[NetMod] Main thread task failed: {Message}", ex.Message);
+                LobbySession.Log?.Warning("[NetMod] Main thread task failed: {Message}", ex.Message);
             }
         }
 
@@ -227,11 +227,11 @@ internal static partial class GameMenu
         // thread so no Steam API call can outlive the title screen or process shutdown.
         try
         {
-            TickSteamFriendLobbyRefresh();
+            LobbySession.TickSteamFriendLobbyRefresh();
         }
         catch (Exception ex)
         {
-            _log?.Debug("[NetMod][Steam] Friend lobby refresh tick failed: {Message}", ex.Message);
+            LobbySession.Log?.Debug("[NetMod][Steam] Friend lobby refresh tick failed: {Message}", ex.Message);
         }
 
         // Critical + reliable network protocol work must drain even when the UI queue is busy.
@@ -263,7 +263,7 @@ internal static partial class GameMenu
             }
             catch (Exception ex)
             {
-                _log?.Warning("[NetMod] Main thread task failed: {Message}", ex.Message);
+                LobbySession.Log?.Warning("[NetMod] Main thread task failed: {Message}", ex.Message);
             }
             finally
             {
@@ -282,8 +282,8 @@ internal static partial class GameMenu
                         slowActions++;
                         actionLabel ??= DescribeMainThreadAction(action);
                         RuntimeHitchWatch.LogSlow(
-                            _log,
-                            $"GameMenu.MainThreadQueueAction:{actionLabel}",
+                            LobbySession.Log,
+                            $"LobbySession.MainThreadQueueAction:{actionLabel}",
                             actionMs,
                             string.Create(
                                 CultureInfo.InvariantCulture,
@@ -304,8 +304,8 @@ internal static partial class GameMenu
         if (perfEnabled && observedDepth >= RuntimeHitchWatch.MainThreadQueueDepthThreshold)
         {
             RuntimeHitchWatch.LogCount(
-                _log,
-                "GameMenu.MainThreadQueueDepth",
+                LobbySession.Log,
+                "LobbySession.MainThreadQueueDepth",
                 observedDepth,
                 RuntimeHitchWatch.MainThreadQueueDepthThreshold,
                 string.Create(CultureInfo.InvariantCulture, $"processed={processed} remaining={remainingDepth}"));
@@ -314,8 +314,8 @@ internal static partial class GameMenu
         if (actionsMs >= RuntimeHitchWatch.MainThreadQueueActionsSlowThresholdMs)
         {
             RuntimeHitchWatch.LogSlow(
-                _log,
-                "GameMenu.ExecuteMainThreadActions",
+                LobbySession.Log,
+                "LobbySession.ExecuteMainThreadActions",
                 actionsMs,
                 string.Create(
                     CultureInfo.InvariantCulture,
@@ -326,8 +326,8 @@ internal static partial class GameMenu
         if (hitchMs >= RuntimeHitchWatch.MainThreadQueueSlowThresholdMs)
         {
             RuntimeHitchWatch.LogSlow(
-                _log,
-                "GameMenu.ProcessMainThreadQueue",
+                LobbySession.Log,
+                "MainThreadPump.ProcessMainThreadQueue",
                 hitchMs,
                 string.Create(CultureInfo.InvariantCulture, $"processed={processed} startDepth={startDepth} remaining={remainingDepth}"));
         }

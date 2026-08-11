@@ -8,9 +8,9 @@ using dc.ui;
 
 namespace DeadCellsMultiplayerMod;
 
-internal static partial class GameMenu
+internal static partial class LobbySession
 {
-    private const int ReviveInteractKeyCode = 82; // R (keyboard)
+    internal const int ReviveInteractKeyCode = 82; // R (keyboard)
 
     /// <summary>Hold-to-revive: keyboard R plus gamepad face buttons / primary-secondary (same binding resolution as menus).</summary>
     internal static bool IsReviveHoldInputDown(Hero? hero)

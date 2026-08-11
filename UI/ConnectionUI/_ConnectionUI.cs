@@ -9,7 +9,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 {
     public static class _ConnectionUI
     {
-        /// <summary>Sentinel for <see cref="GameMenu.IsSteamJoinLobbyResolvePending"/>; displayed in ConnectionUI only.</summary>
+        /// <summary>Sentinel for <see cref="LobbySession.IsSteamJoinLobbyResolvePending"/>; displayed in ConnectionUI only.</summary>
         internal const string SteamLobbyConnectingMarker = "_steamLobbyConnecting";
 
         public static List<string> GetAllPlayerNames()
@@ -19,12 +19,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             var net = ModEntry._net;
             if (net == null)
             {
-                if (GameMenu.IsSteamJoinLobbyResolvePending())
+                if (LobbySession.IsSteamJoinLobbyResolvePending())
                     playerNames.Add(_ConnectionUI.SteamLobbyConnectingMarker);
                 return playerNames;
             }
 
-            var localName = GameMenu.Username;
+            var localName = LobbySession.Username;
             if (string.IsNullOrWhiteSpace(localName))
                 localName = "Guest";
 
@@ -63,7 +63,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
                     if (string.IsNullOrWhiteSpace(hostName))
                     {
-                        var fallbackHost = GameMenu.RemoteUsername;
+                        var fallbackHost = LobbySession.RemoteUsername;
                         hostName = string.IsNullOrWhiteSpace(fallbackHost) ? "Host" : fallbackHost.Trim();
                     }
                     playerNames.Add(hostName + " (Host)");

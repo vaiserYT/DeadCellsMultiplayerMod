@@ -13,7 +13,7 @@ using ModCore.Modules;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
         internal static void AbortClientWorldSync(string reason)
         {
@@ -21,7 +21,7 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             var safeReason = string.IsNullOrWhiteSpace(reason) ? "authoritative world sync failed" : reason.Trim();
-            EnqueueCriticalMainThreadCoalesced("game:abort-world-desync", () =>
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced("game:abort-world-desync", () =>
             {
                 if (CurrentRole != NetRole.Client)
                     return;
@@ -45,7 +45,7 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
-        private static void ForceExitToMainMenu()
+        internal static void ForceExitToMainMenu()
         {
             try
             {
@@ -87,7 +87,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ShowHostStatusMenu(TitleScreen screen)
+        internal static void ShowHostStatusMenu(TitleScreen screen)
         {
             if (_menuRebuildDepth > 0)
                 return;
@@ -155,7 +155,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void OpenSteamHostInviteOverlay(TitleScreen screen)
+        internal static void OpenSteamHostInviteOverlay(TitleScreen screen)
         {
             if (SteamConnect.TryOpenInviteOverlay(_steamLobbyId, out var error))
                 return;
@@ -168,7 +168,7 @@ namespace DeadCellsMultiplayerMod
                 () => ShowHostStatusMenu(screen));
         }
 
-        private static void ShowClientWaitingMenu(TitleScreen screen)
+        internal static void ShowClientWaitingMenu(TitleScreen screen)
         {
             if (_menuRebuildDepth > 0)
                 return;
@@ -222,7 +222,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ShowLobbyNotFoundPopup(TitleScreen screen)
+        internal static void ShowLobbyNotFoundPopup(TitleScreen screen)
         {
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
@@ -255,7 +255,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void DisconnectFromMenu(TitleScreen screen, bool restoreTitle = true)
+        internal static void DisconnectFromMenu(TitleScreen screen, bool restoreTitle = true)
         {
             StopNetworkFromMenu();
             ResetClientConnectState();
@@ -279,7 +279,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void StopNetworkFromMenu()
+        internal static void StopNetworkFromMenu()
         {
             ResetHostDisconnectCountdown();
             try
@@ -296,7 +296,7 @@ namespace DeadCellsMultiplayerMod
             ResetSteamState();
         }
 
-        private static void EditUsername(TitleScreen screen)
+        internal static void EditUsername(TitleScreen screen)
         {
             OpenTextInput(screen, GetText.Instance.GetString("Username"), _username, value =>
             {
@@ -388,7 +388,7 @@ namespace DeadCellsMultiplayerMod
                     if (ts != null) ShowHostStatusMenu(ts);
                 }
 
-                EnqueueMainThreadCoalesced("ui:refresh-layout-after-disconnect", () => ConnectionUI.RefreshLayoutAfterDisconnect());
+                MainThreadPump.EnqueueMainThreadCoalesced("ui:refresh-layout-after-disconnect", () => ConnectionUI.RefreshLayoutAfterDisconnect());
                 RequestLobbyMenuRefresh();
                 return;
             }
@@ -418,11 +418,11 @@ namespace DeadCellsMultiplayerMod
             if (wasInRun)
                 StartHostDisconnectCountdown(savePending: !saved);
 
-            EnqueueMainThreadCoalesced("ui:refresh-layout-after-disconnect", () => ConnectionUI.RefreshLayoutAfterDisconnect());
+            MainThreadPump.EnqueueMainThreadCoalesced("ui:refresh-layout-after-disconnect", () => ConnectionUI.RefreshLayoutAfterDisconnect());
             RequestLobbyMenuRefresh();
         }
 
-        private static void SendUsernameToRemote()
+        internal static void SendUsernameToRemote()
         {
             var net = NetRef;
             if (net == null || !net.HasRemote) return;
@@ -437,7 +437,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void SendCachedDataToRemote()
+        internal static void SendCachedDataToRemote()
         {
             var net = NetRef;
             if (net == null) return;
@@ -455,7 +455,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool AllPlayersReady()
+        internal static bool AllPlayersReady()
         {
             RefreshPlayersDisplayFromNetwork();
             if (_playersDisplay.Count == 0)
@@ -463,7 +463,7 @@ namespace DeadCellsMultiplayerMod
             return _playersDisplay.All(p => p.Ready);
         }
 
-        private static void ClearNetworkCaches()
+        internal static void ClearNetworkCaches()
         {
             lock (Sync)
             {
@@ -473,7 +473,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ResetSteamState()
+        internal static void ResetSteamState()
         {
             var lobbyId = _steamLobbyId;
             if (lobbyId != 0UL)
@@ -489,7 +489,7 @@ namespace DeadCellsMultiplayerMod
                 _menuTransport = ConnectionTransport.Lan;
         }
 
-        private static void StartHostDisconnectCountdown(bool savePending = false)
+        internal static void StartHostDisconnectCountdown(bool savePending = false)
         {
             var now = DateTime.UtcNow;
             _hostDisconnectCountdownActive = true;
@@ -511,7 +511,7 @@ namespace DeadCellsMultiplayerMod
             MultiplayerUI.PushSystemMessage(FormatLocalized("Back to menu in {0}...", HostDisconnectCountdownSeconds));
         }
 
-        private static void ResetHostDisconnectCountdown()
+        internal static void ResetHostDisconnectCountdown()
         {
             _hostDisconnectCountdownActive = false;
             _hostDisconnectCountdownGameRef = null;
@@ -523,7 +523,7 @@ namespace DeadCellsMultiplayerMod
             _hostDisconnectSaveDeadline = DateTime.MinValue;
         }
 
-        private static void UpdateHostDisconnectCountdown()
+        internal static void UpdateHostDisconnectCountdown()
         {
             if (!_hostDisconnectCountdownActive)
                 return;
@@ -576,7 +576,7 @@ namespace DeadCellsMultiplayerMod
             ForceExitToMainMenu();
         }
 
-        private static void CaptureHostDisconnectCountdownGame()
+        internal static void CaptureHostDisconnectCountdownGame()
         {
             try
             {
@@ -589,7 +589,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool IsHostDisconnectCountdownGameStillActive()
+        internal static bool IsHostDisconnectCountdownGameStillActive()
         {
             var gameRef = _hostDisconnectCountdownGameRef;
             if (gameRef == null)
@@ -619,7 +619,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool TrySaveClientWorldBeforeHostAutoExit(string reason)
+        internal static bool TrySaveClientWorldBeforeHostAutoExit(string reason)
         {
             try
             {
@@ -650,7 +650,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool TryValidateClientMultiplayerSave(out string error)
+        internal static bool TryValidateClientMultiplayerSave(out string error)
         {
             error = string.Empty;
             try
@@ -680,7 +680,7 @@ namespace DeadCellsMultiplayerMod
             return GetText.Instance.GetString(message);
         }
 
-        private static string FormatLocalized(string format, params object[] args)
+        internal static string FormatLocalized(string format, params object[] args)
         {
             var localizedFormat = Localize(format);
             try
@@ -748,13 +748,13 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool IsChallengeLevel(string levelId)
+        internal static bool IsChallengeLevel(string levelId)
         {
             if (string.IsNullOrWhiteSpace(levelId)) return false;
             return levelId.IndexOf("challenge", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private sealed class LevelDescSync
+        internal sealed class LevelDescSync
         {
             public string LevelId { get; set; } = string.Empty;
             public string Name { get; set; } = string.Empty;
@@ -774,7 +774,7 @@ namespace DeadCellsMultiplayerMod
             public int Group { get; set; }
         }
 
-        private sealed class MenuConfig
+        internal sealed class MenuConfig
         {
             public string user { get; set; } = "guest";
             public string last_ip { get; set; } = "127.0.0.1";
@@ -782,7 +782,7 @@ namespace DeadCellsMultiplayerMod
             public string player_id { get; set; } = Guid.NewGuid().ToString("N");
         }
 
-        private sealed class PlayerInfo
+        internal sealed class PlayerInfo
         {
             public int UserId { get; set; }
             public string Name { get; set; } = "guest";
@@ -790,7 +790,7 @@ namespace DeadCellsMultiplayerMod
             public bool IsHost { get; set; }
         }
 
-        private static void LoadConfig()
+        internal static void LoadConfig()
         {
             try
             {
@@ -821,7 +821,7 @@ namespace DeadCellsMultiplayerMod
             SaveConfig();
         }
 
-        private static void SaveConfig()
+        internal static void SaveConfig()
         {
             try
             {
@@ -843,7 +843,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static string GetConfigPath()
+        internal static string GetConfigPath()
         {
             var baseDir = AppContext.BaseDirectory;
             var root = Directory.GetParent(baseDir)?.Parent?.Parent?.Parent?.FullName ?? baseDir;
@@ -851,14 +851,14 @@ namespace DeadCellsMultiplayerMod
             return Path.Combine(dir, "config.json");
         }
 
-        private static string CleanUsername(string? value)
+        internal static string CleanUsername(string? value)
         {
             var cleaned = string.IsNullOrWhiteSpace(value) ? "guest" : value.Trim();
             cleaned = cleaned.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
             return cleaned.Length == 0 ? "guest" : cleaned;
         }
 
-        private static string GetDefaultUsername()
+        internal static string GetDefaultUsername()
         {
             var steamName = TryGetSteamPersonaName();
             if (!string.IsNullOrWhiteSpace(steamName))
@@ -873,7 +873,7 @@ namespace DeadCellsMultiplayerMod
             return "guest";
         }
 
-        private static string? TryGetSteamPersonaName()
+        internal static string? TryGetSteamPersonaName()
         {
             string? steamPath = null;
             try
@@ -909,7 +909,7 @@ namespace DeadCellsMultiplayerMod
             return TryParseMostRecentPersonaName(loginUsersPath);
         }
 
-        private static string? TryParseMostRecentPersonaName(string path)
+        internal static string? TryParseMostRecentPersonaName(string path)
         {
             try
             {
@@ -977,7 +977,7 @@ namespace DeadCellsMultiplayerMod
             return null;
         }
 
-        private static bool IsQuotedKeyOnly(string line)
+        internal static bool IsQuotedKeyOnly(string line)
         {
             if (!line.StartsWith("\"", StringComparison.Ordinal))
                 return false;
@@ -988,7 +988,7 @@ namespace DeadCellsMultiplayerMod
             return thirdQuote < 0;
         }
 
-        private static bool TryParseVdfPair(string line, out string key, out string value)
+        internal static bool TryParseVdfPair(string line, out string key, out string value)
         {
             key = string.Empty;
             value = string.Empty;
@@ -1008,7 +1008,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static void ResetClientConnectState()
+        internal static void ResetClientConnectState()
         {
             lock (Sync)
             {
@@ -1080,12 +1080,12 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool IsCtrlDown()
+        internal static bool IsCtrlDown()
         {
             return dc.hxd.Key.Class.isDown(KeyCtrl) || dc.hxd.Key.Class.isDown(KeyLCtrl) || dc.hxd.Key.Class.isDown(KeyRCtrl);
         }
 
-        private static void RegisterActiveTextInput(TextInput input, bool noSpaces)
+        internal static void RegisterActiveTextInput(TextInput input, bool noSpaces)
         {
             lock (TextInputSync)
             {
@@ -1094,7 +1094,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ClearActiveTextInput()
+        internal static void ClearActiveTextInput()
         {
             lock (TextInputSync)
             {
@@ -1103,7 +1103,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static TextInput? GetActiveTextInput()
+        internal static TextInput? GetActiveTextInput()
         {
             lock (TextInputSync)
             {
@@ -1114,7 +1114,7 @@ namespace DeadCellsMultiplayerMod
             return null;
         }
 
-        private static bool IsTextInputActive(TextInput input)
+        internal static bool IsTextInputActive(TextInput input)
         {
             var active = GetMemberValue(input, "isActive", true) ?? GetMemberValue(input, "active", true);
             if (active is bool activeBool)
@@ -1132,7 +1132,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static object? GetTextInputTarget(TextInput input)
+        internal static object? GetTextInputTarget(TextInput input)
         {
             return GetMemberValue(input, "input", true)
                 ?? GetMemberValue(input, "textInput", true)
@@ -1140,7 +1140,7 @@ namespace DeadCellsMultiplayerMod
                 ?? input;
         }
 
-        private static bool TryGetTextInputValue(TextInput input, out string text)
+        internal static bool TryGetTextInputValue(TextInput input, out string text)
         {
             text = string.Empty;
             var target = GetTextInputTarget(input);
@@ -1163,7 +1163,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static bool TrySetTextInputValue(TextInput input, string text)
+        internal static bool TrySetTextInputValue(TextInput input, string text)
         {
             var target = GetTextInputTarget(input);
             if (target == null)
@@ -1181,7 +1181,7 @@ namespace DeadCellsMultiplayerMod
                 || TrySetMember(target, "str", text);
         }
 
-        private static bool TryInvokeTextInputSetter(object target, object value)
+        internal static bool TryInvokeTextInputSetter(object target, object value)
         {
             var type = target.GetType();
             var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
@@ -1205,7 +1205,7 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private static void RemoveSpacesFromTextInput(TextInput input)
+        internal static void RemoveSpacesFromTextInput(TextInput input)
         {
             if (!TryGetTextInputValue(input, out var text))
                 return;
@@ -1216,12 +1216,12 @@ namespace DeadCellsMultiplayerMod
             TrySetTextInputValue(input, RemoveSpaces(text));
         }
 
-        private static string RemoveSpaces(string value)
+        internal static string RemoveSpaces(string value)
         {
             return value.Replace(" ", string.Empty, StringComparison.Ordinal);
         }
 
-        private static string? TryGetClipboardText()
+        internal static string? TryGetClipboardText()
         {
             try
             {
@@ -1260,7 +1260,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool TrySetClipboardText(string text)
+        internal static bool TrySetClipboardText(string text)
         {
             try
             {
@@ -1313,7 +1313,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void OpenTextInput(TitleScreen screen, string title, string initial, Action<string> onValidate, bool noSpaces = false)
+        internal static void OpenTextInput(TitleScreen screen, string title, string initial, Action<string> onValidate, bool noSpaces = false)
         {
             try
             {
@@ -1342,7 +1342,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void TryAddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, int? textColor = null)
+        internal static void TryAddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, int? textColor = null)
         {
             try
             {
@@ -1359,7 +1359,7 @@ namespace DeadCellsMultiplayerMod
         /// vanilla white: this method builds Host game, Join game, Ready, Disconnect, OK, Back and
         /// most other entries, so a hardcoded accent here would recolour the entire mod UI.
         /// </summary>
-        private static void AddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null)
+        internal static void AddMenuButton(TitleScreen screen, string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null)
         {
             var cb = new HlAction(onClick);
             var labelStr = MakeHLString(label);
@@ -1369,7 +1369,7 @@ namespace DeadCellsMultiplayerMod
             screen.addMenu(labelStr, cb, helpStr, isEnabled, color);
         }
 
-        private static void AddInfoLine(TitleScreen screen, string text, int? infoColor = null)
+        internal static void AddInfoLine(TitleScreen screen, string text, int? infoColor = null)
         {
             int colorVal = infoColor ?? 0xFFFFFF;
             var labelStr = MakeHLString(text);
@@ -1382,25 +1382,25 @@ namespace DeadCellsMultiplayerMod
         // ---------------------------------------------------------------- ConnectionUI routing
 
         /// <summary>Starts a ConnectionUI screen (clears the pending model, makes the hub visible).</summary>
-        private static void UiBegin()
+        internal static void UiBegin()
         {
             ConnectionUI.BeginMenu();
         }
 
         /// <summary>Adds a pretty button to the current ConnectionUI screen.</summary>
-        private static void UiButton(string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null, bool fieldStyle = false)
+        internal static void UiButton(string label, Action onClick, string? help = null, bool? isEnabled = null, int? textColor = null, bool fieldStyle = false)
         {
             ConnectionUI.AddPendingButton(label, help ?? string.Empty, isEnabled ?? true, textColor ?? 0xFFFFFF, onClick, fieldStyle);
         }
 
         /// <summary>Adds an informational line to the current ConnectionUI screen.</summary>
-        private static void UiInfo(string text, int? infoColor = null)
+        internal static void UiInfo(string text, int? infoColor = null)
         {
             ConnectionUI.AddPendingInfo(text, infoColor ?? 0xFFFFFF);
         }
 
         /// <summary>Renders the current ConnectionUI screen.</summary>
-        private static void UiCommit(bool showLobby = false, bool hubLayout = false)
+        internal static void UiCommit(bool showLobby = false, bool hubLayout = false)
         {
             ConnectionUI.CommitMenu(showLobby, hubLayout);
         }
@@ -1410,7 +1410,7 @@ namespace DeadCellsMultiplayerMod
         /// ShowMultiplayerMenu clears menu items then restores isMainMenu=true, so a bare
         /// <c>mainMenu()</c> can no-op and leave an empty title under a leftover hub.
         /// </summary>
-        private static void ReturnFromMultiplayerHubToTitle(TitleScreen screen)
+        internal static void ReturnFromMultiplayerHubToTitle(TitleScreen screen)
         {
             try
             {
@@ -1435,12 +1435,12 @@ namespace DeadCellsMultiplayerMod
         }
 
         /// <summary>Shows the ConnectionUI lobby display (player list + lobby code).</summary>
-        private static void UiLobby()
+        internal static void UiLobby()
         {
             ConnectionUI.ShowLobbyMode();
         }
 
-        private static object? GetMemberValue(object? obj, string name, bool ignoreCase)
+        internal static object? GetMemberValue(object? obj, string name, bool ignoreCase)
         {
             if (obj == null || string.IsNullOrWhiteSpace(name)) return null;
 
@@ -1460,7 +1460,7 @@ namespace DeadCellsMultiplayerMod
             return null;
         }
 
-        private static bool TrySetMember(object? obj, string name, object? value)
+        internal static bool TrySetMember(object? obj, string name, object? value)
         {
             if (obj == null || string.IsNullOrWhiteSpace(name)) return false;
 
@@ -1487,12 +1487,12 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private static dc.String MakeHLString(string value)
+        internal static dc.String MakeHLString(string value)
         {
             return value.AsHaxeString();
         }
 
-        private static bool GetIsMainMenu(TitleScreen screen)
+        internal static bool GetIsMainMenu(TitleScreen screen)
         {
             try
             {
@@ -1503,7 +1503,7 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private static void SetIsMainMenu(TitleScreen screen, bool value)
+        internal static void SetIsMainMenu(TitleScreen screen, bool value)
         {
             try
             {
@@ -1512,7 +1512,7 @@ namespace DeadCellsMultiplayerMod
             catch { }
         }
 
-        private static int GetArrayLength(object arrObj)
+        internal static int GetArrayLength(object arrObj)
         {
             try
             {
@@ -1524,7 +1524,7 @@ namespace DeadCellsMultiplayerMod
             return 0;
         }
 
-        private static int FindMenuIndexByLabel(object? arrObj, string label)
+        internal static int FindMenuIndexByLabel(object? arrObj, string label)
         {
             if (arrObj == null) return -1;
             try
@@ -1546,7 +1546,7 @@ namespace DeadCellsMultiplayerMod
             return -1;
         }
 
-        private static string GetMenuLabel(object? menuItem)
+        internal static string GetMenuLabel(object? menuItem)
         {
             if (menuItem == null) return string.Empty;
 
@@ -1569,7 +1569,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void RemoveMenuItems(TitleScreen screen, params string[] labels)
+        internal static void RemoveMenuItems(TitleScreen screen, params string[] labels)
         {
             if (labels.Length == 0) return;
             var arrObj = GetMemberValue(screen, "menuItems", true);
@@ -1612,7 +1612,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void RemoveDuplicatesKeepFirst(TitleScreen screen, params string[] labels)
+        internal static void RemoveDuplicatesKeepFirst(TitleScreen screen, params string[] labels)
         {
             if (labels.Length == 0) return;
             var arrObj = GetMemberValue(screen, "menuItems", true);
@@ -1659,12 +1659,12 @@ namespace DeadCellsMultiplayerMod
         }
 
 
-        private static void StoreTitleScreen(TitleScreen ts)
+        internal static void StoreTitleScreen(TitleScreen ts)
         {
             _titleScreenRef = new WeakReference<TitleScreen?>(ts);
         }
 
-        private static TitleScreen? GetTitleScreen()
+        internal static TitleScreen? GetTitleScreen()
         {
             if (_titleScreenRef != null && _titleScreenRef.TryGetTarget(out var ts))
                 return ts;

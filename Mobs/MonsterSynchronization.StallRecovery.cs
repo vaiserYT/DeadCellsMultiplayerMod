@@ -68,7 +68,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         private static void TryRecoverHostStalledMob(Mob mob)
         {
-            if (mob == null || !IsHost(GameMenu.NetRef) || !IsSyncMob(mob))
+            if (mob == null || !IsHost(LobbySession.NetRef) || !IsSyncMob(mob))
                 return;
             if (BossSyncHelpers.IsBossMob(mob) || !IsMobHostileToPlayers(mob))
                 return;

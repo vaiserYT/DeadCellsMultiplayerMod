@@ -207,7 +207,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || !IsSyncMob(mob))
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsHost(net))
             {
                 QueueHostMobDirty(mob, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
@@ -889,7 +889,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (entity is not Mob mob || !IsSyncMob(mob))
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsHost(net))
             {
                 QueueHostMobDirty(mob, HostMobDirtyFlags.State);

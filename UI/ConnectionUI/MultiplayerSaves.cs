@@ -11,34 +11,34 @@ using Marshal = System.Runtime.InteropServices.Marshal;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
-        private const string MultiplayerSaveFolderName = "MSave";
-        private const string SavedGamesTitleLocalizationKey = "SAUVEGARDES";
-        private const int CopyActionCode = 20;
-        private const int LiteralKeyboardXKeyCode = 88;
+        internal const string MultiplayerSaveFolderName = "MSave";
+        internal const string SavedGamesTitleLocalizationKey = "SAUVEGARDES";
+        internal const int CopyActionCode = 20;
+        internal const int LiteralKeyboardXKeyCode = 88;
 
-        private enum MultiplayerSaveMenuKind
+        internal enum MultiplayerSaveMenuKind
         {
             None,
             MultiplayerSlots,
             OriginalSourceSelection
         }
 
-        private static bool _multiplayerSaveHooksAttached;
-        private static bool _multiplayerSaveMenuOpening;
-        private static MultiplayerSaveMenuKind _multiplayerSaveMenuKind = MultiplayerSaveMenuKind.None;
-        private static NetRole _multiplayerSaveMenuReturnRole = NetRole.None;
-        private static int? _multiplayerSaveImportTargetSlot;
-        private static int? _preferredMultiplayerSaveSlot;
-        private static bool _forceMultiplayerSaveStore;
-        private static ControlLabel? _multiplayerSaveImportControlLabel;
-        private static string _multiplayerSaveDefaultTitle = string.Empty;
-        private static bool _hasCapturedMultiplayerSaveDefaultTitle;
-        private static bool _pendingSaveChoiceReflow;
-        private static MultiplayerSaveMenuKind _pendingSaveChoiceReflowKind = MultiplayerSaveMenuKind.None;
+        internal static bool _multiplayerSaveHooksAttached;
+        internal static bool _multiplayerSaveMenuOpening;
+        internal static MultiplayerSaveMenuKind _multiplayerSaveMenuKind = MultiplayerSaveMenuKind.None;
+        internal static NetRole _multiplayerSaveMenuReturnRole = NetRole.None;
+        internal static int? _multiplayerSaveImportTargetSlot;
+        internal static int? _preferredMultiplayerSaveSlot;
+        internal static bool _forceMultiplayerSaveStore;
+        internal static ControlLabel? _multiplayerSaveImportControlLabel;
+        internal static string _multiplayerSaveDefaultTitle = string.Empty;
+        internal static bool _hasCapturedMultiplayerSaveDefaultTitle;
+        internal static bool _pendingSaveChoiceReflow;
+        internal static MultiplayerSaveMenuKind _pendingSaveChoiceReflowKind = MultiplayerSaveMenuKind.None;
 
-        private static void InitializeMultiplayerSaveHooks()
+        internal static void InitializeMultiplayerSaveHooks()
         {
             if (_multiplayerSaveHooksAttached)
                 return;
@@ -56,12 +56,12 @@ namespace DeadCellsMultiplayerMod
             _multiplayerSaveHooksAttached = true;
         }
 
-        private static string GetMultiplayerSaveButtonLabel()
+        internal static string GetMultiplayerSaveButtonLabel()
         {
             return FormatLocalized("Save: Slot {0}", ResolveSaveSlotNumber(null) + 1);
         }
 
-        private static void OpenMultiplayerSlotMenu(TitleScreen screen)
+        internal static void OpenMultiplayerSlotMenu(TitleScreen screen)
         {
             _multiplayerSaveMenuReturnRole = _inHostStatusMenu
                 ? NetRole.Host
@@ -72,12 +72,12 @@ namespace DeadCellsMultiplayerMod
             OpenSaveMenu(screen, MultiplayerSaveMenuKind.MultiplayerSlots);
         }
 
-        private static void OpenOriginalSaveImportMenu(TitleScreen screen)
+        internal static void OpenOriginalSaveImportMenu(TitleScreen screen)
         {
             OpenSaveMenu(screen, MultiplayerSaveMenuKind.OriginalSourceSelection);
         }
 
-        private static void OpenSaveMenu(TitleScreen screen, MultiplayerSaveMenuKind kind)
+        internal static void OpenSaveMenu(TitleScreen screen, MultiplayerSaveMenuKind kind)
         {
             _multiplayerSaveMenuKind = kind;
             _multiplayerSaveMenuOpening = true;
@@ -99,7 +99,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void Hook_TitleScreen_onLeavingSaveMenu(Hook_TitleScreen.orig_onLeavingSaveMenu orig, TitleScreen self)
+        internal static void Hook_TitleScreen_onLeavingSaveMenu(Hook_TitleScreen.orig_onLeavingSaveMenu orig, TitleScreen self)
         {
             var returnRole = _multiplayerSaveMenuReturnRole;
 
@@ -126,7 +126,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void Hook__SaveChoice___constructor__(Hook__SaveChoice.orig___constructor__ orig, SaveChoice self, TitleScreen tween)
+        internal static void Hook__SaveChoice___constructor__(Hook__SaveChoice.orig___constructor__ orig, SaveChoice self, TitleScreen tween)
         {
             orig(self, tween);
 
@@ -151,7 +151,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void Hook_SaveChoice_onCopy(Hook_SaveChoice.orig_onCopy orig, SaveChoice self)
+        internal static void Hook_SaveChoice_onCopy(Hook_SaveChoice.orig_onCopy orig, SaveChoice self)
         {
             if (_multiplayerSaveMenuKind == MultiplayerSaveMenuKind.OriginalSourceSelection)
                 return;
@@ -166,7 +166,7 @@ namespace DeadCellsMultiplayerMod
                 return;
         }
 
-        private static void Hook_SaveChoice_onValidate(Hook_SaveChoice.orig_onValidate orig, SaveChoice self)
+        internal static void Hook_SaveChoice_onValidate(Hook_SaveChoice.orig_onValidate orig, SaveChoice self)
         {
             if (_multiplayerSaveMenuKind != MultiplayerSaveMenuKind.OriginalSourceSelection)
             {
@@ -201,7 +201,7 @@ namespace DeadCellsMultiplayerMod
             SwitchSaveChoiceStore(self, MultiplayerSaveMenuKind.MultiplayerSlots);
         }
 
-        private static void Hook_SaveChoice_onCancel(Hook_SaveChoice.orig_onCancel orig, SaveChoice self)
+        internal static void Hook_SaveChoice_onCancel(Hook_SaveChoice.orig_onCancel orig, SaveChoice self)
         {
             if (_multiplayerSaveMenuKind != MultiplayerSaveMenuKind.OriginalSourceSelection)
             {
@@ -213,7 +213,7 @@ namespace DeadCellsMultiplayerMod
             SwitchSaveChoiceStore(self, MultiplayerSaveMenuKind.MultiplayerSlots);
         }
 
-        private static void Hook_SaveChoice_onDelete(Hook_SaveChoice.orig_onDelete orig, SaveChoice self)
+        internal static void Hook_SaveChoice_onDelete(Hook_SaveChoice.orig_onDelete orig, SaveChoice self)
         {
             if (_multiplayerSaveMenuKind == MultiplayerSaveMenuKind.OriginalSourceSelection)
                 return;
@@ -234,7 +234,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void Hook_SaveChoice_onDispose(Hook_SaveChoice.orig_onDispose orig, SaveChoice self)
+        internal static void Hook_SaveChoice_onDispose(Hook_SaveChoice.orig_onDispose orig, SaveChoice self)
         {
             try
             {
@@ -249,7 +249,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void Hook_SaveChoice_update(Hook_SaveChoice.orig_update orig, SaveChoice self)
+        internal static void Hook_SaveChoice_update(Hook_SaveChoice.orig_update orig, SaveChoice self)
         {
             TryFlushPendingSaveChoiceReflow(self);
             EnsureCurrentSaveChoiceTitle(self);
@@ -270,7 +270,7 @@ namespace DeadCellsMultiplayerMod
             orig(self);
         }
 
-        private static dc.String Hook__Save_fileName(Hook__Save.orig_fileName orig, int? slot)
+        internal static dc.String Hook__Save_fileName(Hook__Save.orig_fileName orig, int? slot)
         {
             if (!ShouldUseMultiplayerSaveStore())
                 return orig(slot);
@@ -287,7 +287,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool ShouldUseMultiplayerSaveStore()
+        internal static bool ShouldUseMultiplayerSaveStore()
         {
             if (_multiplayerSaveMenuKind == MultiplayerSaveMenuKind.OriginalSourceSelection)
                 return false;
@@ -295,7 +295,7 @@ namespace DeadCellsMultiplayerMod
             return _forceMultiplayerSaveStore || _role != NetRole.None || _multiplayerSaveMenuKind == MultiplayerSaveMenuKind.MultiplayerSlots || _multiplayerSaveMenuOpening;
         }
 
-        private static int ResolveSaveSlotNumber(int? slot)
+        internal static int ResolveSaveSlotNumber(int? slot)
         {
             if (slot.HasValue && slot.Value >= 0)
                 return slot.Value;
@@ -313,7 +313,7 @@ namespace DeadCellsMultiplayerMod
             return 0;
         }
 
-        private static string GetSaveRootPath()
+        internal static string GetSaveRootPath()
         {
             try
             {
@@ -335,17 +335,17 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static string GetOriginalSaveRelativeFilePath(int? slot)
+        internal static string GetOriginalSaveRelativeFilePath(int? slot)
         {
             return $"user_{ResolveSaveSlotNumber(slot)}.dat";
         }
 
-        private static string GetMultiplayerSaveRelativeFilePath(int? slot)
+        internal static string GetMultiplayerSaveRelativeFilePath(int? slot)
         {
             return $"{MultiplayerSaveFolderName}/user_{ResolveSaveSlotNumber(slot)}.dat";
         }
 
-        private static string GetAbsoluteSavePath(string relativePath)
+        internal static string GetAbsoluteSavePath(string relativePath)
         {
             var normalized = relativePath
                 .Replace('/', IOPath.DirectorySeparatorChar)
@@ -354,12 +354,12 @@ namespace DeadCellsMultiplayerMod
             return IOPath.GetFullPath(IOPath.Combine(GetSaveRootPath(), normalized));
         }
 
-        private static void EnsureMultiplayerSaveFolderExists()
+        internal static void EnsureMultiplayerSaveFolderExists()
         {
             IODirectory.CreateDirectory(GetAbsoluteSavePath(MultiplayerSaveFolderName));
         }
 
-        private static void ConfigureMultiplayerSaveChoice(SaveChoice self)
+        internal static void ConfigureMultiplayerSaveChoice(SaveChoice self)
         {
             if (self == null)
                 return;
@@ -373,7 +373,7 @@ namespace DeadCellsMultiplayerMod
             self.fControlLabel?.reflow();
         }
 
-        private static void ConfigureOriginalSourceSaveChoice(SaveChoice self)
+        internal static void ConfigureOriginalSourceSaveChoice(SaveChoice self)
         {
             if (self == null)
                 return;
@@ -385,7 +385,7 @@ namespace DeadCellsMultiplayerMod
             self.fControlLabel?.reflow();
         }
 
-        private static void SwitchSaveChoiceStore(SaveChoice self, MultiplayerSaveMenuKind kind)
+        internal static void SwitchSaveChoiceStore(SaveChoice self, MultiplayerSaveMenuKind kind)
         {
             if (self == null)
                 return;
@@ -415,7 +415,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void TryFlushPendingSaveChoiceReflow(SaveChoice self)
+        internal static void TryFlushPendingSaveChoiceReflow(SaveChoice self)
         {
             if (!_pendingSaveChoiceReflow || self == null)
                 return;
@@ -430,7 +430,7 @@ namespace DeadCellsMultiplayerMod
             TryRebuildSaveChoice(self, _multiplayerSaveMenuKind);
         }
 
-        private static void TryRebuildSaveChoice(SaveChoice self, MultiplayerSaveMenuKind kind)
+        internal static void TryRebuildSaveChoice(SaveChoice self, MultiplayerSaveMenuKind kind)
         {
             try
             {
@@ -445,7 +445,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void AttachSaveChoiceActionBridge(SaveChoice self)
+        internal static void AttachSaveChoiceActionBridge(SaveChoice self)
         {
             var controller = self?.controller;
             if (controller == null)
@@ -460,7 +460,7 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
-        private static void HandleSaveChoiceActionPressed(SaveChoice self, int act)
+        internal static void HandleSaveChoiceActionPressed(SaveChoice self, int act)
         {
             if (act != CopyActionCode)
                 return;
@@ -477,7 +477,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool TryBeginMultiplayerSaveImportSelection(SaveChoice self)
+        internal static bool TryBeginMultiplayerSaveImportSelection(SaveChoice self)
         {
             if (_multiplayerSaveMenuKind != MultiplayerSaveMenuKind.MultiplayerSlots)
                 return false;
@@ -492,7 +492,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static bool TryResolveImportTargetSlot(SaveChoice self, out int slot)
+        internal static bool TryResolveImportTargetSlot(SaveChoice self, out int slot)
         {
             slot = 0;
             if (TryGetSelectedSaveSlot(self, out slot))
@@ -521,7 +521,7 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private static void TryCaptureDefaultSaveTitle(SaveChoice self)
+        internal static void TryCaptureDefaultSaveTitle(SaveChoice self)
         {
             if (_hasCapturedMultiplayerSaveDefaultTitle)
                 return;
@@ -538,7 +538,7 @@ namespace DeadCellsMultiplayerMod
             _hasCapturedMultiplayerSaveDefaultTitle = true;
         }
 
-        private static string ResolveSavedGamesTitle()
+        internal static string ResolveSavedGamesTitle()
         {
             try
             {
@@ -559,7 +559,7 @@ namespace DeadCellsMultiplayerMod
                 : _multiplayerSaveDefaultTitle;
         }
 
-        private static void EnsureCurrentSaveChoiceTitle(SaveChoice self)
+        internal static void EnsureCurrentSaveChoiceTitle(SaveChoice self)
         {
             var title = self?.title;
             if (title == null)
@@ -584,14 +584,14 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool IsBenignSaveRebuildException(Exception ex)
+        internal static bool IsBenignSaveRebuildException(Exception ex)
         {
             var message = ex?.Message;
             return !string.IsNullOrEmpty(message) &&
                    message.IndexOf("Null access ._getCdObject", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static bool IsActionPressed(ControllerAccess? controllerAccess, int actionCode)
+        internal static bool IsActionPressed(ControllerAccess? controllerAccess, int actionCode)
         {
             if (controllerAccess == null)
                 return false;
@@ -616,12 +616,12 @@ namespace DeadCellsMultiplayerMod
                    IsPressed(controller, controller.get_bindings().third, actionCode, isGamepad: false);
         }
 
-        private static bool IsLiteralXPressed()
+        internal static bool IsLiteralXPressed()
         {
             return Key.Class.isPressed.Invoke(LiteralKeyboardXKeyCode);
         }
 
-        private static bool IsPressed(Controller controller, ArrayBytes_Int? bindings, int actionCode, bool isGamepad)
+        internal static bool IsPressed(Controller controller, ArrayBytes_Int? bindings, int actionCode, bool isGamepad)
         {
             var keyCode = GetBinding(bindings, actionCode);
             if (keyCode < 0)
@@ -633,7 +633,7 @@ namespace DeadCellsMultiplayerMod
             return (controller.mode & Controller.Class.ENABLE_KEY) != 0 && Key.Class.isPressed.Invoke(keyCode);
         }
 
-        private static int GetBinding(ArrayBytes_Int? bindings, int actionCode)
+        internal static int GetBinding(ArrayBytes_Int? bindings, int actionCode)
         {
             if (bindings == null)
                 return -1;
@@ -643,12 +643,12 @@ namespace DeadCellsMultiplayerMod
             return Marshal.ReadInt32(bindings.bytes, actionCode << 2);
         }
 
-        private static double GetCurrentUnixTimeSeconds()
+        internal static double GetCurrentUnixTimeSeconds()
         {
             return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
         }
 
-        private static void EnsureValidSaveChoiceSelection(SaveChoice self)
+        internal static void EnsureValidSaveChoiceSelection(SaveChoice self)
         {
             if (self == null)
                 return;
@@ -681,7 +681,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void EnsureImportControlLabel(SaveChoice self)
+        internal static void EnsureImportControlLabel(SaveChoice self)
         {
             if (self?.fControlLabel == null)
                 return;
@@ -709,7 +709,7 @@ namespace DeadCellsMultiplayerMod
             self.fControlLabel.reflow();
         }
 
-        private static ControlLabel? FindImportControlLabel(SaveChoice self)
+        internal static ControlLabel? FindImportControlLabel(SaveChoice self)
         {
             var children = self?.fControlLabel?.children;
             if (children == null)
@@ -728,7 +728,7 @@ namespace DeadCellsMultiplayerMod
             return null;
         }
 
-        private static void RemoveDuplicateImportControlLabels(SaveChoice self, ControlLabel keep)
+        internal static void RemoveDuplicateImportControlLabels(SaveChoice self, ControlLabel keep)
         {
             var controlParent = self?.fControlLabel;
             var children = controlParent?.children;
@@ -748,7 +748,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void SetControlLabelVisible(SaveChoice self, int index, bool visible)
+        internal static void SetControlLabelVisible(SaveChoice self, int index, bool visible)
         {
             var controlLabel = GetControlLabel(self, index);
             if (controlLabel == null)
@@ -758,7 +758,7 @@ namespace DeadCellsMultiplayerMod
             controlLabel.reflow();
         }
 
-        private static ControlLabel? GetControlLabel(SaveChoice self, int index)
+        internal static ControlLabel? GetControlLabel(SaveChoice self, int index)
         {
             var children = self?.fControlLabel?.children;
             if (children == null || index < 0 || index >= children.length)
@@ -767,7 +767,7 @@ namespace DeadCellsMultiplayerMod
             return children.array[index] as ControlLabel;
         }
 
-        private static ArrayBytes_Int CreateActionArray(int actionCode)
+        internal static ArrayBytes_Int CreateActionArray(int actionCode)
         {
             var values = new ArrayBytes_Int();
             try
@@ -782,7 +782,7 @@ namespace DeadCellsMultiplayerMod
             return values;
         }
 
-        private static void TrySelectPreferredMultiplayerSlot(SaveChoice self)
+        internal static void TrySelectPreferredMultiplayerSlot(SaveChoice self)
         {
             if (self == null || !_preferredMultiplayerSaveSlot.HasValue)
                 return;
@@ -828,7 +828,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static bool TryGetSelectedSaveWindow(SaveChoice self, out SaveWindow? window)
+        internal static bool TryGetSelectedSaveWindow(SaveChoice self, out SaveWindow? window)
         {
             window = null;
             if (self == null)
@@ -845,7 +845,7 @@ namespace DeadCellsMultiplayerMod
             return window != null;
         }
 
-        private static bool TryGetSelectedSaveSlot(SaveChoice self, out int slot)
+        internal static bool TryGetSelectedSaveSlot(SaveChoice self, out int slot)
         {
             slot = 0;
             if (TryGetSelectedSaveWindow(self, out var window) && window?.si != null)
@@ -857,7 +857,7 @@ namespace DeadCellsMultiplayerMod
             return TryGetSelectedSaveIndex(self, out slot);
         }
 
-        private static bool TryGetSelectedSourceSaveSlot(SaveChoice self, out int slot)
+        internal static bool TryGetSelectedSourceSaveSlot(SaveChoice self, out int slot)
         {
             slot = 0;
             if (TryGetSelectedSaveWindow(self, out var window) && window?.si != null)
@@ -875,7 +875,7 @@ namespace DeadCellsMultiplayerMod
             return dc.tool.File.Class.exists.Invoke(MakeHLString(GetOriginalSaveRelativeFilePath(slot)));
         }
 
-        private static bool TryGetSelectedSaveIndex(SaveChoice self, out int slot)
+        internal static bool TryGetSelectedSaveIndex(SaveChoice self, out int slot)
         {
             slot = 0;
             if (self == null)
@@ -892,7 +892,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static bool CopyOriginalSaveIntoMultiplayerSlot(int sourceSlot, int targetSlot)
+        internal static bool CopyOriginalSaveIntoMultiplayerSlot(int sourceSlot, int targetSlot)
         {
             try
             {
@@ -923,7 +923,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void SetCurrentSaveSlot(int slot)
+        internal static void SetCurrentSaveSlot(int slot)
         {
             try
             {

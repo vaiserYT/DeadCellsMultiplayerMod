@@ -63,16 +63,16 @@ namespace DeadCellsMultiplayerMod
             }
 
             _net?.Dispose();
-            GameMenu.NetRef = null;
+            LobbySession.NetRef = null;
             ResetNetworkState();
             createHost();
             // Publish the newly-created node immediately. Its accept/connect loops start inside the
             // factory, so delaying NetRef until after other setup left a small window where valid
             // early callbacks were treated as belonging to no/currently-superseded session.
-            GameMenu.NetRef = _net;
+            LobbySession.NetRef = _net;
             _netRole = NetRole.Host;
             _net?.SendHpMultipliers();
-            GameMenu.SetRole(_netRole);
+            LobbySession.SetRole(_netRole);
             ConnectionUI.NotifyConnectionsChanged();
         }
 
@@ -130,7 +130,7 @@ namespace DeadCellsMultiplayerMod
         private void StartClientCore(Action createClient)
         {
             _net?.Dispose();
-            GameMenu.NetRef = null;
+            LobbySession.NetRef = null;
             var main = dc.Main.Class.ME;
             if (main?.user != null)
                 GameDataSync.RestoreOriginalUserState(main.user, true);
@@ -138,9 +138,9 @@ namespace DeadCellsMultiplayerMod
             createClient();
             // Publish before UI setup for the same reason as the host path: the background
             // connection loop is already active when the factory returns.
-            GameMenu.NetRef = _net;
+            LobbySession.NetRef = _net;
             _netRole = NetRole.Client;
-            GameMenu.SetRole(_netRole);
+            LobbySession.SetRole(_netRole);
             ConnectionUI.NotifyConnectionsChanged();
         }
 
@@ -208,11 +208,11 @@ namespace DeadCellsMultiplayerMod
             // Invalidate the public session reference before draining/resetting queues. Otherwise
             // a late callback from the disposed node can still pass IsCurrentNetworkSession and
             // repopulate the just-cleared state.
-            GameMenu.NetRef = null;
+            LobbySession.NetRef = null;
             ResetNetworkState();
             _net = null;
             _netRole = NetRole.None;
-            GameMenu.SetRole(_netRole);
+            LobbySession.SetRole(_netRole);
             ConnectionUI.NotifyConnectionsChanged();
         }
     }
