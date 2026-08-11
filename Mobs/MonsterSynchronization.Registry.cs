@@ -45,6 +45,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (!IsHostAuthorityForNetIds())
                     continue;
 
+                if (nextRuntimeSyncId < 1)
+                    nextRuntimeSyncId = 1;
                 var netId = nextRuntimeSyncId++;
                 MobToId[mob] = netId;
                 IdToMob[netId] = mob;
@@ -179,6 +181,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     for (var i = 0; i < entries.Count; i++)
                     {
                         var entry = entries[i];
+                        if (entry.NetId <= 0)
+                            continue;
                         if (!ShouldAcceptPacketGenerationLocked(entry.Generation, ref rejectedCount, ref rejectedGeneration))
                             continue;
 
@@ -289,7 +293,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             bound = null;
             duplicateTwin = false;
-            if (netId < 0 || string.IsNullOrWhiteSpace(type))
+            if (netId <= 0 || string.IsNullOrWhiteSpace(type))
                 return false;
             if (!double.IsFinite(x) || !double.IsFinite(y))
                 return false;

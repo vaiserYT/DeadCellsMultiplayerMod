@@ -2607,7 +2607,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             if (!IsHost(LobbySession.NetRef))
                 return false;
-            if (hit.MobIndex < 0)
+            // Fence retired/sentinel ids. Rebinding onto 0 (or an id the host never issued) is what
+            // reintroduced Spinner/Worm/Hurler ownership under syncId=0 on PrisonCourtyard.
+            if (hit.MobIndex <= 0 || hit.MobIndex >= nextRuntimeSyncId)
                 return false;
             if (string.IsNullOrWhiteSpace(hit.Type))
                 return false;
@@ -2730,6 +2732,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         private static void RecordGhostHitMissLocked(NetNode.MobHit hit)
         {
+            // Never ghost-echo NetId 0 / negative: 0 is reserved and re-echoing it is what
+            // re-seeded the courtyard syncId=0 type thrash after the real owner was gone.
+            if (hit.MobIndex <= 0)
+                return;
+
             if (s_ghostHitMissGeneration != hit.Generation)
             {
                 s_ghostHitMissBySyncId.Clear();

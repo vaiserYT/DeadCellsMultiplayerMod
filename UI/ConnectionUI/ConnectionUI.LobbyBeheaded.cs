@@ -185,11 +185,6 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 this.connectionLabels.Add(nickText);
             }
 
-            Log.Information(
-                "[ConnectionUI] Lobby beheaded rebuilt ({Count} seats, signature={Sig})",
-                slotCount,
-                this.lastLobbySlotsSignature);
-
             try { this._lobbyBeheadedRoot.set_visible(true); } catch { }
         }
 

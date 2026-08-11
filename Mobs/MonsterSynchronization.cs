@@ -48,7 +48,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             public int Generation;
         }
         private static ConditionalWeakTable<Mob, MobSyncAlias> s_mobSyncAliases = new();
-        private static int nextRuntimeSyncId;
+        /// <summary>
+        /// Host NetId allocator. Starts at 1 so wire Index 0 stays a reserved "none/invalid" sentinel
+        /// and cannot be reintroduced by ghost-echo / hit-fallback rebinds after the owning mob dies.
+        /// </summary>
+        private static int nextRuntimeSyncId = 1;
 
         private static readonly Dictionary<Mob, ClientMobState> clientMobTargets = new(ReferenceEqualityComparer.Instance);
         private static readonly Dictionary<Mob, Entity?> clientCachedAttackTargetByMob = new(ReferenceEqualityComparer.Instance);
@@ -1378,6 +1382,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         return;
                     mobSyncId = cachedMobSyncId;
                 }
+
+                // NetId 0 is reserved. Never report damage against it — that is the courtyard
+                // syncId=0 thrash vector once the real owner was gone.
+                if (mobSyncId <= 0)
+                    return;
 
                 // A locally lethal client hit temporarily restores the mob so the client does not
                 // run an unsanctioned death. Still report life=0 to the host; reporting the restored

@@ -273,14 +273,31 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 s_batchMobsScratch.AddRange(trackedMobs);
             }
 
+            var minSyncId = -1;
+            var maxSyncId = -1;
+            var registryCount = 0;
+            lock (Sync)
+            {
+                foreach (var pair in MobToId)
+                {
+                    if (pair.Value <= 0)
+                        continue;
+                    registryCount++;
+                    if (minSyncId < 0 || pair.Value < minSyncId)
+                        minSyncId = pair.Value;
+                    if (pair.Value > maxSyncId)
+                        maxSyncId = pair.Value;
+                }
+            }
+
             MobSyncTrace.LogRegistryRebuild(
                 role,
                 levelId,
                 trackedBeforeReset,
                 trackedAfterRebuild,
-                trackedMobs.Count,
-                trackedMobs.Count > 0 ? 0 : -1,
-                trackedMobs.Count > 0 ? trackedMobs.Count - 1 : -1,
+                registryCount,
+                minSyncId,
+                maxSyncId,
                 nextRuntimeSyncId,
                 generationAfterRebuild,
                 s_levelIdentityToken);
@@ -289,7 +306,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 levelId,
                 levelKey,
                 trackedAfterRebuild,
-                trackedMobs.Count,
+                registryCount,
                 generationAfterRebuild,
                 s_levelIdentityToken);
 
@@ -950,28 +967,96 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             // HaxeProxy can expose another managed wrapper for the same native mob. Match it by
             // current level, runtime class and near-identical position. Unlike Mob.__uid, this does
-            // not alias every enemy of the same class. Reject ambiguous overlapping matches.
+            // not alias every enemy of the same class.
+            //
+            // Crowded packs used to return -1 on any ambiguity, which made TryGetMobSyncId mint a
+            // SECOND NetId for the same native enemy (registry_duplicate_twin / missing_sync_id).
+            // Prefer an already-mapped candidate; only reject when several unmapped equals collide.
             var matchedIndex = -1;
+            var matchedSyncId = int.MaxValue;
+            var matchedHasId = false;
+            var unmappedEquals = 0;
             for (int i = 0; i < trackedMobs.Count; i++)
             {
                 var candidate = trackedMobs[i];
                 if (!AreLikelySameNativeMobProxy(candidate, mob))
                     continue;
 
-                if (matchedIndex >= 0)
-                    return -1;
-                matchedIndex = i;
+                var hasId = false;
+                var candidateSyncId = 0;
+                if (candidate != null && MobToId.TryGetValue(candidate, out candidateSyncId) && candidateSyncId > 0)
+                    hasId = true;
+                if (hasId)
+                {
+                    if (!matchedHasId || candidateSyncId < matchedSyncId)
+                    {
+                        matchedIndex = i;
+                        matchedSyncId = candidateSyncId;
+                        matchedHasId = true;
+                    }
+                    continue;
+                }
+
+                if (!matchedHasId)
+                {
+                    unmappedEquals++;
+                    if (matchedIndex < 0)
+                        matchedIndex = i;
+                }
             }
 
-            if (matchedIndex >= 0)
+            if (matchedIndex < 0)
+                return -1;
+
+            // Multiple unmapped equals and no mapped owner — refuse rather than guess.
+            if (!matchedHasId && unmappedEquals > 1)
+                return -1;
+
+            var canonical = trackedMobs[matchedIndex];
+            if (canonical != null)
+                trackedMobIndices[canonical] = matchedIndex;
+            return matchedIndex;
+        }
+
+        /// <summary>
+        /// Host-only: if any already-mapped tracked wrapper is the same native enemy, reuse that
+        /// NetId instead of minting a duplicate. Caller holds <see cref="Sync"/>.
+        /// </summary>
+        private static bool TryAttachAliasToMappedNativeProxyLocked(Mob mob, out int syncId)
+        {
+            syncId = -1;
+            if (mob == null)
+                return false;
+
+            Mob? best = null;
+            var bestSyncId = int.MaxValue;
+            for (var i = 0; i < trackedMobs.Count; i++)
             {
-                var canonical = trackedMobs[matchedIndex];
-                if (canonical != null)
-                    trackedMobIndices[canonical] = matchedIndex;
-                return matchedIndex;
+                var candidate = trackedMobs[i];
+                if (candidate == null || ReferenceEquals(candidate, mob))
+                    continue;
+                if (!MobToId.TryGetValue(candidate, out var candidateSyncId) || candidateSyncId <= 0)
+                    continue;
+                if (!AreLikelySameNativeMobProxy(candidate, mob))
+                    continue;
+                if (candidateSyncId >= bestSyncId)
+                    continue;
+
+                best = candidate;
+                bestSyncId = candidateSyncId;
             }
 
-            return -1;
+            if (best == null || bestSyncId == int.MaxValue)
+                return false;
+
+            syncId = bestSyncId;
+            s_mobSyncAliases.Remove(mob);
+            s_mobSyncAliases.Add(mob, new MobSyncAlias
+            {
+                SyncId = syncId,
+                Generation = s_levelIdentityGeneration
+            });
+            return true;
         }
 
         private static bool AreLikelySameNativeMobProxy(Mob? left, Mob? right)
@@ -1162,22 +1247,25 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     return true;
                 }
 
-                // The forward entry points at a mob that now owns a different id — the same native
-                // enemy addressed under a stale duplicate id. Accept it so the state/hit is not
-                // dropped, then drop the stale forward entry so the alias orphans out instead of
-                // growing a permanent double mapping. The peer's own states for the real id will
-                // keep resolving through the healthy MobToId/IdToMob pair. When the reverse mapping
-                // is missing entirely (mob only reachable through this id), re-assert it instead.
+                // The forward entry points at a mob that now owns a different id — usually a
+                // duplicate NetId minted for a second HaxeProxy wrapper of the same native enemy.
+                // Keep BOTH forward ids resolving to the canonical wrapper so peer hits addressed
+                // to the duplicate id still land. Dropping IdToMob[dup] was the missing_sync_id
+                // path for legitimate high syncIds after registry_alias.
                 if (IsStateRebindCandidateLocked(mappedMob))
                 {
-                    if (mappedSyncId < 0)
+                    if (mappedSyncId <= 0)
                     {
                         IdToMob[syncId] = mappedMob;
                         MobToId[mappedMob] = syncId;
                     }
                     else
                     {
-                        IdToMob.Remove(syncId);
+                        // Canonical reverse mapping stays on mappedSyncId; duplicate syncId only
+                        // keeps a forward alias so old packets/hits still resolve.
+                        IdToMob[syncId] = mappedMob;
+                        IdToMob[mappedSyncId] = mappedMob;
+                        MobToId[mappedMob] = mappedSyncId;
                     }
 
                     s_trackedMobValidationPending = true;
@@ -1186,7 +1274,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         syncId,
                         BuildMobStateTypeSignature(mappedMob),
                         string.Empty,
-                        mappedSyncId >= 0 ? $"aliased_to:{mappedSyncId}" : "reverse_mapping_lost");
+                        mappedSyncId > 0 ? $"aliased_to:{mappedSyncId}" : "reverse_mapping_lost");
                     mob = mappedMob;
                     return true;
                 }
@@ -1449,6 +1537,14 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (LobbySession.NetRef?.IsHost != true)
                     return false;
 
+                // Never mint a second NetId for another HaxeProxy wrapper of the same native enemy.
+                // Duplicate ids are what produce registry_duplicate_twin on the client and then
+                // missing_sync_id hits once the host drops the alias forward map.
+                if (TryAttachAliasToMappedNativeProxyLocked(mob, out syncId))
+                    return true;
+
+                if (nextRuntimeSyncId < 1)
+                    nextRuntimeSyncId = 1;
                 syncId = nextRuntimeSyncId++;
                 MobToId[mob] = syncId;
                 IdToMob[syncId] = mob;
@@ -1456,7 +1552,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 // Dynamic/runtime-spawned mobs must be in the canonical tracked list immediately;
                 // otherwise the first dirty packet creates an IdToMob entry that is rejected as
                 // untracked_mob on the next dequeue.
-                if (FindTrackedMobIndexLocked(mob) < 0)
+                if (FindExactTrackedMobIndexLocked(mob) < 0)
                 {
                     trackedMobs.Add(mob);
                     trackedMobIndices[mob] = trackedMobs.Count - 1;
@@ -1901,7 +1997,9 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void TryRebindTrackedMobSyncIdLocked(Mob mob, int syncId)
         {
-            if (mob == null || syncId < 0)
+            // NetId 0 is reserved / retired. Rebinding onto 0 reintroduces the syncId=0 type thrash
+            // seen on PrisonCourtyard (host ghost-echo + client state mismatch cascade).
+            if (mob == null || syncId <= 0)
                 return;
 
             if (!IsLevelIdentityReadyLocked(mob._level))
