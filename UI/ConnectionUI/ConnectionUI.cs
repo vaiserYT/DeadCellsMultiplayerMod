@@ -94,6 +94,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private readonly List<HSprite> sprites = new();
         private readonly List<dc.ui.Text> connectionLabels = new();
         private readonly List<string> lastConnections = new();
+        private string lastLobbySlotsSignature = string.Empty;
         private Flow? lobbyCodeFlow;
         private dc.ui.Text? lobbyCodeTitleLabel;
         private dc.ui.Text? lobbyIdLabel;
@@ -991,22 +992,26 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             }
 
             try { this._lobbyPanelRoot.set_visible(true); } catch { }
-            RebuildLobbyPanelContent(_ConnectionUI.GetAllPlayerNames());
+            RebuildLobbyPanelContent(_ConnectionUI.GetLobbyPlayerSlots());
         }
 
         private void HideLobbyPanel()
         {
-            if (this._lobbyPanelRoot == null)
-                return;
-            try { this._lobbyPanelRoot.set_visible(false); } catch { }
+            if (this._lobbyPanelRoot != null)
+            {
+                try { this._lobbyPanelRoot.set_visible(false); } catch { }
+            }
+            HideLobbyBeheadedSprites();
         }
 
         private void ClearLobbyPanel()
         {
+            ClearLobbyBeheadedSprites();
             try { this._lobbyPanelRoot?.remove(); } catch { }
             this._lobbyPanelRoot = null;
             this.connectionLabels.Clear();
             this.lastConnections.Clear();
+            this.lastLobbySlotsSignature = string.Empty;
         }
 
         public void updateConnections()
@@ -1032,10 +1037,19 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 return;
             }
 
-            RebuildLobbyPanelContent(names ?? _ConnectionUI.GetAllPlayerNames());
+            var slots = _ConnectionUI.GetLobbyPlayerSlots();
+            if (!NeedsLobbySlotsRefresh(slots))
+                return;
+            RebuildLobbyPanelContent(slots);
         }
 
-        private void RebuildLobbyPanelContent(List<string> names)
+        private bool NeedsLobbySlotsRefresh(List<_ConnectionUI.LobbyPlayerSlot> slots)
+        {
+            var next = _ConnectionUI.BuildLobbySlotsSignature(slots);
+            return !string.Equals(this.lastLobbySlotsSignature, next, StringComparison.Ordinal);
+        }
+
+        private void RebuildLobbyPanelContent(List<_ConnectionUI.LobbyPlayerSlot> slots)
         {
             if (this._lobbyPanelRoot == null || this._panelRoot == null)
                 return;
@@ -1045,9 +1059,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             double textUi = System.Math.Max(uiScale, 1.0) * textBoost * 1.35;
             double panelW = GetLobbyPanelWidth(uiScale);
             double pad = 20.0 * uiScale;
-            double rowH = 56.0 * uiScale;
-            double rowGap = 10.0 * uiScale;
-            double titleBlockH = 72.0 * uiScale;
+            double screenPad = 28.0 * uiScale;
 
             string? lobbyCode = null;
             try
@@ -1063,84 +1075,26 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 lobbyCode = null;
             }
 
-            double codeBlockH = lobbyCode != null ? 70.0 * uiScale : 0.0;
-            double rowsH = names.Count > 0
-                ? names.Count * rowH + System.Math.Max(0, names.Count - 1) * rowGap
-                : 48.0 * uiScale;
-            double panelH = pad + titleBlockH + rowsH + (codeBlockH > 0 ? 12.0 * uiScale + codeBlockH : 0) + pad;
-
-            // Rebuild from scratch — cheap; only runs on lobby open / player list change / resize.
             this._lobbyPanelRoot.removeChildren();
             this.connectionLabels.Clear();
 
-            var chrome = new Graphics(this._lobbyPanelRoot);
-            UiChrome.DrawContentCard(
-                chrome,
-                0,
-                0,
-                panelW,
-                panelH,
-                CardCornerRadius * uiScale,
-                ContentCardFill,
-                ContentCardEdge);
-
-            var title = Assets.Class.makeText(
-                GetText.Instance.GetString("Lobby menu").AsHaxeString(),
-                Tools.MultiColor.ColorFromHex("#f7fc65"),
-                false,
-                this._lobbyPanelRoot);
-            double titleScale = 0.72 * textUi;
-            title.customScale = titleScale;
-            title.onResize();
-            title.textColor = 0xF7FC65;
-            title.x = pad;
-            title.y = pad;
-
-            var subtitle = Assets.Class.makeText(
-                GetText.Instance.GetString("Players' list").AsHaxeString(),
-                Tools.MultiColor.ColorFromHex("#8a93a6"),
-                false,
-                this._lobbyPanelRoot);
-            double subScale = 0.48 * textUi;
-            subtitle.customScale = subScale;
-            subtitle.onResize();
-            subtitle.textColor = 0x8A93A6;
-            subtitle.x = pad;
-            subtitle.y = pad + 34.0 * uiScale;
-
-            double cursorY = pad + titleBlockH;
-            if (names.Count == 0)
-            {
-                var empty = Assets.Class.makeText(
-                    "—".AsHaxeString(),
-                    Tools.MultiColor.ColorFromHex("#9098a8"),
-                    false,
-                    this._lobbyPanelRoot);
-                empty.customScale = 0.55 * textUi;
-                empty.onResize();
-                empty.textColor = HelpColor;
-                empty.x = pad;
-                empty.y = cursorY;
-            }
-            else
-            {
-                for (int i = 0; i < names.Count; i++)
-                {
-                    PlaceLobbyPlayerRow(
-                        names[i],
-                        pad,
-                        cursorY,
-                        panelW - pad * 2.0,
-                        rowH,
-                        textUi,
-                        uiScale);
-                    cursorY += rowH + rowGap;
-                }
-            }
-
+            // Beheaded row IS the players list — only keep a small card when a Steam lobby code is shown.
             if (lobbyCode != null)
             {
-                double codeY = panelH - pad - codeBlockH + 4.0 * uiScale;
+                double codeBlockH = 70.0 * uiScale;
+                double panelH = pad + codeBlockH + pad;
+
+                var chrome = new Graphics(this._lobbyPanelRoot);
+                UiChrome.DrawContentCard(
+                    chrome,
+                    0,
+                    0,
+                    panelW,
+                    panelH,
+                    CardCornerRadius * uiScale,
+                    ContentCardFill,
+                    ContentCardEdge);
+
                 var codeCaption = Assets.Class.makeText(
                     GetText.Instance.GetString("Lobby code").AsHaxeString(),
                     Tools.MultiColor.ColorFromHex("#8a93a6"),
@@ -1150,7 +1104,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 codeCaption.onResize();
                 codeCaption.textColor = 0x8A93A6;
                 codeCaption.x = pad;
-                codeCaption.y = codeY;
+                codeCaption.y = pad;
 
                 var codeValue = Assets.Class.makeText(
                     lobbyCode.AsHaxeString(),
@@ -1161,89 +1115,37 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 codeValue.onResize();
                 codeValue.textColor = AccentColor;
                 codeValue.x = pad;
-                codeValue.y = codeY + 26.0 * uiScale;
+                codeValue.y = pad + 26.0 * uiScale;
+
                 this.lastLobbyIdLabelText = lobbyCode;
+                this._lobbyPanelHeight = panelH;
+                this._lobbyPanelRoot.x = this._layoutW - panelW - screenPad;
+                this._lobbyPanelRoot.y = screenPad;
+                try { this._lobbyPanelRoot.set_visible(true); } catch { }
             }
             else
             {
                 this.lastLobbyIdLabelText = string.Empty;
+                this._lobbyPanelHeight = 0;
+                this._lobbyPanelRoot.x = this._layoutW - panelW - screenPad;
+                this._lobbyPanelRoot.y = screenPad;
+                try { this._lobbyPanelRoot.set_visible(false); } catch { }
             }
 
             this.lastConnections.Clear();
-            this.lastConnections.AddRange(names);
+            for (int i = 0; i < slots.Count; i++)
+            {
+                if (slots[i].Occupied)
+                    this.lastConnections.Add(slots[i].Nick);
+            }
+            this.lastLobbySlotsSignature = _ConnectionUI.BuildLobbySlotsSignature(slots);
 
-            // Top-right of the full-screen panel.
-            double screenPad = 28.0 * uiScale;
-            this._lobbyPanelHeight = panelH;
-            this._lobbyPanelRoot.x = this._layoutW - panelW - screenPad;
-            this._lobbyPanelRoot.y = screenPad;
-            try { this._lobbyPanelRoot.set_visible(true); } catch { }
+            PlaceLobbyBeheadedUnderPlayerList(slots, panelW, uiScale, textUi, screenPad);
 
-            // Legacy bottom-left lobby-code flow is replaced by the card footer.
             if (this.lobbyCodeFlow != null)
             {
                 try { this.lobbyCodeFlow.set_visible(false); } catch { }
             }
-        }
-
-        private void PlaceLobbyPlayerRow(
-            string rawName,
-            double x,
-            double y,
-            double w,
-            double h,
-            double textUi,
-            double uiScale)
-        {
-            if (this._lobbyPanelRoot == null)
-                return;
-
-            bool isSteamLobbyConnecting = string.Equals(rawName, _ConnectionUI.SteamLobbyConnectingMarker, StringComparison.Ordinal);
-            bool isConnecting =
-                isSteamLobbyConnecting
-                || string.Equals(rawName, "connecting", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(rawName, "connecting...", StringComparison.OrdinalIgnoreCase);
-            bool isHost = !isConnecting && rawName.IndexOf("(Host)", StringComparison.OrdinalIgnoreCase) >= 0;
-            bool isYou = !isConnecting && rawName.IndexOf("(you)", StringComparison.OrdinalIgnoreCase) >= 0;
-
-            string displayName = isSteamLobbyConnecting
-                ? GetText.Instance.GetString("Connecting to Steam lobby...")
-                : isConnecting
-                    ? GetText.Instance.GetString("connecting...")
-                    : rawName;
-
-            var rowGfx = new Graphics(this._lobbyPanelRoot);
-            UiChrome.DrawRaisedPlate(
-                rowGfx,
-                x,
-                y,
-                w,
-                h,
-                FieldCornerRadius * uiScale,
-                isHost ? 0x3A5A7E : PanelInnerEdge,
-                PanelInner,
-                isHost ? 0x4A6A8E : PanelInnerTop,
-                enabled: true);
-
-            // Accent notch on the left of the row.
-            int notch = isConnecting ? 0x8A93A6 : isHost ? AccentColor : 0x3A4A6E;
-            double notchA = 1.0;
-            rowGfx.beginFill(Ref<int>.From(ref notch), Ref<double>.From(ref notchA));
-            rowGfx.drawRect(x + 3.0 * uiScale, y + 8.0 * uiScale, 3.0 * uiScale, h - 16.0 * uiScale);
-            rowGfx.endFill();
-
-            var nameText = Assets.Class.makeText(
-                displayName.AsHaxeString(),
-                Tools.MultiColor.ColorFromHex("#e8eef7"),
-                false,
-                this._lobbyPanelRoot);
-            double nameScale = 0.58 * textUi;
-            nameText.customScale = nameScale;
-            nameText.onResize();
-            nameText.textColor = isConnecting ? HelpColor : (isYou ? 0xE8EEF7 : TextColor);
-            nameText.x = x + 16.0 * uiScale;
-            nameText.y = y + (h - 20.0 * uiScale) * 0.5;
-            this.connectionLabels.Add(nameText);
         }
 
         private void ClearLobbyCodeUi()
@@ -1291,116 +1193,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 return;
 
             // Code appeared/changed — rebuild the card so the footer updates.
-            RebuildLobbyPanelContent(_ConnectionUI.GetAllPlayerNames());
-        }
-
-        private bool NeedsConnectionsRefresh(List<string> names)
-        {
-            if (names.Count != this.lastConnections.Count)
-                return true;
-
-            for (int i = 0; i < names.Count; i++)
-            {
-                if (!string.Equals(names[i], this.lastConnections[i], StringComparison.Ordinal))
-                    return true;
-            }
-
-            return false;
-        }
-
-        // ================================================================ legacy visual extras (kept for compat)
-
-        private List<double> sprx = new List<double> { 0.4, -1.0, -0.2, -0.6 };
-        private List<string> animlist = new List<string>
-        {
-           "idle", "idle","idle","idle"
-        };
-        private List<string> sprmodu = new List<string>
-        {
-            "Tick4","PrisonerGold","KingWhite","PrisonerDefault"
-        };
-
-        private void loadspr(double x, string sprmuld, int count)
-        {
-            this.spritesflow = new Flow(null);
-            this.spritesflow.set_verticalAlign(new FlowAlign.Top());
-            this.spritesflow.set_horizontalAlign(new FlowAlign.Middle());
-            this.spritesflow.isVertical = false;
-
-            dc.String idle = "idle".AsHaxeString();
-            string skinanim = animlist[count];
-            SpriteLib g = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo(sprmuld.AsHaxeString()));
-            this.spriteui = new HSprite(g, skinanim.AsHaxeString(), Ref<int>.Null, null);
-
-            SpritePivot pivot = this.spriteui.pivot;
-            pivot.centerFactorX = x;
-            pivot.centerFactorY = 0.5;
-            pivot.usingFactor = true;
-            pivot.isUndefined = false;
-
-            initColorMap(sprmuld);
-
-            AnimManager animManager = this.spriteui.get_anim().play(skinanim.AsHaxeString(), null, null).loop(null);
-            animManager.genSpeed = 0.4;
-
-            this.spriteui.set_visible(true);
-            this.spritesflow.addChild(this.spriteui);
-            this._panelRoot?.addChild(this.spritesflow);
-            this.sprites.Add(this.spriteui);
-        }
-
-        private string GetRandomAnimation(List<string> values)
-        {
-            Random fallbackRandom = new Random();
-            int fallbackIndex = fallbackRandom.Next(values.Count);
-            return values[fallbackIndex];
-        }
-
-        public void playallanims(HSprite hSprite)
-        {
-            try
-            {
-                var groups = hSprite.lib?.groups;
-                if (groups == null)
-                    return;
-
-                var keysIterator = groups.keys();
-                animlist.Clear();
-
-                while (keysIterator.hasNext())
-                {
-                    string key = keysIterator.next().ToString();
-                    if (!key.StartsWith("Atk", StringComparison.OrdinalIgnoreCase))
-                        animlist.Add(key);
-                }
-            }
-            catch
-            {
-            }
-        }
-
-        public void initColorMap(string colorMap)
-        {
-            dc.shader.ColorMap shader = (dc.shader.ColorMap)this.spriteui!.getShader(dc.shader.ColorMap.Class);
-            if (shader != null)
-            {
-                this.spriteui.removeShader(shader);
-            }
-
-            dc.h3d.mat.Texture texture = Res.Class.load("atlas/beheaded_aladdin_s.png".AsHaxeString()).toTexture();
-            dc.h3d.mat.Filter filter = new dc.h3d.mat.Filter.Nearest();
-            filter = texture.set_filter(filter);
-
-            virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_ skinInfo = Cdb.Class.getSkinInfo(colorMap.AsHaxeString());
-            dc.h3d.mat.Texture heroColorMap = Assets.Class.getHeroColorMap(skinInfo);
-            dc.shader.ColorMap colorMapp = (ColorMap)this.spriteui.addShader(new dc.shader.ColorMap(heroColorMap));
-
-            DirLighted s2 = new DirLighted();
-            s2 = (DirLighted)this.spriteui.addShader(s2);
-
-            dc.h3d.mat.Texture normalMapFromGroup = this.spriteui.lib.getNormalMapFromSprite(this.spriteui);
-            dc.shader.NormalMap normal = new dc.shader.NormalMap(normalMapFromGroup);
-            this.spriteui.addShader(normal);
+            RebuildLobbyPanelContent(_ConnectionUI.GetLobbyPlayerSlots());
         }
 
         // ================================================================ lifecycle
@@ -1534,9 +1327,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             if (this._mode != UiMode.Menu || this._keepLobbyVisible)
             {
-                var names = _ConnectionUI.GetAllPlayerNames();
-                if (NeedsConnectionsRefresh(names))
-                    RefreshConnections(names);
+                var slots = _ConnectionUI.GetLobbyPlayerSlots();
+                if (NeedsLobbySlotsRefresh(slots))
+                    RebuildLobbyPanelContent(slots);
                 else
                     UpdateLobbyIdLabel(forceRefreshText: false);
             }
