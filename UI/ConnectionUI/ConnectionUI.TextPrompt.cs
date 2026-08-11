@@ -408,6 +408,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         private void RemovePromptBackward()
         {
+            // EKeyDown + ETextInput (WM_CHAR 8) + Tick isPressed can all see one Backspace.
+            if (this._promptBackspaceHandledFrame)
+                return;
             this._promptBackspaceHandledFrame = true;
             if (PromptHasSelection)
             {
@@ -426,6 +429,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         private void RemovePromptForward()
         {
+            if (this._promptBackspaceHandledFrame)
+                return;
             this._promptBackspaceHandledFrame = true;
             if (PromptHasSelection)
             {
@@ -449,11 +454,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             if (e.kind.Index == EventKind.Indexes.ETextInput)
             {
                 int code = e.charCode;
-                if (code == KeyBackspace)
-                {
-                    RemovePromptBackward();
-                    return;
-                }
+                // Backspace/Delete/nav are handled only on EKeyDown (+ Tick fallback).
+                // Handling them here as well deleted two characters per keypress.
                 if (code < 32)
                     return;
                 if (code == KeyEnter || code == KeyEscape || code == KeyTab)
@@ -537,54 +539,17 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             if (!this._promptOpen)
                 return;
 
-            this._promptBackspaceHandledFrame = false;
-
             this._promptCaretBlink += 0.05;
             if (this._promptCaretBlink > 1.0)
                 this._promptCaretBlink = 0;
 
             try
             {
-                bool shift = IsPromptShiftDown();
                 bool ctrl = IsPromptCtrlDown();
 
-                if (!this._promptBackspaceHandledFrame)
-                {
-                    if (Key.Class.isPressed(KeyEscape))
-                    {
-                        CloseTextPrompt(apply: false);
-                        return;
-                    }
-                    if (Key.Class.isPressed(KeyEnter))
-                    {
-                        CloseTextPrompt(apply: true);
-                        return;
-                    }
-                    if (Key.Class.isPressed(KeyBackspace))
-                    {
-                        RemovePromptBackward();
-                    }
-                    else if (Key.Class.isPressed(KeyDelete))
-                    {
-                        RemovePromptForward();
-                    }
-                    else if (Key.Class.isPressed(KeyLeft))
-                    {
-                        HandlePromptCaretMove(this._promptCaret - 1, shift);
-                    }
-                    else if (Key.Class.isPressed(KeyRight))
-                    {
-                        HandlePromptCaretMove(this._promptCaret + 1, shift);
-                    }
-                    else if (Key.Class.isPressed(KeyHome) || Key.Class.isPressed(KeyUp))
-                    {
-                        HandlePromptCaretMove(0, shift);
-                    }
-                    else if (Key.Class.isPressed(KeyEnd) || Key.Class.isPressed(KeyDown))
-                    {
-                        HandlePromptCaretMove(this._promptBuffer.Length, shift);
-                    }
-                }
+                // Backspace / Delete / arrows / Enter / Escape are handled only in
+                // OnPromptWindowEvent (EKeyDown). Polling them here again deleted two
+                // characters (or moved the caret twice) whenever both paths saw the press.
 
                 if (ctrl && Key.Class.isPressed(KeyA))
                 {
@@ -630,6 +595,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             }
 
             this._promptCharFromEventFrame = false;
+            this._promptBackspaceHandledFrame = false;
             RefreshPromptValueText(blink: true);
         }
 
