@@ -4,9 +4,9 @@ namespace DeadCellsMultiplayerMod;
 /// Single client auto-start arming path. Call sites signal progress; only
 /// <see cref="ReevaluateClientLaunchArmLocked"/> sets lobby <c>_pendingAutoStart</c>.
 /// </summary>
-internal static partial class GameMenu
+internal static partial class LobbySession
 {
-    private enum ClientLaunchPhase
+    internal enum ClientLaunchPhase
     {
         Lobby,
         IntentReceived,
@@ -17,19 +17,19 @@ internal static partial class GameMenu
         RestartPending
     }
 
-    private static ClientLaunchPhase _clientLaunchPhase = ClientLaunchPhase.Lobby;
+    internal static ClientLaunchPhase _clientLaunchPhase = ClientLaunchPhase.Lobby;
 
-    private static void ResetClientLaunchSessionLocked()
+    internal static void ResetClientLaunchSessionLocked()
     {
         _clientLaunchPhase = ClientLaunchPhase.Lobby;
     }
 
-    private static void MarkClientLaunchInRunLocked()
+    internal static void MarkClientLaunchInRunLocked()
     {
         _clientLaunchPhase = ClientLaunchPhase.InRun;
     }
 
-    private static void MarkClientLaunchRestartPendingLocked()
+    internal static void MarkClientLaunchRestartPendingLocked()
     {
         _clientLaunchPhase = ClientLaunchPhase.RestartPending;
         _pendingAutoStart = false;
@@ -39,13 +39,13 @@ internal static partial class GameMenu
     /// After gen/seed/commit/exec/custom-data/level-desc progress, recompute whether
     /// the client lobby auto-start may arm.
     /// </summary>
-    private static void SignalClientLaunchProgressLocked()
+    internal static void SignalClientLaunchProgressLocked()
     {
         ReevaluateClientLaunchArmLocked();
     }
 
     /// <summary>
-    /// Network/main-thread entry for launch prereqs that arrive outside GameMenu
+    /// Network/main-thread entry for launch prereqs that arrive outside LobbySession
     /// (remote level graph, boss rune). Safe to call from receive paths.
     /// </summary>
     internal static void NotifyClientLaunchPrerequisiteProgress()
@@ -57,7 +57,7 @@ internal static partial class GameMenu
         }
     }
 
-    private static void ReevaluateClientLaunchArmLocked()
+    internal static void ReevaluateClientLaunchArmLocked()
     {
         if (_role != NetRole.Client)
         {
@@ -116,7 +116,7 @@ internal static partial class GameMenu
     /// <summary>
     /// TickMenu claim: Armed → Starting. Returns false if another pump already claimed.
     /// </summary>
-    private static bool TryClaimClientAutoStartLocked()
+    internal static bool TryClaimClientAutoStartLocked()
     {
         if (_role != NetRole.Client ||
             _inActualRun ||
@@ -139,7 +139,7 @@ internal static partial class GameMenu
         return true;
     }
 
-    private static void ReleaseClientAutoStartClaimLocked()
+    internal static void ReleaseClientAutoStartClaimLocked()
     {
         _autoStartTriggered = false;
         _pendingAutoStart = true;

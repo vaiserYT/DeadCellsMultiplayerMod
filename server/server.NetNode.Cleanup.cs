@@ -44,10 +44,10 @@ public sealed partial class NetNode
         {
             CloseClientConnection();
         }
-        GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+        MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
         {
             if (IsCurrentNetworkSession())
-                GameMenu.NotifyRemoteDisconnected(_role);
+                LobbySession.NotifyRemoteDisconnected(_role);
         });
     }
 

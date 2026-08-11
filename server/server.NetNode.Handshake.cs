@@ -75,7 +75,7 @@ public sealed partial class NetNode
             remoteProtocol,
             BuildInfo.Version,
             BuildInfo.NetworkProtocolVersion);
-        GameMenu.NotifyProtocolMismatch(remoteBuild, remoteProtocol, BuildInfo.Version, BuildInfo.NetworkProtocolVersion, _role);
+        LobbySession.NotifyProtocolMismatch(remoteBuild, remoteProtocol, BuildInfo.Version, BuildInfo.NetworkProtocolVersion, _role);
         return true;
     }
 
@@ -110,12 +110,12 @@ public sealed partial class NetNode
                 _primaryRemoteId = senderId;
         }
 
-        GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-connected", () =>
+        MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-connected", () =>
         {
             if (!IsCurrentNetworkSession())
                 return;
-            GameMenu.SetRole(_role);
-            GameMenu.NotifyRemoteConnected(_role);
+            LobbySession.SetRole(_role);
+            LobbySession.NotifyRemoteConnected(_role);
         });
     }
 

@@ -48,7 +48,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             public int Generation;
         }
         private static ConditionalWeakTable<Mob, MobSyncAlias> s_mobSyncAliases = new();
-        private static int nextRuntimeSyncId;
+        /// <summary>
+        /// Host NetId allocator. Starts at 1 so wire Index 0 stays a reserved "none/invalid" sentinel
+        /// and cannot be reintroduced by ghost-echo / hit-fallback rebinds after the owning mob dies.
+        /// </summary>
+        private static int nextRuntimeSyncId = 1;
 
         private static readonly Dictionary<Mob, ClientMobState> clientMobTargets = new(ReferenceEqualityComparer.Instance);
         private static readonly Dictionary<Mob, Entity?> clientCachedAttackTargetByMob = new(ReferenceEqualityComparer.Instance);
@@ -478,7 +482,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 levelId = GetLevelTraceIdSafe(currentLevel);
                 ResetMobTrackingLocked("level_change_external");
             }
-            try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
+            try { LobbySession.NetRef?.ClearMobSyncQueues(); } catch { }
             MobSyncTrace.LogLevelReset("external", levelId, trackedBeforeReset);
         }
 
@@ -541,7 +545,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 // A malformed/stale packet or a weapon-specific Hashlink wrapper exception must not
                 // escape the frame receiver and close the entire game. Preserve the mob registry,
                 // discard only transient network work, and let the periodic host full-resync heal it.
-                try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
+                try { LobbySession.NetRef?.ClearMobSyncQueues(); } catch { }
 
                 var now = System.Diagnostics.Stopwatch.GetTimestamp();
                 var minTicks = System.Diagnostics.Stopwatch.Frequency * 3L;
@@ -565,7 +569,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
             }
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (net == null || !net.IsAlive)
                 return;
 
@@ -807,7 +811,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var levelId = GetLevelTraceIdSafe(level);
             var levelKey = GetLevelRuntimeKey(level);
             var entityCount = GetEntityCountSafe(level);
-            var role = MobSyncNetRoleForTrace(GameMenu.NetRef);
+            var role = MobSyncNetRoleForTrace(LobbySession.NetRef);
             var trackedCurrent = 0;
             var currentLevelKey = string.Empty;
             var shouldLog = false;
@@ -943,7 +947,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var levelId = GetLevelTraceIdSafe(self);
             var levelKey = GetLevelRuntimeKey(self);
             var entityCount = GetEntityCountSafe(self);
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var role = MobSyncNetRoleForTrace(net);
             var trackedBefore = 0;
             var currentLevelKey = string.Empty;
@@ -1038,13 +1042,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (registerDeferred)
             {
                 MobSyncTrace.LogDeferredMobRegistration(
-                    GameMenu.NetRef?.IsHost == true ? "host" : (GameMenu.NetRef?.IsAlive == true ? "client" : "none"),
+                    LobbySession.NetRef?.IsHost == true ? "host" : (LobbySession.NetRef?.IsAlive == true ? "client" : "none"),
                     GetLevelTraceIdSafe(self),
                     BuildMobStateTypeSignature(mob));
                 return;
             }
 
-            var regNet = GameMenu.NetRef;
+            var regNet = LobbySession.NetRef;
             var regRole = regNet == null || !regNet.IsAlive ? "none" : (regNet.IsHost ? "host" : "client");
             if (registerLocalIndex >= 0)
                 MobSyncTrace.LogRegisterTracked(regRole, registerSyncId, registerLocalIndex, BuildMobStateTypeSignature(mob));
@@ -1083,8 +1087,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 levelId = GetLevelTraceIdSafe(self);
                 ResetMobTrackingLocked("level_dispose_before_orig");
             }
-            try { GameMenu.NetRef?.ClearMobSyncQueues(); } catch { }
+            try { LobbySession.NetRef?.ClearMobSyncQueues(); } catch { }
             MobSyncTrace.LogLevelReset("dispose", levelId, trackedBeforeReset);
+            // Homunculus.dispose writes hero.controller.manualLock with no null check. Heal and
+            // pre-dispose Homunculi before the native Level.onDispose → runEntitiesGC path.
+            try { ModEntry.PrepareLevelProcessTeardown(self, "level_dispose_before"); } catch { }
 
             orig(self);
 
@@ -1096,7 +1103,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_Mob_preUpdate(Hook_Mob.orig_preUpdate orig, Mob self)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var isHost = IsHost(net);
             var isClient = IsClient(net);
             
@@ -1135,7 +1142,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_Mob_fixedupdate(Hook_Mob.orig_fixedUpdate orig, Mob self)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsClient(net) && IsSyncMob(self))
             {
                 orig(self);
@@ -1148,7 +1155,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_Mob_postUpdate(Hook_Mob.orig_postUpdate orig, Mob self)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var isHost = IsHost(net);
             
             if (!isHost)
@@ -1197,7 +1204,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var isBossDeathCandidate = false;
             if (self != null && suppressMobDieSendDepth <= 0)
             {
-                dieNet = GameMenu.NetRef;
+                dieNet = LobbySession.NetRef;
                 isClient = IsClient(dieNet);
                 isBossDeathCandidate = BossSyncHelpers.IsBossMob(self);
 
@@ -1323,7 +1330,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // Cache ids before orig so hit|life still sends when the mob is already untracked/destroyed.
             var preSyncOk = false;
             var cachedMobSyncId = -1;
-            if (self != null && i != null && GameMenu.NetRef != null && IsSyncMob(self))
+            if (self != null && i != null && LobbySession.NetRef != null && IsSyncMob(self))
             {
                 preSyncOk = TryGetMobSyncId(self, out cachedMobSyncId);
             }
@@ -1339,7 +1346,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (self == null || i == null)
                     return;
 
-                var net = GameMenu.NetRef;
+                var net = LobbySession.NetRef;
                 if (net == null)
                     return;
 
@@ -1375,6 +1382,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         return;
                     mobSyncId = cachedMobSyncId;
                 }
+
+                // NetId 0 is reserved. Never report damage against it — that is the courtyard
+                // syncId=0 thrash vector once the real owner was gone.
+                if (mobSyncId <= 0)
+                    return;
 
                 // A locally lethal client hit temporarily restores the mob so the client does not
                 // run an unsanctioned death. Still report life=0 to the host; reporting the restored
@@ -1522,7 +1534,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || !BossSyncHelpers.IsBossMob(mob))
                 return false;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (!IsClient(net))
                 return false;
             if (!IsSyncMob(mob))
@@ -1558,7 +1570,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || mob.destroyed)
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (!IsClient(net))
             {
                 ClearSuppressedClientBossDie(mob);
@@ -1589,7 +1601,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (action == null)
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (!IsClient(net) || mob == null || !IsSyncMob(mob))
             {
                 action();

@@ -3,22 +3,22 @@ using System.Globalization;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
-        private const string ContinueReasonOk = "OK";
-        private static readonly Dictionary<int, RemoteCoopState> _remoteCoopStates = new();
-        private static bool _receivedLaunchPayload;
-        private static bool _receivedNewCoopWorldPrepared;
-        private static bool _pendingNewCoopWorldIdAssigned;
-        private static string? _storedPendingNewCoopWorldCoopId;
-        private static int? _storedPendingNewCoopWorldSeed;
-        private static int _continueSaveCacheSlot = -1;
-        private static long _continueSaveCacheTicks;
-        private static bool _continueSaveCacheValid;
-        private static bool _continueSaveCacheHasSave;
-        private static string _continueSaveCacheReason = ContinueReasonOk;
-        private static string _lastLoggedClientContinueBlockReason = string.Empty;
-        private const double ContinueSaveCacheSeconds = 1.0;
+        internal const string ContinueReasonOk = "OK";
+        internal static readonly Dictionary<int, RemoteCoopState> _remoteCoopStates = new();
+        internal static bool _receivedLaunchPayload;
+        internal static bool _receivedNewCoopWorldPrepared;
+        internal static bool _pendingNewCoopWorldIdAssigned;
+        internal static string? _storedPendingNewCoopWorldCoopId;
+        internal static int? _storedPendingNewCoopWorldSeed;
+        internal static int _continueSaveCacheSlot = -1;
+        internal static long _continueSaveCacheTicks;
+        internal static bool _continueSaveCacheValid;
+        internal static bool _continueSaveCacheHasSave;
+        internal static string _continueSaveCacheReason = ContinueReasonOk;
+        internal static string _lastLoggedClientContinueBlockReason = string.Empty;
+        internal const double ContinueSaveCacheSeconds = 1.0;
 
         public static void ReceiveRemoteCoopState(int userId, string? coopId, bool hasContinueSave)
         {
@@ -35,7 +35,7 @@ namespace DeadCellsMultiplayerMod
             RequestLobbyMenuRefresh();
         }
 
-        private static void ResetRemoteCoopStateLocked()
+        internal static void ResetRemoteCoopStateLocked()
         {
             _remoteCoopStates.Clear();
             _receivedLaunchPayload = false;
@@ -46,7 +46,7 @@ namespace DeadCellsMultiplayerMod
             _lastLoggedClientContinueBlockReason = string.Empty;
         }
 
-        private static void SendCoopStateToRemote()
+        internal static void SendCoopStateToRemote()
         {
             var net = NetRef;
             if (net == null || !net.IsAlive)
@@ -65,14 +65,14 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void NotifyMultiplayerSaveSlotChanged()
+        internal static void NotifyMultiplayerSaveSlotChanged()
         {
             InvalidateLocalContinueSaveStateCache();
             SendCoopStateToRemote();
             RequestLobbyMenuRefresh();
         }
 
-        private static void PrepareCoopIdentityForPendingLaunch(PendingLaunchAction action)
+        internal static void PrepareCoopIdentityForPendingLaunch(PendingLaunchAction action)
         {
             if (_role != NetRole.Host)
                 return;
@@ -115,7 +115,7 @@ namespace DeadCellsMultiplayerMod
             SendCoopStateToRemote();
         }
 
-        private static void TryStoreRemoteCoopIdForPendingNewGame()
+        internal static void TryStoreRemoteCoopIdForPendingNewGame()
         {
             string? remoteCoopId;
             int? seed;
@@ -160,7 +160,7 @@ namespace DeadCellsMultiplayerMod
             SendCoopStateToRemote();
         }
 
-        private static bool CanHostStartContinue(out string reason)
+        internal static bool CanHostStartContinue(out string reason)
         {
             if (!AllPlayersReady())
             {
@@ -171,7 +171,7 @@ namespace DeadCellsMultiplayerMod
             return IsHostContinueCompatible(out reason);
         }
 
-        private static bool IsHostContinueCompatible(out string reason)
+        internal static bool IsHostContinueCompatible(out string reason)
         {
             if (!TryGetLocalContinueReadiness(out var localCoopId, out reason))
                 return false;
@@ -240,7 +240,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static bool CanClientAcceptContinueLaunchLocked(out string reason)
+        internal static bool CanClientAcceptContinueLaunchLocked(out string reason)
         {
             if (!TryGetLocalContinueReadiness(out var localCoopId, out reason))
                 return false;
@@ -273,7 +273,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static bool TryGetLocalContinueReadiness(out string localCoopId, out string reason)
+        internal static bool TryGetLocalContinueReadiness(out string localCoopId, out string reason)
         {
             localCoopId = string.Empty;
 
@@ -292,7 +292,7 @@ namespace DeadCellsMultiplayerMod
             return true;
         }
 
-        private static bool HasLocalContinueSaveState(out string reason)
+        internal static bool HasLocalContinueSaveState(out string reason)
         {
             var slot = ResolveCurrentSaveSlotForCache();
             var now = Stopwatch.GetTimestamp();
@@ -320,7 +320,7 @@ namespace DeadCellsMultiplayerMod
             return hasSave;
         }
 
-        private static bool ReadLocalContinueSaveState(out string reason)
+        internal static bool ReadLocalContinueSaveState(out string reason)
         {
             try
             {
@@ -347,7 +347,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void InvalidateLocalContinueSaveStateCache()
+        internal static void InvalidateLocalContinueSaveStateCache()
         {
             lock (Sync)
             {
@@ -359,7 +359,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static int ResolveCurrentSaveSlotForCache()
+        internal static int ResolveCurrentSaveSlotForCache()
         {
             try
             {
@@ -374,7 +374,7 @@ namespace DeadCellsMultiplayerMod
             return 0;
         }
 
-        private static void LogClientContinueBlockReasonLocked(string reason)
+        internal static void LogClientContinueBlockReasonLocked(string reason)
         {
             if (string.Equals(_lastLoggedClientContinueBlockReason, reason, StringComparison.Ordinal))
                 return;
@@ -383,7 +383,7 @@ namespace DeadCellsMultiplayerMod
             _log?.Warning("[NetMod] Continue Coop blocked on client: {Reason}", reason);
         }
 
-        private static string GetRemoteHostIdentity()
+        internal static string GetRemoteHostIdentity()
         {
             if (_steamHostSteamId != 0UL)
                 return _steamHostSteamId.ToString(CultureInfo.InvariantCulture);
@@ -393,7 +393,7 @@ namespace DeadCellsMultiplayerMod
                 : _remoteUsername.Trim();
         }
 
-        private readonly struct RemoteCoopState
+        internal readonly struct RemoteCoopState
         {
             public readonly string? CoopId;
             public readonly bool HasContinueSave;

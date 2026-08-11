@@ -972,7 +972,7 @@ namespace DeadCellsMultiplayerMod
                 return;
             }
 
-            var isHoldPressed = GameMenu.IsReviveHoldInputDown(me);
+            var isHoldPressed = ReviveInput.IsReviveHoldInputDown(me);
 
             if (!isHoldPressed)
             {
@@ -1304,7 +1304,7 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             _allDownedRestartQueued = true;
-            GameMenu.QueueHostRestartFromDeath("all_players_downed");
+            LobbySession.QueueHostRestartFromDeath("all_players_downed");
         }
 
         private void ShowAllDownedGameOverLogo()

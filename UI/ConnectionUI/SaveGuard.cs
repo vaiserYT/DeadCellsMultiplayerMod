@@ -1,6 +1,6 @@
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
         // Crash-durable multiplayer save protection. Dead Cells parses the active slot's
         // user_N.dat (meta + current run snapshot) at every run launch; a file corrupted by an
@@ -14,20 +14,20 @@ namespace DeadCellsMultiplayerMod
         //   3. On the next startup after a crash inside that window, restores the newest
         //      backup automatically and quarantines the corrupt file for inspection.
 
-        private const string MultiplayerSaveGuardSentinelName = "launch_guard.txt";
+        internal const string MultiplayerSaveGuardSentinelName = "launch_guard.txt";
 
         // Backup rotation copies the whole slot file twice. It runs on the game main thread from
         // the session state machine at every LoadingLevel transition, i.e. once per biome, so
         // repeating it when the save has not changed since the last rotation is pure stall for no
         // added protection. Identity is (length, last write time) of the live file.
-        private static long _lastRotatedSaveLength = -1;
-        private static long _lastRotatedSaveWriteTicks = -1;
-        private static int _lastRotatedSaveSlot = -1;
+        internal static long _lastRotatedSaveLength = -1;
+        internal static long _lastRotatedSaveWriteTicks = -1;
+        internal static int _lastRotatedSaveSlot = -1;
 
-        private static string GetMultiplayerSaveGuardSentinelPath()
+        internal static string GetMultiplayerSaveGuardSentinelPath()
             => GetAbsoluteSavePath(MultiplayerSaveFolderName + "/" + MultiplayerSaveGuardSentinelName);
 
-        private static string GetMultiplayerSaveLivePath(int slot)
+        internal static string GetMultiplayerSaveLivePath(int slot)
             => GetAbsoluteSavePath(GetMultiplayerSaveRelativeFilePath(slot));
 
         internal static void NotifyRunLaunchPhaseForSaveGuard(string phase)
@@ -52,7 +52,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ArmMultiplayerSaveGuard()
+        internal static void ArmMultiplayerSaveGuard()
         {
             try
             {
@@ -104,7 +104,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void DisarmMultiplayerSaveGuard()
+        internal static void DisarmMultiplayerSaveGuard()
         {
             try
             {

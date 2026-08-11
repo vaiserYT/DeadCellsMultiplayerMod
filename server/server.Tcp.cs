@@ -62,16 +62,16 @@ public sealed partial class NetNode
 
     private async Task ConnectWithRetryAsync(CancellationToken ct)
     {
-        var maxAttempts = GameMenu.ClientConnectMaxAttempts;
+        var maxAttempts = LobbySession.ClientConnectMaxAttempts;
         var attempt = 0;
 
         while (!ct.IsCancellationRequested && attempt < maxAttempts)
         {
             attempt++;
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-attempt", () =>
+            MainThreadPump.EnqueueMainThreadCoalesced("net:client-connect-attempt", () =>
             {
                 if (IsCurrentNetworkSession())
-                    GameMenu.NotifyClientConnectAttempt(attempt);
+                    LobbySession.NotifyClientConnectAttempt(attempt);
             });
             try
             {
@@ -104,10 +104,10 @@ public sealed partial class NetNode
                 _log.Warning("[NetNode] Client connect error: {msg}", ex.Message);
                 if (attempt >= maxAttempts)
                 {
-                    GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+                    MainThreadPump.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
                     {
                         if (IsCurrentNetworkSession())
-                            GameMenu.NotifyClientConnectFailed();
+                            LobbySession.NotifyClientConnectFailed();
                     });
                     break;
                 }
@@ -373,7 +373,7 @@ public sealed partial class NetNode
                 {
                     var lineCopy = line;
 
-                    await GameMenu.EnqueueNetworkMainThreadAsync(() =>
+                    await MainThreadPump.EnqueueNetworkMainThreadAsync(() =>
                     {
                         if (!IsCurrentNetworkSession())
                             return;
@@ -464,10 +464,10 @@ public sealed partial class NetNode
                 stillNoCompletedClients = CountCompletedHostClientsLocked() == 0;
             }
             if (stillNoCompletedClients)
-                GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
                 {
                     if (IsCurrentNetworkSession())
-                        GameMenu.NotifyRemoteDisconnected(_role);
+                        LobbySession.NotifyRemoteDisconnected(_role);
                 });
         }
     }

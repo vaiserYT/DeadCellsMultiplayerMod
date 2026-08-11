@@ -181,10 +181,10 @@ public sealed partial class NetNode
         {
             try { _cts.Cancel(); } catch { }
             _log.Warning("[NetNode] Steam P2P client failed to start: {Error}", error);
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+            MainThreadPump.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
             {
                 if (IsCurrentNetworkSession())
-                    GameMenu.NotifyClientConnectFailed();
+                    LobbySession.NotifyClientConnectFailed();
             });
             return;
         }
@@ -257,17 +257,17 @@ public sealed partial class NetNode
 
     private async Task ConnectWithRetrySteamBridgeAsync(CancellationToken ct)
     {
-        var maxAttempts = GameMenu.ClientConnectMaxAttempts;
+        var maxAttempts = LobbySession.ClientConnectMaxAttempts;
         var attempt = 0;
         var bridge = _steamBridge;
 
         if (_steamHostId.m_SteamID == 0UL || bridge == null)
         {
             _log.Warning("[NetNode] Steam client host id or bridge is missing");
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+            MainThreadPump.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
             {
                 if (IsCurrentNetworkSession())
-                    GameMenu.NotifyClientConnectFailed();
+                    LobbySession.NotifyClientConnectFailed();
             });
             return;
         }
@@ -278,10 +278,10 @@ public sealed partial class NetNode
                 "[NetNode] Steam P2P requires two different Steam accounts. Host and client both use SteamId={SteamId}. " +
                 "Use a second Steam account (e.g. family sharing or another PC) to test multiplayer.",
                 _steamHostId.m_SteamID);
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+            MainThreadPump.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
             {
                 if (IsCurrentNetworkSession())
-                    GameMenu.NotifyClientConnectFailed();
+                    LobbySession.NotifyClientConnectFailed();
             });
             return;
         }
@@ -289,10 +289,10 @@ public sealed partial class NetNode
         while (!ct.IsCancellationRequested && attempt < maxAttempts)
         {
             attempt++;
-            GameMenu.EnqueueMainThreadCoalesced("net:client-connect-attempt", () =>
+            MainThreadPump.EnqueueMainThreadCoalesced("net:client-connect-attempt", () =>
             {
                 if (IsCurrentNetworkSession())
-                    GameMenu.NotifyClientConnectAttempt(attempt);
+                    LobbySession.NotifyClientConnectAttempt(attempt);
             });
             _log.Information("[NetNode] Steam client connecting to hostSteamId={HostSteamId}", _steamHostId.m_SteamID);
 
@@ -318,12 +318,12 @@ public sealed partial class NetNode
 
             if (connected)
             {
-                GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-connected", () =>
+                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-connected", () =>
                 {
                     if (!IsCurrentNetworkSession())
                         return;
-                    GameMenu.SetRole(_role);
-                    GameMenu.NotifyRemoteConnected(_role);
+                    LobbySession.SetRole(_role);
+                    LobbySession.NotifyRemoteConnected(_role);
                 });
                 return;
             }
@@ -339,10 +339,10 @@ public sealed partial class NetNode
                     "[NetNode] Steam client connection failed: no WELCOME/ID received within 6s after HELLO (attempt {Attempt}/{Max})",
                     attempt,
                     maxAttempts);
-                GameMenu.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
+                MainThreadPump.EnqueueMainThreadCoalesced("net:client-connect-failed", () =>
                 {
                     if (IsCurrentNetworkSession())
-                        GameMenu.NotifyClientConnectFailed();
+                        LobbySession.NotifyClientConnectFailed();
                 });
                 break;
             }
@@ -450,7 +450,7 @@ public sealed partial class NetNode
                                 return;
                             }
 
-                            GameMenu.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
+                            MainThreadPump.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
                             {
                                 if (IsCurrentNetworkSession())
                                     CleanupClient();
@@ -491,7 +491,7 @@ public sealed partial class NetNode
                                     return;
                                 }
 
-                                GameMenu.EnqueueMainThreadCoalesced(
+                                MainThreadPump.EnqueueMainThreadCoalesced(
                                     string.Create(System.Globalization.CultureInfo.InvariantCulture, $"net:cleanup-host-client:{connToCleanup.AssignedId}"),
                                     () =>
                                     {
@@ -525,7 +525,7 @@ public sealed partial class NetNode
                         "[NetNode][Steam] client receive timeout after {Elapsed:F1}s (limit {Limit:F1}s) - closing session",
                         elapsed,
                         SteamReceiveTimeoutSeconds);
-                    GameMenu.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
+                    MainThreadPump.EnqueueMainThreadCoalesced("net:cleanup-client", () =>
                     {
                         if (IsCurrentNetworkSession())
                             CleanupClient();
@@ -782,7 +782,7 @@ public sealed partial class NetNode
             var accepted = false;
             try
             {
-                await GameMenu.EnqueueNetworkMainThreadAsync(() =>
+                await MainThreadPump.EnqueueNetworkMainThreadAsync(() =>
                 {
                     try
                     {
@@ -882,10 +882,10 @@ public sealed partial class NetNode
         }
 
         if (wasConnected && !hasClients)
-            GameMenu.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
             {
                 if (IsCurrentNetworkSession())
-                    GameMenu.NotifyRemoteDisconnected(_role);
+                    LobbySession.NotifyRemoteDisconnected(_role);
             });
     }
 }

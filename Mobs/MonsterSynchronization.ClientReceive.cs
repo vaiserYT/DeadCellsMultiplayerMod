@@ -660,7 +660,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // Affects run vanilla calls (setAffectS etc.) on the mob; never do that on a mob
             // culled locally on a client (same .cx hazard class as culled deaths/attacks).
             // Checked BEFORE the dedupe cache so the payload re-applies once the mob wakes.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
                 return;
 
             lock (Sync)
@@ -1069,7 +1069,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // the culled-death .cx fatal). A locally-culled mob is far from the local hero, so
             // the replay is off-screen and its target is out of reach here anyway; position/life
             // still sync via state snapshots.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
             {
                 MobSyncTrace.LogClientAttackRoute("skipped_culled_" + traceRoute, traceSyncId, skillId);
                 return;
@@ -1751,7 +1751,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || targetUserId <= 0 || !IsMobHostileToPlayers(mob))
                 return false;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var localId = net?.id ?? 0;
             if (localId <= 0)
                 return false;
@@ -1979,7 +1979,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 // local kill), corrupting their death state - the source of the level-transition
                 // render fatal. The deferred flush skips mobs that finish destroying themselves
                 // and only completes genuinely stuck ghosts.
-                if (!IsHost(GameMenu.NetRef) && !BossSyncHelpers.IsBossMob(mob) && TryDeferCulledClientMobDeath(mob))
+                if (!IsHost(LobbySession.NetRef) && !BossSyncHelpers.IsBossMob(mob) && TryDeferCulledClientMobDeath(mob))
                     continue;
 
                 TryWakeMobForForcedSimulation(mob);
@@ -2044,7 +2044,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (start < 0 || end > hits.Count)
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var isHost = IsHost(net);
             s_pendingMobHitAppliesScratch.Clear();
             var rejectedGeneration = 0;
@@ -2389,7 +2389,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // Cosmetic replay only: skip it on clients for mobs culled locally. Running vanilla
             // hit resolution on a sleeping, never-initialized mob is hazardous, and the reaction
             // is off-screen anyway. The authoritative life still arrives via state snapshots.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
                 return;
 
             try
@@ -2400,7 +2400,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         ? System.Math.Clamp(damageHint, 1.0, System.Math.Max(1.0, GetMobLifeOrFallback(mob, 1) * 8.0))
                         : 1.0;
                     Hero? replaySourceHero = null;
-                    if (IsHost(GameMenu.NetRef))
+                    if (IsHost(LobbySession.NetRef))
                     {
                         replaySourceHero = ModEntry.me ?? ModCore.Modules.Game.Instance?.HeroInstance;
                         try
@@ -2446,7 +2446,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // The wake is required on the authoritative HOST (it must simulate mobs that remote
             // players are fighting). On clients it only served cosmetic hit/death replays; waking
             // a locally culled mob there runs vanilla behavior logic on uninitialized state and crashes.
-            if (!IsHost(GameMenu.NetRef) && IsMobCulledLocally(mob))
+            if (!IsHost(LobbySession.NetRef) && IsMobCulledLocally(mob))
                 return;
 
             PromoteMobToSyncVisibleState(mob);
@@ -2457,7 +2457,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null)
                 return false;
 
-            var userId = ResolveHostTargetUserId(target ?? ResolveCurrentHostPlayerCombatTarget(mob), GameMenu.NetRef?.id ?? 0);
+            var userId = ResolveHostTargetUserId(target ?? ResolveCurrentHostPlayerCombatTarget(mob), LobbySession.NetRef?.id ?? 0);
             if (userId <= 0)
                 return false;
 
@@ -2580,7 +2580,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null || syncId < 0)
                 return;
-            if (!IsHost(GameMenu.NetRef))
+            if (!IsHost(LobbySession.NetRef))
                 return;
 
             var now = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -2605,9 +2605,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             uniqueMob = null;
             candidateCount = 0;
 
-            if (!IsHost(GameMenu.NetRef))
+            if (!IsHost(LobbySession.NetRef))
                 return false;
-            if (hit.MobIndex < 0)
+            // Fence retired/sentinel ids. Rebinding onto 0 (or an id the host never issued) is what
+            // reintroduced Spinner/Worm/Hurler ownership under syncId=0 on PrisonCourtyard.
+            if (hit.MobIndex <= 0 || hit.MobIndex >= nextRuntimeSyncId)
                 return false;
             if (string.IsNullOrWhiteSpace(hit.Type))
                 return false;
@@ -2622,7 +2624,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var maxDistanceSq = MobHitMissingSyncIdRebindDistancePx * MobHitMissingSyncIdRebindDistancePx;
             var bestDistanceSq = double.MaxValue;
             var secondBestDistanceSq = double.MaxValue;
+            var bestCellExact = false;
+            var secondBestCellExact = false;
             Mob? bestMob = null;
+            QuantizeWorldPositionToCells(hit.X, hit.Y, out var hitCx, out var hitCy);
 
             for (int i = 0; i < entities.length; i++)
             {
@@ -2633,10 +2638,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (!DoesMobMatchStateType(mob, hit.Type))
                     continue;
 
-                // Do not steal another valid sync id. This fallback is only for mobs that are
-                // alive locally but lost/unbound in the host registry.
+                // Do not steal a HEALTHY sync id bound to another living mob: that is a host
+                // wrapper duplicate of this enemy, still alive under its own id. This fallback
+                // only reclaims mobs that are alive locally but lost/unbound in the host registry —
+                // including a mob whose reverse mapping points at an id with no (or a stale)
+                // forward entry, which is orphaned garbage and safe to rebind.
                 if (MobToId.TryGetValue(mob, out var existingSyncId) && existingSyncId != hit.MobIndex)
-                    continue;
+                {
+                    if (IdToMob.TryGetValue(existingSyncId, out var forwardMob) &&
+                        ReferenceEquals(forwardMob, mob))
+                        continue;
+                }
 
                 double dx;
                 double dy;
@@ -2657,16 +2669,28 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (distanceSq > maxDistanceSq)
                     continue;
 
+                GetMobWorldCells(mob, out var mobCx, out var mobCy);
+                var cellExact = mobCx == hitCx && mobCy == hitCy;
+
                 candidateCount++;
-                if (distanceSq < bestDistanceSq)
+                var prefer = bestMob == null ||
+                             (cellExact && !bestCellExact) ||
+                             (cellExact == bestCellExact && distanceSq < bestDistanceSq);
+                if (prefer)
                 {
-                    secondBestDistanceSq = bestDistanceSq;
+                    if (bestMob != null)
+                    {
+                        secondBestDistanceSq = bestDistanceSq;
+                        secondBestCellExact = bestCellExact;
+                    }
                     bestDistanceSq = distanceSq;
+                    bestCellExact = cellExact;
                     bestMob = mob;
                 }
-                else if (distanceSq < secondBestDistanceSq)
+                else if (cellExact == bestCellExact && distanceSq < secondBestDistanceSq)
                 {
                     secondBestDistanceSq = distanceSq;
+                    secondBestCellExact = cellExact;
                 }
             }
 
@@ -2675,6 +2699,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             if (candidateCount > 1 &&
                 secondBestDistanceSq < double.MaxValue &&
+                secondBestCellExact == bestCellExact &&
                 System.Math.Sqrt(secondBestDistanceSq) - System.Math.Sqrt(bestDistanceSq) < MobFallbackMinimumScoreGap)
             {
                 lock (Sync)
@@ -2707,6 +2732,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         private static void RecordGhostHitMissLocked(NetNode.MobHit hit)
         {
+            // Never ghost-echo NetId 0 / negative: 0 is reserved and re-echoing it is what
+            // re-seeded the courtyard syncId=0 type thrash after the real owner was gone.
+            if (hit.MobIndex <= 0)
+                return;
+
             if (s_ghostHitMissGeneration != hit.Generation)
             {
                 s_ghostHitMissBySyncId.Clear();
@@ -2793,8 +2823,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static bool MobHitQuantizedPositionCloseEnoughLocked(Mob mob, NetNode.MobHit hit)
         {
-            QuantizeWorldPositionToPixelsInt32(hit.X, hit.Y, out var hx, out var hy);
-            QuantizeWorldPositionToPixelsInt32(GetWorldX(mob), GetWorldY(mob), out var mx, out var my);
+            QuantizeWorldPositionToCells(hit.X, hit.Y, out var hx, out var hy);
+            GetMobWorldCells(mob, out var mx, out var my);
             return mx == hx && my == hy;
         }
 
@@ -2803,8 +2833,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null)
                 return false;
 
-            QuantizeWorldPositionToPixelsInt32(hit.X, hit.Y, out var hx, out var hy);
-            QuantizeWorldPositionToPixelsInt32(GetWorldX(mob), GetWorldY(mob), out var mx, out var my);
+            QuantizeWorldPositionToCells(hit.X, hit.Y, out var hx, out var hy);
+            GetMobWorldCells(mob, out var mx, out var my);
 
             var grounded = true;
             try

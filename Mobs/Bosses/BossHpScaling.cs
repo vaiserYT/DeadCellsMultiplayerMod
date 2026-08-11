@@ -23,7 +23,7 @@ public static class BossHpScaling
         // The host owns authoritative mob HP. Scaling client proxies locally can briefly create a
         // different max-life value and can multiply the same boss more than once before the first
         // host snapshot arrives.
-        var net = DeadCellsMultiplayerMod.GameMenu.NetRef;
+        var net = DeadCellsMultiplayerMod.LobbySession.NetRef;
         if (net == null || !net.IsAlive || !net.IsHost)
             return;
 

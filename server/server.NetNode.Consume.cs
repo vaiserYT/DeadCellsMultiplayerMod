@@ -535,6 +535,21 @@ public sealed partial class NetNode
         }
     }
 
+    public bool TryGetRemoteSkin(int userId, out string? skin)
+    {
+        lock (_sync)
+        {
+            if (userId > 0 && _remotes.TryGetValue(userId, out var state) && state.HasRemote)
+            {
+                skin = state.Skin;
+                return !string.IsNullOrWhiteSpace(skin);
+            }
+
+            skin = null;
+            return false;
+        }
+    }
+
     public void CopyRemoteUserIdsTo(HashSet<int> target, bool includePrimary = true)
     {
         if (target == null)

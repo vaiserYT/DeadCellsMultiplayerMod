@@ -52,7 +52,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         internal static int GetOrAssignHostBossEntityId(Mob mob)
         {
-            if (mob == null || !IsHost(GameMenu.NetRef))
+            if (mob == null || !IsHost(LobbySession.NetRef))
                 return 0;
 
             try
@@ -161,7 +161,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         internal static bool TryGetHostBossPhaseSuccessor(Mob mob, out Mob successor)
         {
             successor = null!;
-            if (mob == null || !IsHost(GameMenu.NetRef))
+            if (mob == null || !IsHost(LobbySession.NetRef))
                 return false;
 
             try

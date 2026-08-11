@@ -157,7 +157,7 @@ namespace DeadCellsMultiplayerMod
 
                 // Lobby auto-start waits on HasPendingRemoteLevelGraph; re-arm if seed/exec
                 // already arrived before this LGRAPH.
-                GameMenu.NotifyClientLaunchPrerequisiteProgress();
+                LobbySession.NotifyClientLaunchPrerequisiteProgress();
 
                 var reason = LevelReloadReason.GraphUpdated;
                 // Graph and boss-rune packets can arrive in either order. Fold a pending boss-rune
@@ -403,7 +403,7 @@ namespace DeadCellsMultiplayerMod
                 // committing a locally generated layout.
                 if (now >= nextRequestAt)
                 {
-                    try { GameMenu.NetRef?.RequestLevelGraph(levelId); } catch { }
+                    try { LobbySession.NetRef?.RequestLevelGraph(levelId); } catch { }
                     nextRequestAt = now + 1000;
                 }
 

@@ -67,7 +67,7 @@ public partial class InteractionSync
         if (_applyingRemotePressurePlateEvents)
             return;
 
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (!IsNetReadyForSend(net))
             return;
 
@@ -90,7 +90,7 @@ public partial class InteractionSync
 
         var localHeroTyped = ModEntry.me;
         var localHero = localHeroTyped as Entity;
-        var localId = GameMenu.NetRef?.id ?? 0;
+        var localId = LobbySession.NetRef?.id ?? 0;
         if (localHero == null || localHeroTyped == null)
             return;
 

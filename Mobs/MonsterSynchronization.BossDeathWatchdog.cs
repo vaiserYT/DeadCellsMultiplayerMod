@@ -80,7 +80,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         private static void MarkClientBossAuthoritativeZeroLife(Mob? mob)
         {
-            if (mob == null || !IsClient(GameMenu.NetRef))
+            if (mob == null || !IsClient(LobbySession.NetRef))
                 return;
             if (!BossSyncHelpers.IsBossEncounterCombatant(mob))
                 return;
@@ -165,7 +165,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         private static void ProcessClientBossDeathWatchdog()
         {
-            if (!IsClient(GameMenu.NetRef))
+            if (!IsClient(LobbySession.NetRef))
                 return;
             if (!TryGetCurrentLevelIdentityToken(out var identityToken))
                 return;

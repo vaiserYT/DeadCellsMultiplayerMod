@@ -7,25 +7,25 @@ using Serilog;
 
 namespace DeadCellsMultiplayerMod;
 
-internal static partial class GameMenu
+internal static partial class LobbySession
 {
-    private static bool _structuredLaunchCommitArrived;
-    private static int _structuredLaunchExecuteSequence;
+    internal static bool _structuredLaunchCommitArrived;
+    internal static int _structuredLaunchExecuteSequence;
 
-    private static void InitializeRunLaunchHandshake(ILogger logger)
+    internal static void InitializeRunLaunchHandshake(ILogger logger)
     {
         RunLaunchCoordinator.Initialize(logger);
         lock (Sync)
             ClearStructuredLaunchFlagsLocked();
     }
 
-    private static void ClearStructuredLaunchFlagsLocked()
+    internal static void ClearStructuredLaunchFlagsLocked()
     {
         _structuredLaunchCommitArrived = false;
         _structuredLaunchExecuteSequence = 0;
     }
 
-    private static RunLaunchDescriptor BuildHostRunLaunchDescriptor(
+    internal static RunLaunchDescriptor BuildHostRunLaunchDescriptor(
         int seed,
         int sequence,
         string launchKind,
@@ -57,7 +57,7 @@ internal static partial class GameMenu
             targetArena: initialLevelId);
     }
 
-    private static int ReadBossCellsForLaunch()
+    internal static int ReadBossCellsForLaunch()
     {
         try
         {
@@ -304,6 +304,11 @@ internal static partial class GameMenu
         if (queued == null)
             return;
 
+        // The client is invoking the authoritative native loader for this sequence now.
+        // Consume it immediately so later host SEED/RUNEXEC rebroadcasts cannot schedule
+        // unconsumed_host_launch_seq_* after the world is already built.
+        MarkRemoteLaunchSequenceConsumed(sequence, "client_launch_queued");
+
         net.SendRunLaunchQueued(queued, flush: true);
         _log?.Information("[NetMod][RunLaunch] Client sent RUNQUEUED seq={Sequence}", sequence);
         BossSyncDiag.Trace("launch queued role=client seq={Sequence}", sequence);
@@ -442,7 +447,7 @@ internal static partial class GameMenu
         }
     }
 
-    private static bool _midRunJoinSpawnPending;
+    internal static bool _midRunJoinSpawnPending;
 
     /// <summary>Consumed once by the joining client's first level; false for every normal launch.</summary>
     internal static bool TryConsumeMidRunJoinSpawn()
@@ -482,7 +487,7 @@ internal static partial class GameMenu
         MultiplayerUI.PushSystemMessage(Localize("Host cancelled the co-op run launch."));
     }
 
-    private static void CancelHostStructuredLaunch(int sequence, string reason)
+    internal static void CancelHostStructuredLaunch(int sequence, string reason)
     {
         StopHostRunLaunchBeacon("host_launch_cancelled");
         var cancel = RunLaunchCoordinator.CancelHostLaunch(sequence, reason);
@@ -491,7 +496,7 @@ internal static partial class GameMenu
         NetRef?.ClearCachedHostRunLaunch(sequence);
     }
 
-    private static bool CanAutoStartStructuredClientLaunchLocked()
+    internal static bool CanAutoStartStructuredClientLaunchLocked()
     {
         return _structuredLaunchCommitArrived &&
                _structuredLaunchExecuteSequence > 0 &&

@@ -80,7 +80,7 @@ public partial class InteractionSync
     {
         if (vineLadder == null)
             return;
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive || !net.IsHost)
             return;
         _hostActivatedVineLadders.Add(vineLadder);
@@ -90,7 +90,7 @@ public partial class InteractionSync
     {
         if (teleport == null)
             return;
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive || !net.IsHost)
             return;
         _hostOpenedTeleports.Add(teleport);

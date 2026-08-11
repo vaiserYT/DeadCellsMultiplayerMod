@@ -6,13 +6,18 @@ namespace DeadCellsMultiplayerMod.Tools
     public static class UiScale
     {
         private const double ReferenceWidth = 1920.0;
-        private const double ReferenceHeight = 1080.0;
         private const double MinScale = 0.9;
         private const double MaxScale = 1.15;
 
         /// <summary>After device connect/disconnect the window can briefly report 0×0; avoid blurry/wrong UI scaling.</summary>
         private static double s_lastGoodScale = 1.0;
 
+        /// <summary>
+        /// Width-based scale for ConnectionUI. Dead Cells windowed/fullscreen toggles often change
+        /// usable height (title bar / taskbar) without changing width; Min(scaleW, scaleH) made the
+        /// hub typography and spacing jump with that height. Width matches the game's horizontal
+        /// stage sizing more stably across display modes.
+        /// </summary>
         public static double GetResolutionScale()
         {
             var win = Window.Class.getInstance();
@@ -20,16 +25,10 @@ namespace DeadCellsMultiplayerMod.Tools
                 return s_lastGoodScale;
 
             double width = win.get_width();
-            double height = win.get_height();
-            if (width <= 0 || height <= 0)
+            if (width <= 0)
                 return s_lastGoodScale;
 
-            double scaleW = width / ReferenceWidth;
-            double scaleH = height / ReferenceHeight;
-            if (scaleW <= 0 || scaleH <= 0)
-                return 1.0;
-
-            var scale = System.Math.Min(scaleW, scaleH);
+            var scale = width / ReferenceWidth;
             if (scale <= 0)
                 return 1.0;
 

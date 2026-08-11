@@ -639,7 +639,7 @@ public sealed partial class NetNode : IDisposable
     {
         get
         {
-            var active = GameMenu.NetRef;
+            var active = LobbySession.NetRef;
             return active == null || active._disposed
                 ? 0
                 : Volatile.Read(ref active._connectedClientCount);
@@ -672,12 +672,12 @@ public sealed partial class NetNode : IDisposable
 
     private bool IsCurrentNetworkSession()
     {
-        return !_disposed && ReferenceEquals(GameMenu.NetRef, this);
+        return !_disposed && ReferenceEquals(LobbySession.NetRef, this);
     }
 
     private bool IsSupersededNetworkSession()
     {
-        var active = GameMenu.NetRef;
+        var active = LobbySession.NetRef;
         return _disposed || (active != null && !ReferenceEquals(active, this));
     }
 

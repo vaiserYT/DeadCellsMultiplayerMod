@@ -65,7 +65,7 @@ public sealed class CoopAdvancedHardening :
 
     void IOnFrameUpdate.OnFrameUpdate(double dt)
     {
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net == null || !net.IsAlive)
         {
             _wasConnected = false;
@@ -77,7 +77,7 @@ public sealed class CoopAdvancedHardening :
         {
             _nextLobbyHeartbeatTicks = now + SecondsToTicks(LobbyHeartbeatSeconds);
             SendLobbyHeartbeat(net);
-            GameMenu.RefreshRoomStatusMenuIfVisible();
+            LobbySession.RefreshRoomStatusMenuIfVisible();
         }
 
         if (_nextProgressSyncTicks == 0 || now >= _nextProgressSyncTicks)
@@ -106,8 +106,8 @@ public sealed class CoopAdvancedHardening :
         try
         {
             var level = ModEntry.me?._level?.map?.id?.ToString() ?? ModEntry.Instance?.levelId ?? string.Empty;
-            var seed = GameMenu.TryGetKnownSeed(out var knownSeed) ? knownSeed : 0;
-            net.SendLobbyState(GameMenu.Username, level, seed, GetLocalPermanentProgressSignature());
+            var seed = LobbySession.TryGetKnownSeed(out var knownSeed) ? knownSeed : 0;
+            net.SendLobbyState(LobbySession.Username, level, seed, GetLocalPermanentProgressSignature());
         }
         catch (Exception ex)
         {
@@ -194,8 +194,8 @@ public sealed class CoopAdvancedHardening :
                 if (!_connectedHudMessageShown || (net.IsHost && remoteCount > System.Math.Max(0, previousRemoteCount)))
                 {
                     var status = net.IsHost
-                        ? string.Format(CultureInfo.CurrentCulture, GameMenu.Localize("Co-op: {0} friend(s) connected"), remoteCount)
-                        : GameMenu.Localize("Co-op: connected to host");
+                        ? string.Format(CultureInfo.CurrentCulture, LobbySession.Localize("Co-op: {0} friend(s) connected"), remoteCount)
+                        : LobbySession.Localize("Co-op: connected to host");
                     MultiplayerUI.PushSystemMessage(status, 4.0, 1.0);
                     _connectedHudMessageShown = true;
                 }
@@ -222,7 +222,7 @@ public sealed class CoopAdvancedHardening :
                 var name = parts[nameIndex].Trim();
                 if (name.Length > 64)
                     name = name[..64];
-                GameMenu.ReceiveRemoteUsername(name);
+                LobbySession.ReceiveRemoteUsername(name);
             }
         }
         catch (Exception ex)
@@ -259,7 +259,7 @@ public sealed class CoopAdvancedHardening :
         // mobility/rune state is visible, recreating the old "same seed but only same save works"
         // race. The coalesced action is also safe when no User exists yet; the normal frame/hero
         // retry keeps the pending items until one becomes available.
-        GameMenu.EnqueueCriticalMainThreadCoalesced(
+        MainThreadPump.EnqueueCriticalMainThreadCoalesced(
             "coop:apply-host-progress",
             ApplyPendingPermanentProgress);
     }
@@ -307,7 +307,7 @@ public sealed class CoopAdvancedHardening :
                 {
                     _lastAppliedProgress = sig;
                     MultiplayerUI.PushSystemMessage(
-                        string.Format(CultureInfo.CurrentCulture, GameMenu.Localize("Co-op progression synced: +{0} unlock(s)"), added),
+                        string.Format(CultureInfo.CurrentCulture, LobbySession.Localize("Co-op progression synced: +{0} unlock(s)"), added),
                         6.0,
                         1.5);
                     _log?.Information("[CoopAdvanced] Applied {Count} synced permanent unlocks", added);

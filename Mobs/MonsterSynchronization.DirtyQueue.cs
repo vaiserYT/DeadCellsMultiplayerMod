@@ -95,7 +95,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null || !IsSyncMob(mob))
                 return;
-            if (!TryGetMobSyncId(mob, out var syncId) || syncId < 0)
+            if (!TryGetMobSyncId(mob, out var syncId) || syncId <= 0)
                 return;
 
             double x;
@@ -117,15 +117,47 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             var visibleForSync = IsMobOnScreenForSync(mob);
-            var animPayload = visibleForSync ? BuildAnimPayload(mob) : string.Empty;
+
+            // Skip heavy state-payload builds for idle off-screen mobs. Anim still rebuilds whenever
+            // the mob is visible so in-place attack cycles keep syncing. PrisonCourtyard (~100
+            // tracked) previously built BOTH payloads every postUpdate — main-thread stall, idle CPU.
+            HostMobObservedState previous;
+            var hasPrevious = false;
+            lock (Sync)
+            {
+                hasPrevious = hostObservedMobStatesBySyncId.TryGetValue(syncId, out previous);
+            }
+
+            var needsAnim = visibleForSync;
+            var needsStatePayload = true;
+            if (hasPrevious)
+            {
+                var lifeChanged = life != previous.Life || maxLife != previous.MaxLife;
+                var visibilityChanged = visibleForSync != previous.VisibleForSync;
+                var moveChanged = visibleForSync && (
+                    !previous.VisibleForSync ||
+                    !IsApproximatelyEqual(previous.X, x, MobStatePositionEpsilon) ||
+                    !IsApproximatelyEqual(previous.Y, y, MobStatePositionEpsilon) ||
+                    previous.Dir != dir);
+
+                // Off-screen and unchanged: reuse last state payload (keyframes still refresh).
+                if (!visibleForSync && !lifeChanged && !visibilityChanged && !moveChanged)
+                    needsStatePayload = false;
+            }
+
+            var animPayload = needsAnim ? BuildAnimPayload(mob) : string.Empty;
             var mobType = BuildMobStateTypeSignature(mob);
-            var statePayload = BuildHostMobStatePayload(mob);
+            var statePayload = needsStatePayload
+                ? BuildHostMobStatePayload(mob)
+                : (hasPrevious ? previous.StatePayload : string.Empty);
 
             lock (Sync)
             {
                 var flags = HostMobDirtyFlags.None;
-                if (!hostObservedMobStatesBySyncId.TryGetValue(syncId, out var previous))
+                if (!hostObservedMobStatesBySyncId.TryGetValue(syncId, out previous))
                 {
+                    if (!needsStatePayload)
+                        statePayload = BuildHostMobStatePayload(mob);
                     flags = HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState;
                 }
                 else
@@ -134,7 +166,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         flags |= HostMobDirtyFlags.State;
 
                     if (!string.Equals(previous.MobType, mobType, StringComparison.Ordinal) ||
-                        !string.Equals(previous.StatePayload, statePayload, StringComparison.Ordinal))
+                        (needsStatePayload &&
+                         !string.Equals(previous.StatePayload, statePayload, StringComparison.Ordinal)))
                         flags |= HostMobDirtyFlags.State;
 
                     if (visibleForSync)
@@ -148,6 +181,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                         if (moveChanged)
                             flags |= previous.VisibleForSync ? HostMobDirtyFlags.Move : HostMobDirtyFlags.ForceState;
+                    }
+                    else if (previous.VisibleForSync)
+                    {
+                        flags |= HostMobDirtyFlags.State;
                     }
                 }
 
@@ -171,7 +208,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null || !IsSyncMob(mob))
                 return;
-            if (!TryGetMobSyncId(mob, out var syncId) || syncId < 0)
+            if (!TryGetMobSyncId(mob, out var syncId) || syncId <= 0)
                 return;
 
             bool isOutOfGame;
@@ -207,7 +244,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || !IsSyncMob(mob))
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsHost(net))
             {
                 QueueHostMobDirty(mob, HostMobDirtyFlags.State | HostMobDirtyFlags.ForceState);
@@ -234,7 +271,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null || flags == HostMobDirtyFlags.None)
                 return;
-            if (!TryGetMobSyncId(mob, out var syncId) || syncId < 0)
+            if (!TryGetMobSyncId(mob, out var syncId) || syncId <= 0)
                 return;
 
             lock (Sync)
@@ -247,7 +284,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             if (mob == null || flags == ClientMobDirtyFlags.None)
                 return;
-            if (!TryGetMobSyncId(mob, out var syncId) || syncId < 0)
+            if (!TryGetMobSyncId(mob, out var syncId) || syncId <= 0)
                 return;
 
             lock (Sync)
@@ -889,7 +926,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (entity is not Mob mob || !IsSyncMob(mob))
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsHost(net))
             {
                 QueueHostMobDirty(mob, HostMobDirtyFlags.State);

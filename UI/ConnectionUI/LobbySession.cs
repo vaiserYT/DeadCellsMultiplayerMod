@@ -14,71 +14,72 @@ using ModCore.Modules;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
-        private static readonly object Sync = new();
-        private static ILogger? _log;
-        private static NetRole _role = NetRole.None;
-        private static bool _inActualRun;
-        private static int? _serverSeed;
-        private static int? _remoteSeed;
-        private static int? _pendingClientRestartSeed;
-        private static string _pendingClientRestartReason = string.Empty;
-        private const int MaxSeed = 999_999;
+        internal static readonly object Sync = new();
+        internal static ILogger? _log;
+        internal static ILogger? Log => _log;
+        internal static NetRole _role = NetRole.None;
+        internal static bool _inActualRun;
+        internal static int? _serverSeed;
+        internal static int? _remoteSeed;
+        internal static int? _pendingClientRestartSeed;
+        internal static string _pendingClientRestartReason = string.Empty;
+        internal const int MaxSeed = 999_999;
         public static NetNode? NetRef { get; set; }
 
-        private static bool _menuHooksAttached;
-        private static bool _addMenuHookRegistered;
-        private static WeakReference<TitleScreen?>? _titleScreenRef;
-        private static string _mpIp = "127.0.0.1";
-        private static int _mpPort = 1234;
-        private static NetRole _menuSelection = NetRole.None;
-        private enum ConnectionTransport
+        internal static bool _menuHooksAttached;
+        internal static bool _addMenuHookRegistered;
+        internal static WeakReference<TitleScreen?>? _titleScreenRef;
+        internal static string _mpIp = "127.0.0.1";
+        internal static int _mpPort = 1234;
+        internal static NetRole _menuSelection = NetRole.None;
+        internal enum ConnectionTransport
         {
             Lan,
             Steam
         }
-        private static ConnectionTransport _menuTransport = ConnectionTransport.Lan;
-        private static SteamConnect.SteamLobbyVisibility _steamLobbyVisibility =
+        internal static ConnectionTransport _menuTransport = ConnectionTransport.Lan;
+        internal static SteamConnect.SteamLobbyVisibility _steamLobbyVisibility =
             SteamConnect.SteamLobbyVisibility.FriendsOnly;
-        private static ulong _steamLobbyId;
-        private static string _steamLobbyCode = string.Empty;
-        private static ulong _steamHostSteamId;
-        private static bool _steamJoinLobbyResolvePending;
-        private static ulong? _pendingOverlayJoinLobbyId;
-        private static bool _steamFriendJoinPageActive;
-        private static bool _steamFriendLobbyRefreshInFlight;
-        private static long _nextSteamFriendLobbyRefreshTicks;
-        private static string _steamFriendLobbySignature = string.Empty;
-        private static List<SteamConnect.FriendLobbyInfo> _steamFriendLobbies = new();
-        private const int SteamFriendLobbyRefreshMs = 2500;
+        internal static ulong _steamLobbyId;
+        internal static string _steamLobbyCode = string.Empty;
+        internal static ulong _steamHostSteamId;
+        internal static bool _steamJoinLobbyResolvePending;
+        internal static ulong? _pendingOverlayJoinLobbyId;
+        internal static bool _steamFriendJoinPageActive;
+        internal static bool _steamFriendLobbyRefreshInFlight;
+        internal static long _nextSteamFriendLobbyRefreshTicks;
+        internal static string _steamFriendLobbySignature = string.Empty;
+        internal static List<SteamConnect.FriendLobbyInfo> _steamFriendLobbies = new();
+        internal const int SteamFriendLobbyRefreshMs = 2500;
         internal const int ClientConnectMaxAttempts = 3;
-        private static bool _pendingAutoStart;
-        private static bool _autoStartTriggered;
-        private static bool _continueLaunchInProgress;
-        private static DateTime _continueLaunchStartedAt = DateTime.MinValue;
-        private const int ContinueLaunchGuardMs = 6000;
-        private static DateTime _autoStartRetryAt = DateTime.MinValue;
-        private const int DeathRestartCooldownMs = 1000;
-        private static DateTime _deathRestartCooldownUntil = DateTime.MinValue;
-        private const string AutoStartMutexName = "DeadCellsMultiplayerMod.AutoStart";
-        private static bool _mainMenuButtonAdded;
-        private static bool _suppressAutoButton;
-        private static bool _worldExitHandled;
-        private static bool _hostDisconnectCountdownActive;
-        private static WeakReference<dc.pr.Game>? _hostDisconnectCountdownGameRef;
-        private static DateTime _hostDisconnectCountdownUntil = DateTime.MinValue;
-        private static int _lastHostDisconnectCountdown = -1;
-        private const int HostDisconnectCountdownSeconds = 5;
-        private static bool _hostDisconnectSavePending;
-        private static DateTime _hostDisconnectSaveRetryAt = DateTime.MinValue;
-        private static DateTime _hostDisconnectSaveDeadline = DateTime.MinValue;
-        private const int HostDisconnectSaveRetryMs = 500;
-        private const int HostDisconnectSaveMaxSeconds = 10;
-        private static bool _seedArrived;
-        private static string _username = "guest";
-        private static string _remoteUsername = "guest";
-        private static string _playerId = Guid.NewGuid().ToString("N");
+        internal static bool _pendingAutoStart;
+        internal static bool _autoStartTriggered;
+        internal static bool _continueLaunchInProgress;
+        internal static DateTime _continueLaunchStartedAt = DateTime.MinValue;
+        internal const int ContinueLaunchGuardMs = 6000;
+        internal static DateTime _autoStartRetryAt = DateTime.MinValue;
+        internal const int DeathRestartCooldownMs = 1000;
+        internal static DateTime _deathRestartCooldownUntil = DateTime.MinValue;
+        internal const string AutoStartMutexName = "DeadCellsMultiplayerMod.AutoStart";
+        internal static bool _mainMenuButtonAdded;
+        internal static bool _suppressAutoButton;
+        internal static bool _worldExitHandled;
+        internal static bool _hostDisconnectCountdownActive;
+        internal static WeakReference<dc.pr.Game>? _hostDisconnectCountdownGameRef;
+        internal static DateTime _hostDisconnectCountdownUntil = DateTime.MinValue;
+        internal static int _lastHostDisconnectCountdown = -1;
+        internal const int HostDisconnectCountdownSeconds = 5;
+        internal static bool _hostDisconnectSavePending;
+        internal static DateTime _hostDisconnectSaveRetryAt = DateTime.MinValue;
+        internal static DateTime _hostDisconnectSaveDeadline = DateTime.MinValue;
+        internal const int HostDisconnectSaveRetryMs = 500;
+        internal const int HostDisconnectSaveMaxSeconds = 10;
+        internal static bool _seedArrived;
+        internal static string _username = "guest";
+        internal static string _remoteUsername = "guest";
+        internal static string _playerId = Guid.NewGuid().ToString("N");
         public static string Username => _username;
         public static string RemoteUsername => _remoteUsername;
 
@@ -104,27 +105,27 @@ namespace DeadCellsMultiplayerMod
 
         /// <summary>True while clipboard/overlay join is resolving the Steam lobby (before <see cref="ApplySteamJoinResult"/>).</summary>
         internal static bool IsSteamJoinLobbyResolvePending() => _steamJoinLobbyResolvePending;
-        private static bool _localReady;
-        private static List<PlayerInfo> _playersDisplay = new();
-        private static bool _inHostStatusMenu;
-        private static bool _inClientWaitingMenu;
+        internal static bool _localReady;
+        internal static List<PlayerInfo> _playersDisplay = new();
+        internal static bool _inHostStatusMenu;
+        internal static bool _inClientWaitingMenu;
         /// <summary>Prevents nested host/client status menu rebuilds when addMenu hook runs ProcessMainThreadQueue before orig.</summary>
-        private static int _menuRebuildDepth;
-        private static bool _genArrived;
-        private static LevelDescSync? _cachedLevelDescSync;
-        private static readonly object TextInputSync = new();
-        private static WeakReference<TextInput?>? _activeTextInputRef;
-        private static bool _activeTextInputNoSpaces;
-        private const int KeyCtrl = 17;
-        private const int KeyLCtrl = 162;
-        private const int KeyRCtrl = 163;
-        private const int KeyC = 67;
-        private const int KeyV = 86;
-        private const int KeySpace = 32;
-        private const int KeyEsc = 27;
+        internal static int _menuRebuildDepth;
+        internal static bool _genArrived;
+        internal static LevelDescSync? _cachedLevelDescSync;
+        internal static readonly object TextInputSync = new();
+        internal static WeakReference<TextInput?>? _activeTextInputRef;
+        internal static bool _activeTextInputNoSpaces;
+        internal const int KeyCtrl = 17;
+        internal const int KeyLCtrl = 162;
+        internal const int KeyRCtrl = 163;
+        internal const int KeyC = 67;
+        internal const int KeyV = 86;
+        internal const int KeySpace = 32;
+        internal const int KeyEsc = 27;
         // Win32 clipboard helpers for text input shortcuts.
-        private const uint CfUnicodeText = 13;
-        private const uint GmemMoveable = 0x0002;
+        internal const uint CfUnicodeText = 13;
+        internal const uint GmemMoveable = 0x0002;
         [DllImport("user32.dll")]
         private static extern bool OpenClipboard(IntPtr hWndNewOwner);
         [DllImport("user32.dll")]
@@ -148,7 +149,7 @@ namespace DeadCellsMultiplayerMod
 
         public static void Initialize(ILogger logger)
         {
-            logger.Information("\x1b[32m[[ModEntry.GameMenu] Initializing GameMenu...]\x1b[0m ");
+            logger.Information("\x1b[32m[[ModEntry.LobbySession] Initializing LobbySession...]\x1b[0m ");
             InitializeRunLaunchHandshake(logger);
             lock (Sync)
             {
@@ -194,15 +195,16 @@ namespace DeadCellsMultiplayerMod
                 ResetLobbyReadyStateLocked();
                 InvalidateGeneratePayloadCacheLocked();
                 ResetRunLaunchCompatStateLocked();
-                ResetMainThreadQueuesLocked();
+                MainThreadPump.ResetMainThreadQueuesLocked();
                 ResetClientLaunchSessionLocked();
             }
 
-            InitializeMenuUiHooks();
+            TitleMenuHooks.InitializeMenuUiHooks();
         }
 
         public static void MarkInRun()
         {
+            int consumeSequence = 0;
             lock (Sync)
             {
                 _inActualRun = true;
@@ -211,8 +213,22 @@ namespace DeadCellsMultiplayerMod
                 _clientLevelGraphWaitStartedTicks = 0;
                 _clientLevelGraphWaitExpired = false;
                 MarkClientLaunchInRunLocked();
+
+                // Belt-and-suspenders: once the hero is live, the current remote execute/seed
+                // sequence is definitively consumed. Prevents late host rebroadcasts from
+                // forcing unconsumed_host_launch restarts on an already-built world.
+                consumeSequence = Math.Max(_structuredLaunchExecuteSequence, _remoteSeedSequence);
+                if (consumeSequence > 0)
+                    MarkRemoteLaunchSequenceConsumedLocked(consumeSequence);
             }
             ClearClientRestartPending();
+
+            if (consumeSequence > 0)
+            {
+                _log?.Information(
+                    "[NetMod][RunLaunch] Marked remote launch consumed seq={Sequence} (mark_in_run)",
+                    consumeSequence);
+            }
 
             // Terminal launch signal, outside the lock because it performs a network send.
             // On the client this also stops the host's launch beacon; on the host it publishes the
@@ -263,7 +279,7 @@ namespace DeadCellsMultiplayerMod
             if (previous == NetRole.Client && role != NetRole.Client)
             {
                 GameDataSync.SwapToLocalSerializerSync();
-                EnqueueCriticalMainThreadCoalesced("game:restore-original-user", () =>
+                MainThreadPump.EnqueueCriticalMainThreadCoalesced("game:restore-original-user", () =>
                 {
                     try
                     {
@@ -350,7 +366,7 @@ namespace DeadCellsMultiplayerMod
                 _deathRestartCooldownUntil = now.AddMilliseconds(DeathRestartCooldownMs);
             }
 
-            EnqueueCriticalMainThreadCoalesced("game:host-restart", () =>
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced("game:host-restart", () =>
             {
                 ModEntry.ResetDownedPlayersForRestart();
 
@@ -389,7 +405,7 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
-        private static void RestartCurrentWorldWithLoading(dc.pr.Game game, dc.LaunchMode launchMode)
+        internal static void RestartCurrentWorldWithLoading(dc.pr.Game game, dc.LaunchMode launchMode)
         {
             var main = dc.Main.Class.ME;
             if (main == null)
@@ -399,7 +415,7 @@ namespace DeadCellsMultiplayerMod
             main.launchGame(launchMode, null, null);
         }
 
-        private static void PrepareCurrentWorldForRestartTransition(dc.pr.Game game)
+        internal static void PrepareCurrentWorldForRestartTransition(dc.pr.Game game)
         {
             // A restart tears the world down exactly like a biome transition does, so it needs the
             // same fence: freeze mob sync mutation before the old registries are destroyed, and let
@@ -409,11 +425,17 @@ namespace DeadCellsMultiplayerMod
 
             try { ModEntry.Instance?.DisposeCoopGhostRuntimeForWorldTeardown(game); } catch { }
 
+            // Client same-run restart tears down PrisonStart via Level.onDispose. Pre-dispose
+            // Homunculi / heal hero.controller here so the later native GC pass cannot hit
+            // Homunculus.dispose's unconditional hero.controller.manualLock write.
+            try { ModEntry.PrepareLevelProcessTeardown(game.curLevel, "client_restart_prepare"); } catch { }
+
             try
             {
                 var cine = game.curCine;
                 if (cine != null)
                 {
+                    try { ModEntry.TryAssignProcessController(cine, game); } catch { }
                     try { cine.destroyed = true; } catch { }
                     try { cine.disposeImmediately(); } catch { }
                     if (ReferenceEquals(game.curCine, cine))
@@ -434,10 +456,10 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void QueueClientRestartFromHostSeed(int seed, string reason)
+        internal static void QueueClientRestartFromHostSeed(int seed, string reason)
         {
             MarkClientRestartPending();
-            EnqueueCriticalMainThreadCoalesced("game:client-restart", () =>
+            MainThreadPump.EnqueueCriticalMainThreadCoalesced("game:client-restart", () =>
             {
                 ModEntry.ResetDownedPlayersForRestart();
 
@@ -472,7 +494,7 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
-        private static void TryProcessPendingClientRestart()
+        internal static void TryProcessPendingClientRestart()
         {
             int seed;
             string reason;
@@ -558,7 +580,7 @@ namespace DeadCellsMultiplayerMod
             RequestLobbyMenuRefresh();
         }
 
-        private static void SendCachedGeneratePayload()
+        internal static void SendCachedGeneratePayload()
         {
             var net = NetRef;
             if (net == null) return;
@@ -574,7 +596,7 @@ namespace DeadCellsMultiplayerMod
             net.SendGeneratePayload(json);
         }
 
-        private static void CacheLevelDescSync(LevelDescSync? sync)
+        internal static void CacheLevelDescSync(LevelDescSync? sync)
         {
             lock (Sync)
             {
@@ -582,7 +604,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static LevelDescSync? GetCachedLevelDescSync()
+        internal static LevelDescSync? GetCachedLevelDescSync()
         {
             lock (Sync)
             {
@@ -678,7 +700,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void NotifyLevelDescReceived()
+        internal static void NotifyLevelDescReceived()
         {
             lock (Sync)
             {
@@ -687,7 +709,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ShowMultiplayerMenu(TitleScreen screen)
+        internal static void ShowMultiplayerMenu(TitleScreen screen)
         {
             _steamFriendJoinPageActive = false;
             var prevSuppress = _suppressAutoButton;
@@ -697,25 +719,26 @@ namespace DeadCellsMultiplayerMod
             {
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiInfo(Localize("Co-op multiplayer"), 0xF7FC65);
+                UiInfo(Localize("Host a session or join a friend over LAN or Steam."), 0x9098A8);
+                UiButton(
                     GetText.Instance.GetString("Host game"),
                     () => ShowHostTransportMenu(screen),
                     GetText.Instance.GetString("Create a multiplayer session"));
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Join game"),
                     () => ShowJoinTransportMenu(screen),
                     GetText.Instance.GetString("Connect to an existing host"));
-                AddMenuButton(screen, GetText.Instance.GetString("Back"), () =>
-                {
-                    StopNetworkFromMenu();
-                    screen.mainMenu();
-                }, GetText.Instance.GetString("Return to main menu"));
+                UiButton(
+                    GetText.Instance.GetString("Back"),
+                    () => ReturnFromMultiplayerHubToTitle(screen),
+                    GetText.Instance.GetString("Return to main menu"));
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(screen, GetText.Instance.GetString("Host game"), GetText.Instance.GetString("Join game"));
                 _inHostStatusMenu = false;
                 _inClientWaitingMenu = false;
+                // hubLayout: only this first Host/Join screen uses the wide centered panel.
+                UiCommit(hubLayout: true);
             }
             catch (Exception ex)
             {
@@ -728,7 +751,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ShowHostTransportMenu(TitleScreen screen)
+        internal static void ShowHostTransportMenu(TitleScreen screen)
         {
             _steamFriendJoinPageActive = false;
             var prevSuppress = _suppressAutoButton;
@@ -739,30 +762,24 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiInfo(Localize("Host options"), 0xF7FC65);
+                UiInfo(Localize("LAN uses IP/port. Steam uses friends or a lobby code."), 0x9098A8);
+                UiButton(
                     GetText.Instance.GetString("Lan host"),
                     () => ShowConnectionMenu(screen, NetRole.Host),
                     GetText.Instance.GetString("Use direct IP/port hosting"));
-
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Steam host"),
                     () => ShowSteamHostModeMenu(screen),
                     GetText.Instance.GetString("Choose who can discover the Steam lobby"));
-
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () => ShowMultiplayerMenu(screen),
                     GetText.Instance.GetString("Back to multiplayer menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Lan host"),
-                    GetText.Instance.GetString("Steam host"),
-                    GetText.Instance.GetString("Back"));
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -775,7 +792,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ShowSteamHostModeMenu(TitleScreen screen)
+        internal static void ShowSteamHostModeMenu(TitleScreen screen)
         {
             _steamFriendJoinPageActive = false;
             var prevSuppress = _suppressAutoButton;
@@ -786,30 +803,26 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiInfo(Localize("Steam lobby visibility"), 0xF7FC65);
+                UiInfo(Localize("Friends-only stays private. Public creates a shareable lobby code."), 0x9098A8);
+                UiButton(
                     GetText.Instance.GetString("Steam friends-only host"),
                     () => StartSteamHost(screen, SteamConnect.SteamLobbyVisibility.FriendsOnly),
-                    GetText.Instance.GetString("Create a Steam lobby visible to friends"));
-
-                AddMenuButton(
-                    screen,
+                    GetText.Instance.GetString("Create a Steam lobby visible to friends"),
+                    textColor: 0x59D5FF);
+                UiButton(
                     GetText.Instance.GetString("Steam public host"),
                     () => StartSteamHost(screen, SteamConnect.SteamLobbyVisibility.Public),
-                    GetText.Instance.GetString("Create a public Steam lobby with a shareable code"));
-
-                AddMenuButton(
-                    screen,
+                    GetText.Instance.GetString("Create a public Steam lobby with a shareable code"),
+                    textColor: 0x59D5FF);
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () => ShowHostTransportMenu(screen),
                     GetText.Instance.GetString("Back to hosting options"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Steam friends-only host"),
-                    GetText.Instance.GetString("Steam public host"),
-                    GetText.Instance.GetString("Back"));
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -822,7 +835,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ShowJoinTransportMenu(TitleScreen screen)
+        internal static void ShowJoinTransportMenu(TitleScreen screen)
         {
             _steamFriendJoinPageActive = true;
 
@@ -834,8 +847,13 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                UiInfo(Localize("Join a session"), 0xF7FC65);
+                if (_steamFriendLobbies.Count > 0)
+                    UiInfo(Localize("Friends hosting right now appear below."), 0x9098A8);
+                else
+                    UiInfo(Localize("No friends currently hosting — list refreshes automatically."), 0x9098A8);
+                UiButton(
                     GetText.Instance.GetString("Lan join"),
                     () =>
                     {
@@ -844,14 +862,7 @@ namespace DeadCellsMultiplayerMod
                     },
                     GetText.Instance.GetString("Connect by IP/port"));
 
-                AddInfoLine(screen, Localize("Steam friends hosting this mod"), infoColor: 0xA8D8FF);
-
-                if (_steamFriendLobbies.Count == 0)
-                {
-                    AddInfoLine(screen, Localize("No Steam friends are hosting right now."), infoColor: 0xC8C8C8);
-                    AddInfoLine(screen, Localize("This list refreshes automatically."), infoColor: 0x9098A8);
-                }
-                else
+                if (_steamFriendLobbies.Count > 0)
                 {
                     foreach (var friendLobby in _steamFriendLobbies)
                     {
@@ -861,28 +872,24 @@ namespace DeadCellsMultiplayerMod
                             ? Localize("Steam friend")
                             : friendLobby.PersonaName.Trim();
 
-                        AddMenuButton(
-                            screen,
+                        UiButton(
                             $"{displayName} - {Localize("Join")}",
                             () =>
                             {
                                 _steamFriendJoinPageActive = false;
                                 HandleSteamFriendLobbyJoinRequest(capturedLobbyId, capturedHostSteamId);
                             },
-                            Localize("Join this friend's Steam lobby"));
+                            Localize("Join this friend's Steam lobby"),
+                            textColor: 0x59D5FF);
                     }
                 }
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     Localize("Open Steam friends"),
                     () => OpenSteamFriendsJoinOverlay(screen),
                     Localize("Open Steam friends and choose Join Game"));
 
-                // Keep the code route as a compatibility fallback, but it is no longer the primary
-                // Steam flow. Friends hosting the mod appear above automatically.
-                AddMenuButton(
-                    screen,
+                UiButton(
                     Localize("Join by Steam lobby code (fallback)"),
                     () =>
                     {
@@ -891,8 +898,7 @@ namespace DeadCellsMultiplayerMod
                     },
                     Localize("Connect by Steam lobby id/code from clipboard"));
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () =>
                     {
@@ -902,12 +908,7 @@ namespace DeadCellsMultiplayerMod
                     GetText.Instance.GetString("Back to multiplayer menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Lan join"),
-                    Localize("Open Steam friends"),
-                    Localize("Join by Steam lobby code (fallback)"),
-                    GetText.Instance.GetString("Back"));
+                UiCommit();
 
                 RequestSteamFriendLobbyRefresh(force: _steamFriendLobbies.Count == 0);
             }
@@ -922,7 +923,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void RequestSteamFriendLobbyRefresh(bool force)
+        internal static void RequestSteamFriendLobbyRefresh(bool force)
         {
             if (!_steamFriendJoinPageActive || _steamFriendLobbyRefreshInFlight)
                 return;
@@ -982,7 +983,7 @@ namespace DeadCellsMultiplayerMod
         /// code or spin up the legacy resolver worker. The transport handshake still validates
         /// protocol/build compatibility before gameplay state is accepted.
         /// </summary>
-        private static void HandleSteamFriendLobbyJoinRequest(ulong lobbyId, ulong hostSteamId)
+        internal static void HandleSteamFriendLobbyJoinRequest(ulong lobbyId, ulong hostSteamId)
         {
             var screen = GetTitleScreen();
             if (screen == null || lobbyId == 0UL)
@@ -1026,7 +1027,7 @@ namespace DeadCellsMultiplayerMod
             ApplySteamJoinResult(screen, true, join, fromOverlay: true);
         }
 
-        private static void ShowConnectionMenu(TitleScreen screen, NetRole role)
+        internal static void ShowConnectionMenu(TitleScreen screen, NetRole role)
         {
             _menuSelection = role;
             _menuTransport = ConnectionTransport.Lan;
@@ -1039,13 +1040,24 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddMenuButton(
-                    screen,
+                UiBegin();
+                if (role == NetRole.Host)
+                {
+                    UiInfo(Localize("LAN host setup"), 0xF7FC65);
+                    UiInfo(Localize("Share your IP and port with players on the same network."), 0x9098A8);
+                }
+                else
+                {
+                    UiInfo(Localize("LAN join setup"), 0xF7FC65);
+                    UiInfo(Localize("Enter the host IP and port, then Join."), 0x9098A8);
+                }
+                UiButton(
                     $"{GetText.Instance.GetString("Username: ")}{_username}",
                     () => EditUsername(screen),
-                    GetText.Instance.GetString("Edit display name"));
+                    GetText.Instance.GetString("Edit display name"),
+                    fieldStyle: true);
 
-                AddMenuButton(screen, $"{GetText.Instance.GetString("IP: ")}{_mpIp}", () =>
+                UiButton($"{GetText.Instance.GetString("IP: ")}{_mpIp}", () =>
                 {
                     OpenTextInput(screen, GetText.Instance.GetString("IP address"), _mpIp, value =>
                     {
@@ -1053,9 +1065,9 @@ namespace DeadCellsMultiplayerMod
                         SaveConfig();
                         ShowConnectionMenu(screen, role);
                     }, noSpaces: true);
-                }, GetText.Instance.GetString("Edit IP"));
+                }, GetText.Instance.GetString("Edit IP"), fieldStyle: true);
 
-                AddMenuButton(screen, $"{GetText.Instance.GetString("Port: ")}{_mpPort}", () =>
+                UiButton($"{GetText.Instance.GetString("Port: ")}{_mpPort}", () =>
                 {
                     OpenTextInput(screen, GetText.Instance.GetString("Port"), _mpPort.ToString(), value =>
                     {
@@ -1065,54 +1077,54 @@ namespace DeadCellsMultiplayerMod
                         SaveConfig();
                         ShowConnectionMenu(screen, role);
                     }, noSpaces: true);
-                }, GetText.Instance.GetString("Edit port"));
+                }, GetText.Instance.GetString("Edit port"), fieldStyle: true);
 
                 var actionLabel = role == NetRole.Host
                     ? GetText.Instance.GetString("Host")
                     : GetText.Instance.GetString("Join");
                 if (role == NetRole.Host)
                 {
-                    AddMenuButton(screen, actionLabel, () =>
+                    UiButton(actionLabel, () =>
                     {
                         StartHostServerOnly();
                         ShowHostStatusMenu(screen);
                         screen.ShouldAutoHideConnectionUI(true);
-                    }, GetText.Instance.GetString("Start hosting"));
+                    }, GetText.Instance.GetString("Start hosting"), textColor: 0x59D5FF);
                 }
                 else
                 {
-                    AddMenuButton(screen, actionLabel, () =>
+                    UiButton(actionLabel, () =>
                     {
                         StartNetwork(role, screen);
                         ShowClientWaitingMenu(screen);
                         screen.ShouldAutoHideConnectionUI(true);
-                    }, GetText.Instance.GetString("Connect to host"));
+                    }, GetText.Instance.GetString("Connect to host"), textColor: 0x59D5FF);
                 }
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("Back"),
                     () =>
                     {
+                        // Previous screen is the transport picker (LAN / Steam), not the hub.
+                        // Do NOT call ShouldAutoHideConnectionUI(false): that sets ConnectionUI
+                        // invisible and makes it look like the menu "just closed".
                         if (role == NetRole.Host)
                             ShowHostTransportMenu(screen);
                         else
                             ShowJoinTransportMenu(screen);
-                        screen.ShouldAutoHideConnectionUI(false);
+                        screen.ShouldAutoHideConnectionUI(true);
                     },
-                    GetText.Instance.GetString("Back to multiplayer menu"));
+                    role == NetRole.Host
+                        ? GetText.Instance.GetString("Back to hosting options")
+                        : GetText.Instance.GetString("Back to join options"));
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(
-                    screen,
-                    GetText.Instance.GetString("Host game"),
-                    GetText.Instance.GetString("Join game"),
-                    "About Core Modding");
                 _inHostStatusMenu = false;
                 _inClientWaitingMenu = false;
                 if (role == NetRole.Host)
                 {
                     SetRole(NetRole.None);
                 }
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -1125,7 +1137,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void StartSteamHost(
+        internal static void StartSteamHost(
             TitleScreen screen,
             SteamConnect.SteamLobbyVisibility visibility)
         {
@@ -1183,7 +1195,7 @@ namespace DeadCellsMultiplayerMod
             screen.ShouldAutoHideConnectionUI(true);
         }
 
-        private static void OpenSteamFriendsJoinOverlay(TitleScreen screen)
+        internal static void OpenSteamFriendsJoinOverlay(TitleScreen screen)
         {
             if (SteamConnect.TryOpenFriendsOverlay(out var error))
             {
@@ -1199,7 +1211,7 @@ namespace DeadCellsMultiplayerMod
                 () => ShowJoinTransportMenu(screen));
         }
 
-        private static void StartSteamJoin(TitleScreen screen)
+        internal static void StartSteamJoin(TitleScreen screen)
         {
             _menuSelection = NetRole.Client;
             _menuTransport = ConnectionTransport.Steam;
@@ -1213,7 +1225,7 @@ namespace DeadCellsMultiplayerMod
             _ = Task.Run(() =>
             {
                 var ok = SteamConnect.TryResolveJoinEndpointFromClipboard(out var join);
-                EnqueueMainThread(() => ApplySteamJoinResult(screen, ok, join, fromOverlay: false));
+                MainThreadPump.EnqueueMainThread(() => ApplySteamJoinResult(screen, ok, join, fromOverlay: false));
             });
         }
 
@@ -1242,11 +1254,11 @@ namespace DeadCellsMultiplayerMod
             {
                 _log?.Information("[NetMod][Steam] Overlay join resolving lobby (lobbyId={LobbyId})", lobbyId);
                 var ok = SteamConnect.TryResolveJoinEndpointFromLobbyId(lobbyId, out var join);
-                EnqueueMainThread(() => ApplySteamJoinResult(screen, ok, join, fromOverlay: true));
+                MainThreadPump.EnqueueMainThread(() => ApplySteamJoinResult(screen, ok, join, fromOverlay: true));
             });
         }
 
-        private static void ApplySteamPersonaUsername(string? preferredPersona = null)
+        internal static void ApplySteamPersonaUsername(string? preferredPersona = null)
         {
             var candidate = string.IsNullOrWhiteSpace(preferredPersona)
                 ? GetDefaultUsername()
@@ -1262,7 +1274,7 @@ namespace DeadCellsMultiplayerMod
         }
 
         /// <summary>Clears title menu and shows ConnectionUI while the Steam lobby is resolved off-thread.</summary>
-        private static void PrepareSteamJoinConnectionUiOnly(TitleScreen screen)
+        internal static void PrepareSteamJoinConnectionUiOnly(TitleScreen screen)
         {
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
@@ -1275,6 +1287,7 @@ namespace DeadCellsMultiplayerMod
                 _inClientWaitingMenu = false;
                 _inHostStatusMenu = false;
                 screen.ShouldAutoHideConnectionUI(true);
+                UiLobby();
                 ConnectionUI.NotifyConnectionsChanged();
             }
             catch (Exception ex)
@@ -1288,7 +1301,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void ApplySteamJoinResult(TitleScreen screen, bool ok, SteamConnect.JoinLobbyResult join, bool fromOverlay)
+        internal static void ApplySteamJoinResult(TitleScreen screen, bool ok, SteamConnect.JoinLobbyResult join, bool fromOverlay)
         {
             _steamJoinLobbyResolvePending = false;
 
@@ -1341,7 +1354,7 @@ namespace DeadCellsMultiplayerMod
             screen.ShouldAutoHideConnectionUI(true);
         }
 
-        private static void ShowConnectionErrorPopup(TitleScreen screen, string title, string details, Action onOk)
+        internal static void ShowConnectionErrorPopup(TitleScreen screen, string title, string details, Action onOk)
         {
             var prevSuppress = _suppressAutoButton;
             _suppressAutoButton = true;
@@ -1351,20 +1364,20 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
-                AddInfoLine(screen, title, infoColor: 0xFF9090);
+                UiBegin();
+                UiInfo(title, 0xFF9090);
                 if (!string.IsNullOrWhiteSpace(details))
-                    AddInfoLine(screen, details, infoColor: 0xE0E0E0);
+                    UiInfo(details, 0xE0E0E0);
 
-                AddMenuButton(
-                    screen,
+                UiButton(
                     GetText.Instance.GetString("OK"),
                     onOk,
                     GetText.Instance.GetString("Return to previous menu"));
 
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
-                RemoveDuplicatesKeepFirst(screen, GetText.Instance.GetString("OK"));
                 _inClientWaitingMenu = false;
                 _inHostStatusMenu = false;
+                UiCommit();
             }
             catch (Exception ex)
             {
@@ -1377,7 +1390,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void StartNetwork(NetRole role, TitleScreen screen)
+        internal static void StartNetwork(NetRole role, TitleScreen screen)
         {
             try
             {
@@ -1434,7 +1447,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void StartHostServerOnly(bool bindAnyAddress = false)
+        internal static void StartHostServerOnly(bool bindAnyAddress = false)
         {
             try
             {
@@ -1470,7 +1483,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        // private static void GameDisposeHook(Hook_Game.orig_onDispose orig, Game self)
+        // internal static void GameDisposeHook(Hook_Game.orig_onDispose orig, Game self)
         // {
         //     try
         //     {
@@ -1484,7 +1497,7 @@ namespace DeadCellsMultiplayerMod
         //     orig(self);
         // }
 
-        private static void HandleWorldExit(bool isDisposeHook = false)
+        internal static void HandleWorldExit(bool isDisposeHook = false)
         {
             ResetHostDisconnectCountdown();
             lock (Sync)

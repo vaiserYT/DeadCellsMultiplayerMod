@@ -47,7 +47,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void RunHostPlayerCombatStateRepairIfPending()
         {
-            if (!IsHost(GameMenu.NetRef))
+            if (!IsHost(LobbySession.NetRef))
                 return;
 
             var revision = Volatile.Read(ref s_playerCombatStateRevision);
@@ -136,7 +136,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         /// </summary>
         private static void TryMaintainHostBossSurvivorTarget(Mob mob)
         {
-            if (mob == null || !IsHost(GameMenu.NetRef) || !BossSyncHelpers.IsBossMob(mob) ||
+            if (mob == null || !IsHost(LobbySession.NetRef) || !BossSyncHelpers.IsBossMob(mob) ||
                 !ModEntry.HasAnyPlayerDownedForCombat() || !IsMobHostileToPlayers(mob))
             {
                 return;

@@ -22,7 +22,7 @@ public partial class InteractionSync
             return;
 
         _doorStableAnchors[self] = ComputeDoorStableAnchor(self);
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (net != null && net.IsAlive)
         {
             _doorHadAutoClose[self] = SafeRead(() => self.autoClose, false);
@@ -61,7 +61,7 @@ public partial class InteractionSync
     {
         if (_applyingRemoteDoorEvents)
             return;
-        var net = GameMenu.NetRef;
+        var net = LobbySession.NetRef;
         if (!IsNetReadyForSend(net))
             return;
         try
@@ -238,7 +238,7 @@ public partial class InteractionSync
         _applyingRemoteDoorEvents = true;
         try
         {
-            var localId = GameMenu.NetRef?.id ?? 0;
+            var localId = LobbySession.NetRef?.id ?? 0;
             foreach (var ev in events)
             {
                 if (ev.UserId == localId)

@@ -9,7 +9,7 @@ using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 
 namespace DeadCellsMultiplayerMod
 {
-    internal static partial class GameMenu
+    internal static partial class LobbySession
     {
         /// <summary>
         /// Accent colour for the main-menu "Play multiplayer" entry, and for that entry only.
@@ -24,14 +24,14 @@ namespace DeadCellsMultiplayerMod
         /// </remarks>
         internal const int MultiplayerMenuAccentColor = 0x59D5FF;
 
-        private static void InitializeMenuUiHooks()
+        internal static void InitializeMenuUiHooks()
         {
             if (_menuHooksAttached) return;
 
             try
             {
                 LoadConfig();
-                InitializeMultiplayerSaveHooks();
+                MultiplayerSaves.InitializeMultiplayerSaveHooks();
                 InitializeMultiplayerLaunchHooks();
                 Hook_TitleScreen.mainMenu += MainMenuHook;
                 _menuHooksAttached = true;
@@ -42,7 +42,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void MainMenuHook(Hook_TitleScreen.orig_mainMenu orig, TitleScreen self)
+        internal static void MainMenuHook(Hook_TitleScreen.orig_mainMenu orig, TitleScreen self)
         {
             ModEntry.PumpSteamCallbacksForOverlay();
             if (!_addMenuHookRegistered)
@@ -64,7 +64,7 @@ namespace DeadCellsMultiplayerMod
             ProcessPendingOverlayJoinRequest(self);
         }
 
-        private static void ResetOriginalMainMenuUiState()
+        internal static void ResetOriginalMainMenuUiState()
         {
             ResetHostDisconnectCountdown();
             _inHostStatusMenu = false;
@@ -73,7 +73,7 @@ namespace DeadCellsMultiplayerMod
             ConnectionUI.set_visible = false;
         }
 
-        private static void ProcessPendingOverlayJoinRequest(TitleScreen screen)
+        internal static void ProcessPendingOverlayJoinRequest(TitleScreen screen)
         {
             if (_pendingOverlayJoinLobbyId is not { } lobbyId)
                 return;
@@ -82,7 +82,7 @@ namespace DeadCellsMultiplayerMod
             HandleSteamOverlayJoinRequest(lobbyId);
         }
 
-        private static void TryDisconnectWhenReturningToMainMenu()
+        internal static void TryDisconnectWhenReturningToMainMenu()
         {
             if (_role == NetRole.None)
                 return;
@@ -92,7 +92,7 @@ namespace DeadCellsMultiplayerMod
             StopNetworkFromMenu();
         }
 
-        private static virtual_cb_help_inter_isEnable_t_<bool> AddMenuHook(
+        internal static virtual_cb_help_inter_isEnable_t_<bool> AddMenuHook(
             Hook_TitleScreen.orig_addMenu orig,
             TitleScreen self,
             dc.String str,
@@ -102,7 +102,7 @@ namespace DeadCellsMultiplayerMod
             Ref<int> color)
         {
             ModEntry.PumpSteamCallbacksForOverlay();
-            GameMenu.ProcessMainThreadQueue();
+            MainThreadPump.ProcessMainThreadQueue();
             var wrappedCb = WrapQuitCallbackIfNeeded(str, cb);
             var ret = orig(self, str, wrappedCb ?? cb, help, isEnable, color);
 
@@ -135,7 +135,7 @@ namespace DeadCellsMultiplayerMod
             return ret;
         }
 
-        private static HlAction? WrapQuitCallbackIfNeeded(dc.String label, HlAction? callback)
+        internal static HlAction? WrapQuitCallbackIfNeeded(dc.String label, HlAction? callback)
         {
             if (callback == null)
                 return null;
@@ -155,7 +155,7 @@ namespace DeadCellsMultiplayerMod
             });
         }
 
-        private static bool IsQuitMenuLabel(string label)
+        internal static bool IsQuitMenuLabel(string label)
         {
             if (string.IsNullOrWhiteSpace(label))
                 return false;
@@ -175,7 +175,7 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private static void EnsureMainMenuMultiplayerButton(TitleScreen screen)
+        internal static void EnsureMainMenuMultiplayerButton(TitleScreen screen)
         {
             try
             {
@@ -218,7 +218,7 @@ namespace DeadCellsMultiplayerMod
         /// which path won the race. Lookup is by the localized label, so exactly one entry is
         /// touched and no unrelated menu item changes colour.
         /// </remarks>
-        private static void ApplyMultiplayerMenuAccent(object? menuItemsArray, string playMultiplayerLabel)
+        internal static void ApplyMultiplayerMenuAccent(object? menuItemsArray, string playMultiplayerLabel)
         {
             try
             {
@@ -240,7 +240,7 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void MoveButtonAfterPlay(object? arrObj, string targetLabel, string anchorLabel)
+        internal static void MoveButtonAfterPlay(object? arrObj, string targetLabel, string anchorLabel)
         {
             if (arrObj == null) return;
             try

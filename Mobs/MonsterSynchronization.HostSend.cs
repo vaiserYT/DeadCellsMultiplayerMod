@@ -37,7 +37,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (hasVisibility && isOnScreen)
                 return true;
 
-            if (IsHost(GameMenu.NetRef) && TryGetMobSyncId(mob, out var mobSyncId) && mobSyncId >= 0 &&
+            if (IsHost(LobbySession.NetRef) && TryGetMobSyncId(mob, out var mobSyncId) && mobSyncId >= 0 &&
                 IsMobClientVisibleForSync(mobSyncId))
                 return true;
 
@@ -101,7 +101,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || mob.destroyed)
                 return;
 
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (!IsClient(net) || !IsSyncMob(mob))
                 return;
 
@@ -459,7 +459,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_Mob_contactAttack(Hook_Mob.orig_contactAttack orig, Mob self, Entity pow)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsHost(net) && IsInvalidPlayerTargetEntity(pow))
                 return;
 
@@ -474,7 +474,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_Mob_onTouch(Hook_Mob.orig_onTouch orig, Mob self, Entity atk)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsHost(net) && IsInvalidPlayerTargetEntity(atk))
                 return;
 
@@ -490,7 +490,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_OldMobSkill_execute(Hook_OldMobSkill.orig_execute orig, OldMobSkill self, double? a)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var ownerMob = self?.owner as Mob;
             if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
                 return;
@@ -516,7 +516,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private bool Hook_OldSkill_prepare(Hook_OldSkill.orig_prepare orig, OldSkill self, int? data)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var ownerMob = self?.owner as Mob;
             if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
                 return false;
@@ -549,7 +549,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_OldSkill_execute(Hook_OldSkill.orig_execute orig, OldSkill self, double? ratio)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var ownerMob = self?.owner as Mob;
             if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
                 return;
@@ -578,7 +578,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private bool Hook_OldMobSkill_prepareOnOwnerTarget(Hook_OldMobSkill.orig_prepareOnOwnerTarget orig, OldMobSkill self, bool? data, int? e)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var ownerMob = self?.owner as Mob;
             if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
                 return false;
@@ -611,7 +611,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_Mob_queueAttack(Hook_Mob.orig_queueAttack orig, Mob self, OldMobSkill a, bool requiresTargetInArea, int? data)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             if (IsClient(net) && IsSyncMob(self) && !IsClientNetworkQueuedAttackAllowed(self))
                 return;
 
@@ -707,7 +707,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private void Hook_MobSkill_execute(Hook_MobSkill.orig_execute orig, MobSkill self, double? ratio)
         {
-            var net = GameMenu.NetRef;
+            var net = LobbySession.NetRef;
             var ownerMob = self?.owner as Mob;
             if (ShouldBlockAutonomousClientBossSkill(net, ownerMob))
                 return;

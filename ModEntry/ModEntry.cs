@@ -430,7 +430,7 @@ namespace DeadCellsMultiplayerMod
         public void OnGameEndInit()
         {
             _ready = true;
-            GameMenu.SetRole(NetRole.None);
+            LobbySession.SetRole(NetRole.None);
             s_steamOverlayCallbackPending = true;
             s_steamOverlayCallbackRetryCount = 0;
             _debugPerkAppliedHero = null;
@@ -490,7 +490,7 @@ namespace DeadCellsMultiplayerMod
 
             _ = new CoopAdvancedHardening(this);
 
-            GameMenu.Initialize(Logger);
+            LobbySession.Initialize(Logger);
             s_steamOverlayCallbackPending = true;
             s_steamOverlayCallbackRetryCount = 0;
             EventSystem.BroadcastEvent<IOnAdvancedModuleInitializing, ModEntry>(this);
@@ -675,7 +675,7 @@ namespace DeadCellsMultiplayerMod
             if (localMultiplayerActivation)
             {
                 SendCurrentRoomTarget(force: true);
-                GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
+                MainThreadPump.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
             }
         }
 
@@ -701,7 +701,7 @@ namespace DeadCellsMultiplayerMod
         }
 
         /// <summary>
-        /// At most one deferred <see cref="GameMenu.EnqueueMainThread"/> <c>orig(self)</c> per door instance.
+        /// At most one deferred <see cref="MainThreadPump.EnqueueMainThread"/> <c>orig(self)</c> per door instance.
         /// </summary>
         private static readonly ConditionalWeakTable<BossRushDoor, object> s_bossRushDoorGfxDeferredPending = new();
 
@@ -739,7 +739,7 @@ namespace DeadCellsMultiplayerMod
                 s_bossRushDoorGfxDeferredPending.Add(self, new object());
                 var localOrig = orig;
                 var localSelf = self;
-                GameMenu.EnqueueMainThread(() =>
+                MainThreadPump.EnqueueMainThread(() =>
                 {
                     try
                     {
@@ -872,7 +872,7 @@ namespace DeadCellsMultiplayerMod
             // client does not own the authoritative run and transient remote identities can be
             // serialized into MSave. The host remains the only writer while the session is live;
             // normal local saving resumes after disconnect/role reset.
-            var menuRole = GameMenu.CurrentRole;
+            var menuRole = LobbySession.CurrentRole;
             if (_netRole == NetRole.Client || menuRole == NetRole.Client)
             {
                 Logger.Debug(
@@ -907,7 +907,7 @@ namespace DeadCellsMultiplayerMod
             // The serializer scope is entered for EVERY role, not only NetRole.Client.
             //
             // TryApplyRemoteSerializerSync installs the host's hxbit SEQ/UID globally on each client
-            // level generation, and that is global state which outlives role bookkeeping: GameMenu's
+            // level generation, and that is global state which outlives role bookkeeping: LobbySession's
             // _role and this class's _netRole are separate fields, SetRole only swaps back when it
             // observes a Client->other transition, and SwapToLocalSerializerSync silently returns
             // false if the serializer class is unavailable. Any of those divergences used to send the
@@ -941,8 +941,8 @@ namespace DeadCellsMultiplayerMod
         {
             orig(self, dt);
             PumpSteamCallbacksForOverlay();
-            GameMenu.ProcessMainThreadQueue();
-            GameMenu.HandleTextInputClipboardShortcuts();
+            MainThreadPump.ProcessMainThreadQueue();
+            LobbySession.HandleTextInputClipboardShortcuts();
             _ghost?.UpdateLabels();
             ProcessCameraSpectateInput();
             TickRemoteKingSubLevelTransitionGuard();
@@ -976,7 +976,7 @@ namespace DeadCellsMultiplayerMod
                         "[NetMod][LevelSync] authoritative level seed for {LevelId} was not received within {Timeout}ms",
                         levelId,
                         levelSeedSyncWaitMs);
-                    GameMenu.AbortClientWorldSync($"level seed timeout: {levelId}");
+                    LobbySession.AbortClientWorldSync($"level seed timeout: {levelId}");
                 }
             }
 
@@ -1050,7 +1050,7 @@ namespace DeadCellsMultiplayerMod
                     try
                     {
                         MultiplayerUI.PushSystemMessage(
-                            GameMenu.Localize("Level failed to synchronize with the host. Return to the menu and rejoin."),
+                            LobbySession.Localize("Level failed to synchronize with the host. Return to the menu and rejoin."),
                             8.0,
                             1.0);
                     }
@@ -1063,7 +1063,7 @@ namespace DeadCellsMultiplayerMod
                     // that payload cached for the retry. If no payload exists at all, there is no
                     // safe recovery path: leave rather than knowingly continue on a different map.
                     if (!GameDataSync.HasPendingRemoteLevelGraph(graphLevelId))
-                        GameMenu.AbortClientWorldSync($"level graph unavailable: {graphLevelId} ({reason})");
+                        LobbySession.AbortClientWorldSync($"level graph unavailable: {graphLevelId} ({reason})");
                 }
             }
 
@@ -1183,7 +1183,7 @@ namespace DeadCellsMultiplayerMod
             var net = _net;
             var localId = net?.id ?? 0;
             _ghost = new GhostHero(localId, game!, me, Logger, this);
-            _ghost.SetLabel(me, GameMenu.Username);
+            _ghost.SetLabel(me, LobbySession.Username);
             _ghostOwnerHero = me;
             _ghostOwnerGame = game;
             _ghostBootstrapNet = net;
@@ -1197,7 +1197,7 @@ namespace DeadCellsMultiplayerMod
                     ResetGhostHeadRuntimeState(i);
                 }
 
-                GameMenu.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
+                MainThreadPump.EnqueueMainThreadCoalesced("ghost:receive-coords", ReceiveGhostCoords);
             }
             else
             {
@@ -1247,7 +1247,7 @@ namespace DeadCellsMultiplayerMod
                 ApplyDebugHeroRuntimeOptions();
             }
 
-            GameMenu.MarkInRun();
+            LobbySession.MarkInRun();
             ApplyDebugHeroRuntimeOptions();
         }
 
@@ -1256,9 +1256,10 @@ namespace DeadCellsMultiplayerMod
             if (!_ready) return;
             var hitchStart = RuntimeHitchWatch.Start();
             PumpSteamCallbacksForOverlay();
-            GameMenu.ProcessMainThreadQueue();
+            MainThreadPump.ProcessMainThreadQueue();
+            PlayPopupWindowGuard.Tick();
             CheckRemoteKingRenderSafety("frame");
-            GameMenu.TickMenu(dt);
+            LobbySession.TickMenu(dt);
             DetectAndSendBossCine();
             ApplyReceivedBossHeroTeleport();
             ApplyReceivedBossCine();
@@ -1452,7 +1453,7 @@ namespace DeadCellsMultiplayerMod
             if (_ghost == null)
             {
                 _ghost = new GhostHero(net.id, localGame, me, Logger, this);
-                _ghost.SetLabel(me, GameMenu.Username);
+                _ghost.SetLabel(me, LobbySession.Username);
                 _ghostOwnerHero = me;
                 _ghostOwnerGame = localGame;
                 _ghostBootstrapNet = null;

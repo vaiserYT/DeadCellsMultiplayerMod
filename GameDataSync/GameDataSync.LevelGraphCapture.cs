@@ -59,17 +59,25 @@ namespace DeadCellsMultiplayerMod
 
         private static void TryCaptureLevelGraphNode(object? candidate, LevelGraphSync sync, HashSet<string> seenUids)
         {
-            if (candidate is not RoomNode node)
-                return;
+            // One unsupported node property (e.g. a generated proxy method missing in this game
+            // build) must never abort the whole graph capture. Skip the node, keep the topology.
+            try
+            {
+                if (candidate is not RoomNode node)
+                    return;
 
-            var nodeSync = CaptureLevelGraphNode(node);
-            if (nodeSync == null || string.IsNullOrWhiteSpace(nodeSync.Uid))
-                return;
+                var nodeSync = CaptureLevelGraphNode(node);
+                if (nodeSync == null || string.IsNullOrWhiteSpace(nodeSync.Uid))
+                    return;
 
-            if (!seenUids.Add(nodeSync.Uid))
-                return;
+                if (!seenUids.Add(nodeSync.Uid))
+                    return;
 
-            sync.Nodes.Add(nodeSync);
+                sync.Nodes.Add(nodeSync);
+            }
+            catch
+            {
+            }
         }
 
         private static LevelGraphNodeSync? CaptureLevelGraphNode(RoomNode node)
@@ -113,7 +121,7 @@ namespace DeadCellsMultiplayerMod
                 ZChildrenUids = CaptureRoomNodeUids(node.zChildren),
                 Npcs = CaptureNpcIds(node.npcs),
                 ZLinks = CaptureZLinks(node.zLinks),
-                GenData = CaptureLevelGraphGenData(node.genData)
+                GenData = TryCaptureLevelGraphGenData(node)
             };
         }
 
@@ -288,6 +296,27 @@ namespace DeadCellsMultiplayerMod
             catch { }
 
             return hasAny ? result : null;
+        }
+
+        /// <summary>
+        /// <see cref="RoomNode.genData"/> is a generated proxy virtual; a game build that renamed or
+        /// dropped <c>get_genData()</c> makes the plain property access throw "Method not found"
+        /// BEFORE <see cref="CaptureLevelGraphGenData"/>'s dynamic reads ever run, which aborted the
+        /// entire graph capture and silently starved the client of the authoritative layout (host
+        /// logged "Failed to send level graph", client logged WORLD DESYNC + abort). The captured
+        /// GenData is informational only (the apply path copies the client's own local genData), so
+        /// a failed read must degrade to null, never kill the capture.
+        /// </summary>
+        private static LevelGraphGenDataSync? TryCaptureLevelGraphGenData(RoomNode node)
+        {
+            try
+            {
+                return CaptureLevelGraphGenData(node.genData);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static LevelGraphZDoorTypeSync? CaptureZDoorType(ZDoorType? zDoorType)

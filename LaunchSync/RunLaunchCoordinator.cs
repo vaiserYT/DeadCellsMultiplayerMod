@@ -109,7 +109,7 @@ internal static class RunLaunchCoordinator
             // live host NetNode. Throwing here would escape into Dead Cells' native User.newGame
             // hook, which has no handler - the host process dies mid-launch and force-drops the
             // client. Adopt the role instead; only a genuine host/client contradiction still throws.
-            if (_role == NetRole.None && GameMenu.NetRef is { IsAlive: true, IsHost: true })
+            if (_role == NetRole.None && LobbySession.NetRef is { IsAlive: true, IsHost: true })
             {
                 ResetLocked(NetRole.Host, "adopt_host_role_for_local_launch");
                 _log?.Information("[NetMod][RunLaunch] Adopted host role for a local launch commit");
@@ -349,7 +349,7 @@ internal static class RunLaunchCoordinator
     // Removed: WaitForHostAck / WaitForClientQueued.
     //
     // Both were blocking rendezvous helpers with no call sites. Launch synchronization is now
-    // non-blocking end to end: the host publishes and keeps re-publishing (GameMenu's launch
+    // non-blocking end to end: the host publishes and keeps re-publishing (LobbySession's launch
     // beacon) while the client arms itself from received state, so nothing needs to park a thread
     // waiting for a peer. Keeping unused blocking waits around invited exactly the main-thread
     // stall this design exists to avoid.
@@ -609,6 +609,11 @@ internal static class RunLaunchCoordinator
     /// same-run restart re-entry into User.newGame from a genuinely new lobby launch.
     /// A restart must reuse the committed seed and must never try to commit a second
     /// RUNCOMMIT while the original session is LoadingLevel/Playing.
+    ///
+    /// LaunchCommitted must NOT count here: that is the pre-first-load client state
+    /// after RUNCOMMIT/RUNEXEC. Treating it as an active run made the client's first
+    /// User.newGame look like a native restart, skip seed consumption, and later
+    /// force a false unconsumed_host_launch restart that regenerated the world.
     /// </summary>
     internal static bool TryGetActiveRunSeedForNativeRestart(out int seed, out CoopSessionPhase phase)
     {
@@ -617,10 +622,8 @@ internal static class RunLaunchCoordinator
             phase = _state.Phase;
             var descriptor = _role == NetRole.Host ? _hostDescriptor : _remoteDescriptor;
             if (descriptor != null &&
-                _state.Phase is (CoopSessionPhase.LaunchCommitted or
-                                 CoopSessionPhase.LoadingLevel or
-                                 CoopSessionPhase.Playing or
-                                 CoopSessionPhase.TransitionCommitted))
+                _state.Phase is (CoopSessionPhase.LoadingLevel or
+                                 CoopSessionPhase.Playing))
             {
                 seed = descriptor.RunSeed;
                 return seed > 0;
@@ -967,7 +970,7 @@ internal static class RunLaunchCoordinator
                 _state.Phase,
                 sequence,
                 reason);
-            DeadCellsMultiplayerMod.GameMenu.NotifyRunLaunchPhaseForSaveGuard(_state.Phase.ToString());
+            DeadCellsMultiplayerMod.SaveGuard.NotifyRunLaunchPhaseForSaveGuard(_state.Phase.ToString());
             return true;
         }
 
