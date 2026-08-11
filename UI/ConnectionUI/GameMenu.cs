@@ -730,7 +730,7 @@ namespace DeadCellsMultiplayerMod
                 UiButton(GetText.Instance.GetString("Back"), () =>
                 {
                     StopNetworkFromMenu();
-                    screen.mainMenu();
+                    ConnectionUI.ReturnToMainMenu(screen);
                 }, GetText.Instance.GetString("Return to main menu"));
                 RemoveMenuItems(screen, "About Core Modding", GetText.Instance.GetString("Play multiplayer"));
                 _inHostStatusMenu = false;

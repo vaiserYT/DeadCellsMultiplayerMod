@@ -24,30 +24,36 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
     /// <see cref="AddPendingInfo"/>/<see cref="CommitMenu"/>, and toggles the lobby display via
     /// <see cref="ShowLobbyMode"/>.
     /// </summary>
-    public class ConnectionUI :
+    public partial class ConnectionUI :
     Process,
     IEventReceiver
     {
         // ---------------------------------------------------------------- palette
-        private static readonly int PanelBorder = 0xC98A4B;   // bronze frame
-        private static readonly int PanelInner = 0x14161F;    // near-black panel
+        private static readonly int PanelInner = 0x14161F;
         private static readonly int PanelInnerEdge = 0x2A3A5E;
         private static readonly int PanelInnerTop = 0x3A4A6E;
-        private static readonly int TitleColor = 0xF7FC65;
-        private static readonly int SubtitleColor = 0x919191;
         private static readonly int AccentColor = 0x59D5FF;
         private static readonly int TextColor = 0xC9C9C9;
         private static readonly int HelpColor = 0x9098A8;
         private static readonly int DisabledColor = 0x6A6A6A;
         private static readonly int DisabledPlate = 0x232327;
-        private static readonly int SeparatorColor = 0x3A3A44;
-        private static readonly int ErrorColor = 0xFF9090;
 
         private enum UiMode
         {
             Lobby,
             Menu
         }
+
+        // Dead Cells renders menu text smaller in windowed mode (the game's own pixelScale drops
+        // below 1.0). GhostHero compensates nicknames with a ~1.6x boost in windowed mode; we do
+        // the same so button labels stay as readable in a window as in fullscreen.
+        private const double WindowedTextBoost = 1.6;
+        private const int WindowedDisplayMode = 0;
+        private const int FullscreenDisplayMode = 1;
+        private const int BorderlessDisplayMode = 2;
+        private static int _cachedDisplayMode = int.MinValue;
+        private static int _cachedFullScreenMode = int.MinValue;
+        private static double _cachedTextBoost = 1.0;
 
         private sealed class PendingButton
         {
@@ -87,8 +93,15 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         // menu list rendering (absolute layout inside bg, sibling of MainTitleflow)
         private dc.h2d.Object? _menuRoot;
+        // Nav screens (Host/Join/Back): custom panel — UIBox.drawBoxValidation scales children and
+        // caused overlapping / clipped buttons when we tried to resize it.
+        private dc.h2d.Object? _navRoot;
         private readonly List<(double X, double Y, double W, double H, Action Cb)> _menuHitRects = new();
         private bool _menuVisible;
+        private int _layoutW = 255;
+        private int _layoutH = 720;
+        private Graphics? _hoverBorder;
+        private static readonly int HoverBorderColor = 0xFFFFFF;
 
         private static ConnectionUI? Instance;
         private HSprite? spriteui;
@@ -154,6 +167,48 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             return instance;
         }
 
+        /// <summary>
+        /// Windowed mode makes the game shrink all UI (including baked text) more than fullscreen;
+        /// returns a multiplier that keeps menu text legible in a window. Mirrors the proven
+        /// GhostHero nickname-scaling logic (same display-mode detection, ~1.6x in windowed).
+        /// </summary>
+        private static double GetWindowedTextBoost()
+        {
+            try
+            {
+                var win = dc.hxd.Window.Class.getInstance();
+                if (win == null)
+                    return _cachedTextBoost;
+
+                var displayMode = int.MinValue;
+                var sdlWin = win.window;
+                if (sdlWin != null)
+                    displayMode = sdlWin.displayMode;
+
+                var mode = win.fullScreenMode;
+                if (_cachedDisplayMode == displayMode && _cachedFullScreenMode == mode)
+                    return _cachedTextBoost;
+
+                _cachedDisplayMode = displayMode;
+                _cachedFullScreenMode = mode;
+
+                if (displayMode == FullscreenDisplayMode || displayMode == BorderlessDisplayMode)
+                    _cachedTextBoost = 1.0;
+                else if (displayMode == WindowedDisplayMode)
+                    _cachedTextBoost = WindowedTextBoost;
+                else if (mode == FullscreenDisplayMode || mode == BorderlessDisplayMode)
+                    _cachedTextBoost = 1.0;
+                else
+                    _cachedTextBoost = WindowedTextBoost;
+
+                return _cachedTextBoost;
+            }
+            catch
+            {
+                return _cachedTextBoost;
+            }
+        }
+
         /// <summary>After gamepad connect/disconnect, window metrics can change; re-run layout.</summary>
         public static void RefreshLayoutAfterDisconnect()
         {
@@ -215,7 +270,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 return;
             instance._mode = UiMode.Menu;
             instance._keepLobbyVisible = showLobby;
-            instance.RebuildMenuScreen();
+            // Rebuild panel at the correct width (lobby column vs wider nav), then draw buttons.
+            instance._menuVisible = true;
+            instance.onResize();
         }
 
         /// <summary>Switches to the lobby display (player list + lobby code).</summary>
@@ -239,6 +296,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             {
                 try { instance.playersListWrapper.visible = true; } catch { }
             }
+            instance.onResize();
             instance.UpdateLobbyIdLabel(forceRefreshText: true);
         }
 
@@ -259,27 +317,40 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         private void RebuildMenuScreen()
         {
-            if (this.bg == null || this.MainTitleflow == null)
-                return;
-
             var uiScale = UiScale.GetResolutionScale();
-            double bgWidth = this.bg.wid;
-            double bgHeight = this.bg.hei;
+            // Text must never shrink below its fullscreen size: windowed mode lowers uiScale below
+            // 1.0, which previously made button labels tiny and blurry while the panel stayed large.
+            // Windowed mode also shrinks the whole game UI on top of that, so boost text further
+            // there (same ~1.6x that GhostHero applies to nicknames).
+            var textUi = System.Math.Max(uiScale, 1.0) * GetWindowedTextBoost();
+            double bgWidth = this._layoutW;
+            double bgHeight = this._layoutH;
+            bool navLayout = !this._keepLobbyVisible;
 
             // Rebuild the absolute-positioned menu list container.
+            var host = navLayout ? this._navRoot : (dc.h2d.Object?)this.bg;
+            if (host == null)
+                return;
+            if (!navLayout && this.MainTitleflow == null)
+                return;
             this._menuRoot?.remove();
             this._menuRoot = new dc.h2d.Object(null);
-            this.bg.addChild(this._menuRoot);
+            host.addChild(this._menuRoot);
             this._menuHitRects.Clear();
 
-            double padX = 14.0 * uiScale;
+            double padX = 16.0 * uiScale;
             double listW = bgWidth - padX * 2.0;
+            double colGap = (navLayout ? 14.0 : 12.0) * uiScale;
+            double rowGap = (navLayout ? 14.0 : 12.0) * uiScale;
+            double navText = navLayout ? textUi * 1.35 : textUi;
             double cursorY;
 
             if (this._keepLobbyVisible)
             {
                 // Lobby screens: keep the vanilla "Lobby menu" title + player list flow on top,
                 // and render the action buttons underneath it.
+                if (this.MainTitleflow == null)
+                    return;
                 this.MainTitleflow.set_minWidth((int)bgWidth);
                 this.MainTitleflow.set_minHeight((int)bgHeight);
                 this.MainTitleflow.set_visible(true);
@@ -292,16 +363,44 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             }
             else
             {
-                // Navigation screens: no own title, no player list.
-                this.MainTitleflow.set_visible(false);
+                // Navigation screens: collapse lobby chrome so it cannot push/clip the button cluster.
+                if (this.MainTitleflow != null)
+                {
+                    this.MainTitleflow.set_minWidth(0);
+                    this.MainTitleflow.set_minHeight(0);
+                    this.MainTitleflow.set_visible(false);
+                }
                 if (this.playersListWrapper != null)
                 {
                     try { this.playersListWrapper.visible = false; } catch { }
                 }
-                cursorY = 22.0 * uiScale;
+                cursorY = 0.0;
             }
 
-            // Info lines first.
+            var actions = new List<PendingButton>();
+            var backs = new List<PendingButton>();
+            if (navLayout)
+            {
+                for (int i = 0; i < PendingButtons.Count; i++)
+                {
+                    var btn = PendingButtons[i];
+                    if (IsBackButton(btn))
+                        backs.Add(btn);
+                    else
+                        actions.Add(btn);
+                }
+            }
+
+            // Nav: button cluster at top-center of the LARGE background panel (not y-centered).
+            double clusterW = listW;
+            double clusterX = padX;
+            if (navLayout)
+            {
+                clusterW = System.Math.Min(listW, NavButtonClusterWidth * uiScale);
+                clusterX = (bgWidth - clusterW) * 0.5;
+                cursorY = 28.0 * uiScale;
+            }
+
             foreach (var info in PendingInfos)
             {
                 var line = Assets.Class.makeText(
@@ -309,63 +408,61 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     Tools.MultiColor.ColorFromHex("#e0e0e0"),
                     false,
                     this._menuRoot);
-                line.customScale = 0.42 * uiScale;
+                double infoScale = 0.42 * navText;
+                line.customScale = infoScale;
                 line.onResize();
                 line.textColor = info.Color;
-                line.x = padX;
+                if (navLayout)
+                    CenterMenuText(line, info.Text, clusterX, clusterW, infoScale);
+                else
+                    line.x = padX;
                 line.y = cursorY;
                 cursorY += 24.0 * uiScale;
             }
 
             if (PendingInfos.Count > 0)
+                cursorY += 8.0 * uiScale;
+
+            if (navLayout)
             {
-                DrawSeparator(cursorY, padX, listW, uiScale);
-                cursorY += 16.0 * uiScale;
+                // Row 1: Host | Join (with tips). Row 2: Back. Top-center of big panel.
+                for (int i = 0; i < actions.Count; i += 2)
+                {
+                    bool pair = i + 1 < actions.Count;
+                    if (pair)
+                    {
+                        double btnW = (clusterW - colGap) * 0.5;
+                        double btnH = System.Math.Max(
+                            GetButtonHeight(actions[i], showHelp: true, uiScale, nav: true),
+                            GetButtonHeight(actions[i + 1], showHelp: true, uiScale, nav: true));
+                        PlaceMenuButton(actions[i], clusterX, cursorY, btnW, btnH, navText, uiScale, showHelp: true, centerText: true, nav: true);
+                        PlaceMenuButton(actions[i + 1], clusterX + btnW + colGap, cursorY, btnW, btnH, navText, uiScale, showHelp: true, centerText: true, nav: true);
+                        cursorY += btnH + rowGap;
+                    }
+                    else
+                    {
+                        double btnH = GetButtonHeight(actions[i], showHelp: true, uiScale, nav: true);
+                        PlaceMenuButton(actions[i], clusterX, cursorY, clusterW, btnH, navText, uiScale, showHelp: true, centerText: true, nav: true);
+                        cursorY += btnH + rowGap;
+                    }
+                }
+
+                for (int i = 0; i < backs.Count; i++)
+                {
+                    double btnH = GetButtonHeight(backs[i], showHelp: true, uiScale, nav: true);
+                    PlaceMenuButton(backs[i], clusterX, cursorY, clusterW, btnH, navText, uiScale, showHelp: true, centerText: true, nav: true);
+                    cursorY += btnH + rowGap;
+                }
             }
-
-            for (int i = 0; i < PendingButtons.Count; i++)
+            else
             {
-                var btn = PendingButtons[i];
-                if (i > 0)
+                for (int i = 0; i < PendingButtons.Count; i++)
                 {
-                    DrawSeparator(cursorY, padX, listW, uiScale);
-                    cursorY += 12.0 * uiScale;
+                    var btn = PendingButtons[i];
+                    double btnH = GetButtonHeight(btn, showHelp: true, uiScale, nav: false);
+                    PlaceMenuButton(btn, padX, cursorY, listW, btnH, textUi, uiScale, showHelp: true, centerText: false, nav: false);
+                    cursorY += btnH + 6.0 * uiScale;
                 }
-
-                double btnH = (string.IsNullOrWhiteSpace(btn.Help) ? 34.0 : 50.0) * uiScale;
-                double y = cursorY;
-                DrawButtonPlate(btn, padX, y, listW, btnH, uiScale);
-                var label = Assets.Class.makeText(
-                    btn.Label.AsHaxeString(),
-                    Tools.MultiColor.ColorFromHex("#ffffff"),
-                    false,
-                    this._menuRoot);
-                label.customScale = 0.48 * uiScale;
-                label.onResize();
-                label.textColor = btn.Enabled ? (btn.Color == 0xFFFFFF ? TextColor : btn.Color) : DisabledColor;
-                label.x = padX + 10.0 * uiScale;
-                label.y = y + 7.0 * uiScale;
-
-                if (!string.IsNullOrWhiteSpace(btn.Help))
-                {
-                    var help = Assets.Class.makeText(
-                        btn.Help.AsHaxeString(),
-                        Tools.MultiColor.ColorFromHex("#9098a8"),
-                        false,
-                        this._menuRoot);
-                    help.customScale = 0.34 * uiScale;
-                    help.onResize();
-                    help.textColor = HelpColor;
-                    help.x = padX + 10.0 * uiScale;
-                    help.y = y + btnH - 20.0 * uiScale;
-                }
-
-                if (btn.Enabled && btn.OnClick != null)
-                {
-                    this._menuHitRects.Add((padX, y, listW, btnH, btn.OnClick));
-                }
-
-                cursorY += btnH + 6.0 * uiScale;
             }
 
             // Hide lobby-code overlay while a menu screen is up.
@@ -378,16 +475,186 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             this._menuRoot.set_visible(true);
         }
 
-        private void DrawSeparator(double y, double padX, double w, double uiScale)
+        private static bool IsBackButton(PendingButton btn)
         {
+            var label = btn.Label ?? string.Empty;
+            if (label.IndexOf("back", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+            try
+            {
+                var localized = GetText.Instance.GetString("Back");
+                if (!string.IsNullOrEmpty(localized)
+                    && string.Equals(label, localized, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            catch
+            {
+            }
+            return false;
+        }
+
+        private static double GetButtonHeight(PendingButton btn, bool showHelp, double uiScale, bool nav)
+        {
+            if (showHelp && !string.IsNullOrWhiteSpace(btn.Help))
+                return (nav ? 88.0 : 50.0) * uiScale;
+            return (nav ? 58.0 : 34.0) * uiScale;
+        }
+
+        private void PlaceMenuButton(
+            PendingButton btn,
+            double x,
+            double y,
+            double w,
+            double h,
+            double textUi,
+            double uiScale,
+            bool showHelp,
+            bool centerText,
+            bool nav)
+        {
+            DrawButtonPlate(btn, x, y, w, h, uiScale);
+
+            double labelScale = (nav ? 0.62 : 0.48) * textUi;
+            var label = Assets.Class.makeText(
+                btn.Label.AsHaxeString(),
+                Tools.MultiColor.ColorFromHex("#ffffff"),
+                false,
+                this._menuRoot);
+            label.customScale = labelScale;
+            label.onResize();
+            label.textColor = btn.Enabled ? (btn.Color == 0xFFFFFF ? TextColor : btn.Color) : DisabledColor;
+
+            bool hasHelp = showHelp && !string.IsNullOrWhiteSpace(btn.Help);
+            if (centerText)
+            {
+                CenterMenuText(label, btn.Label, x, w, labelScale);
+                label.y = hasHelp ? y + (nav ? 14.0 : 8.0) * uiScale : y + (h - 16.0 * uiScale) * 0.5;
+            }
+            else
+            {
+                label.x = x + 10.0 * uiScale;
+                label.y = y + 7.0 * uiScale;
+            }
+
+            if (hasHelp)
+            {
+                double helpScale = (nav ? 0.42 : 0.34) * textUi;
+                var help = Assets.Class.makeText(
+                    btn.Help.AsHaxeString(),
+                    Tools.MultiColor.ColorFromHex("#9098a8"),
+                    false,
+                    this._menuRoot);
+                help.customScale = helpScale;
+                help.onResize();
+                help.textColor = HelpColor;
+                if (centerText)
+                {
+                    CenterMenuText(help, btn.Help, x, w, helpScale);
+                    help.y = y + h - (nav ? 28.0 : 20.0) * uiScale;
+                }
+                else
+                {
+                    help.x = x + 10.0 * uiScale;
+                    help.y = y + h - 20.0 * uiScale;
+                }
+            }
+
+            if (btn.Enabled && btn.OnClick != null)
+            {
+                // Per-button Interactive: click + white hover border (onOver / onOut).
+                var hit = new dc.h2d.Interactive(w, h, this._menuRoot, null);
+                hit.x = x;
+                hit.y = y;
+                var cb = btn.OnClick;
+                double hx = x, hy = y, hw = w, hh = h;
+                hit.onOver = new HlAction<Event>(_ => SetHoverBorder(hx, hy, hw, hh));
+                hit.onOut = new HlAction<Event>(_ => ClearHoverBorder());
+                hit.onClick = new HlAction<Event>(_ =>
+                {
+                    ClearHoverBorder();
+                    try { cb(); }
+                    catch (Exception ex) { Log.Debug("[ConnectionUI] Button callback failed: {Message}", ex.Message); }
+                });
+                // Keep rects as fallback for lobby panel Interactive hit-testing.
+                this._menuHitRects.Add((x, y, w, h, cb));
+            }
+        }
+
+        private void SetHoverBorder(double x, double y, double w, double h)
+        {
+            ClearHoverBorder();
             if (this._menuRoot == null)
                 return;
             var g = new Graphics(this._menuRoot);
-            int sepColor = SeparatorColor;
-            double sepAlpha = 1.0;
-            g.beginFill(Ref<int>.From(ref sepColor), Ref<double>.From(ref sepAlpha));
-            g.drawRect(padX + 4.0, y, w - 8.0, 1.0);
+            this._hoverBorder = g;
+            int color = HoverBorderColor;
+            double alpha = 1.0;
+            const double t = 2.0;
+            g.beginFill(Ref<int>.From(ref color), Ref<double>.From(ref alpha));
+            g.drawRect(x, y, w, t);
+            g.drawRect(x, y + h - t, w, t);
+            g.drawRect(x, y, t, h);
+            g.drawRect(x + w - t, y, t, h);
             g.endFill();
+        }
+
+        private void ClearHoverBorder()
+        {
+            try { this._hoverBorder?.remove(); } catch { }
+            this._hoverBorder = null;
+        }
+
+        /// <summary>Hides ConnectionUI chrome and returns to the title main menu.</summary>
+        public static void ReturnToMainMenu(TitleScreen screen)
+        {
+            try
+            {
+                var instance = TryGetLiveInstance();
+                instance?.DismissMenuUi();
+                set_visible = false;
+                screen.ShouldAutoHideConnectionUI(false);
+                screen.mainMenu();
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("[ConnectionUI] ReturnToMainMenu failed: {Message}", ex.Message);
+                try { set_visible = false; } catch { }
+                try { screen.mainMenu(); } catch { }
+            }
+        }
+
+        private void DismissMenuUi()
+        {
+            this._menuVisible = false;
+            ClearHoverBorder();
+            CloseTextPrompt(apply: false);
+            try { this._menuRoot?.remove(); } catch { }
+            this._menuRoot = null;
+            try { this._navRoot?.remove(); } catch { }
+            this._navRoot = null;
+            this._menuHitRects.Clear();
+        }
+
+        private static void CenterMenuText(dc.ui.Text text, string label, double regionX, double regionW, double customScale)
+        {
+            double textWidth;
+            try
+            {
+                textWidth = text.textWidth;
+                if (text.scaleX > 0.01)
+                    textWidth *= text.scaleX;
+                else if (customScale > 0.01)
+                    textWidth *= customScale;
+            }
+            catch
+            {
+                textWidth = label.Length * 7.0 * System.Math.Max(customScale, 0.4);
+            }
+
+            if (textWidth <= 0)
+                textWidth = label.Length * 7.0 * System.Math.Max(customScale, 0.4);
+
+            text.x = System.Math.Max(regionX + 4.0, regionX + (regionW - textWidth) * 0.5);
         }
 
         private void DrawButtonPlate(PendingButton btn, double x, double y, double w, double h, double uiScale)
@@ -444,6 +711,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 return;
 
             var uiScale = UiScale.GetResolutionScale();
+            var textBoost = GetWindowedTextBoost();
             for (int i = 0; i < this.connectionLabels.Count; i++)
             {
                 var label = this.connectionLabels[i];
@@ -472,7 +740,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 false,
                 null
             );
-                player2.customScale = 0.5 * uiScale;
+                player2.customScale = 0.5 * uiScale * textBoost;
                 player2.onResize();
                 player2.textColor = nameColor;
                 this.MainTitleflow.addChild(player2);
@@ -695,13 +963,26 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private void clean()
         {
             ClearLobbyCodeUi();
+            ClearHoverBorder();
+            CloseTextPrompt(apply: false);
             this._menuRoot?.remove();
             this._menuRoot = null;
+            this._navRoot?.remove();
+            this._navRoot = null;
             this.bg?.remove();
             this.rootFlow?.remove();
             this.inter?.remove();
             this.sprites.Clear();
         }
+
+        // Lobby player-list column (original UIBox path).
+        private const int MenuPanelWidth = 255;
+        // Big background panel for Host/Join — nearly full width; buttons top-centered inside.
+        private const double NavPanelWidthFraction = 0.92;
+        private const int NavPanelMinWidth = 900;
+        private const int NavPanelMaxWidth = 2400;
+        private const double NavButtonClusterWidth = 780.0;
+        private const double ReferencePanelHeight = 720.0;
 
         public override void onResize()
         {
@@ -713,46 +994,133 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             double screenWidth = win.get_width();
             double screenHeight = win.get_height();
             var uiScale = UiScale.GetResolutionScale();
+            bool navMenu = this._mode == UiMode.Menu && !this._keepLobbyVisible;
 
-            this.rootFlow.set_minWidth((int)(screenWidth * 0.90));
-            this.rootFlow.set_minHeight((int)(screenHeight * 0.82));
+            ClearLobbyCodeUi();
+            this.inter?.remove();
+            this.inter = null;
+
+            if (navMenu)
+            {
+                BuildNavPanel(screenWidth, screenHeight, uiScale);
+            }
+            else
+            {
+                BuildLobbyPanel(screenWidth, screenHeight, uiScale);
+            }
+
+            if (this._mode == UiMode.Menu && this._menuVisible)
+                RebuildMenuScreen();
+            UpdateLobbyIdLabel(forceRefreshText: true);
+        }
+
+        /// <summary>
+        /// Host/Join/Back: plain Object + Graphics panel centered on screen.
+        /// Avoids UIBox.drawBoxValidation, which scales/clips children and produced the overlap mess.
+        /// </summary>
+        private void BuildNavPanel(double screenWidth, double screenHeight, double uiScale)
+        {
+            // Hide lobby chrome.
+            if (this.bg != null)
+            {
+                try { this.bg.set_visible(false); } catch { }
+            }
+            if (this.rootFlow != null)
+            {
+                try { this.rootFlow.visible = false; } catch { }
+            }
+
+            this._navRoot?.remove();
+            this._navRoot = new dc.h2d.Object(null);
+            this.root.addChild(this._navRoot);
+
+            // Large background frame (like the old hub), NOT sized to the buttons.
+            int panelW = (int)(screenWidth * NavPanelWidthFraction);
+            if (panelW < NavPanelMinWidth)
+                panelW = NavPanelMinWidth;
+            if (panelW > NavPanelMaxWidth)
+                panelW = NavPanelMaxWidth;
+            if (screenWidth > 0 && panelW > screenWidth - 40)
+                panelW = (int)System.Math.Max(320, screenWidth - 40);
+
+            double panelH = ReferencePanelHeight * uiScale;
+            if (screenHeight > 0)
+                panelH = System.Math.Min(panelH, screenHeight * 0.88);
+
+            this._layoutW = panelW;
+            this._layoutH = (int)panelH;
+
+            // Soft panel fill + thin accent edge (no gray button-frame rings on the window).
+            var g = new Graphics(this._navRoot);
+            int fill = PanelInner;
+            double fillAlpha = 0.94;
+            g.beginFill(Ref<int>.From(ref fill), Ref<double>.From(ref fillAlpha));
+            g.drawRect(0, 0, panelW, panelH);
+            g.endFill();
+            int edge = AccentColor;
+            double edgeAlpha = 0.55;
+            g.beginFill(Ref<int>.From(ref edge), Ref<double>.From(ref edgeAlpha));
+            g.drawRect(0, 0, panelW, 2);
+            g.drawRect(0, panelH - 2, panelW, 2);
+            g.drawRect(0, 0, 2, panelH);
+            g.drawRect(panelW - 2, 0, 2, panelH);
+            g.endFill();
+
+            this._navRoot.x = (screenWidth - panelW) * 0.5;
+            this._navRoot.y = (screenHeight - panelH) * 0.5;
+            this._navRoot.set_visible(true);
+
+            this.inter = new dc.h2d.Interactive(panelW, (int)panelH, this._navRoot, null);
+            this.inter.onClick = new HlAction<Event>(this.OnClick);
+            
+        }
+
+        /// <summary>Lobby / player list: original left UIBox column.</summary>
+        private void BuildLobbyPanel(double screenWidth, double screenHeight, double uiScale)
+        {
+            this._navRoot?.remove();
+            this._navRoot = null;
+
+            if (this.rootFlow != null)
+            {
+                try { this.rootFlow.visible = true; } catch { }
+            }
+
+            this.rootFlow!.set_minWidth((int)(screenWidth * 0.90));
+            double panelH = ReferencePanelHeight * uiScale;
+            if (screenHeight > 0)
+                panelH = System.Math.Min(panelH, screenHeight * 0.92);
+            this.rootFlow.set_minHeight((int)panelH);
             this.rootFlow.reflow();
 
             double flowW = this.rootFlow.get_innerWidth();
-            double flowH = this.rootFlow.get_innerHeight();
+            this._layoutW = MenuPanelWidth;
+            this._layoutH = (int)panelH;
 
-            ClearLobbyCodeUi();
             this.bg?.remove();
             this.bg = UIBox.Class.drawBoxValidation(
                 (int)flowW,
-                (int)flowH,
+                (int)panelH,
                 Ref<int>.Null,
                 Ref<int>.Null,
                 null,
                 false
             );
             this.root.addChild(this.bg);
-
             this.bg.set_visible(true);
-            this.bg.wid = (int)255;
-            this.bg.hei = (int)flowH;
+            this.bg.wid = MenuPanelWidth;
+            this.bg.hei = (int)panelH;
 
-            // Left-center placement: anchored to the left edge with a small margin, vertically centered.
             double posX = base.get_pixelScale.Invoke() * 22.0 * uiScale;
-            double posY = (screenHeight - flowH) / 2.0;
+            double posY = (screenHeight - panelH) / 2.0;
             this.rootFlow.x = posX;
             this.rootFlow.y = posY;
-
             this.bg.x = posX;
             this.bg.y = posY;
 
-            this.inter?.remove();
             this.inter = new dc.h2d.Interactive(this.bg.wid, this.bg.hei, this.bg, null);
             this.inter.onClick = new HlAction<Event>(this.OnClick);
             BGtext();
-            if (this._mode == UiMode.Menu && this._menuVisible)
-                RebuildMenuScreen();
-            UpdateLobbyIdLabel(forceRefreshText: true);
         }
 
         private void BGtext()
@@ -764,10 +1132,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             FlowAlign flowAlign = this.MainTitleflow.set_horizontalAlign(new FlowAlign.Middle());
             flowAlign = this.MainTitleflow.set_verticalAlign(new FlowAlign.Top());
 
-            double bgWidth = this.bg!.wid;
-            double bgHeight = this.bg.hei;
-            this.MainTitleflow.set_minWidth((int)bgWidth);
-            this.MainTitleflow.set_minHeight((int)bgHeight);
+            // Use layout size, not UIBox.wid/hei (those can disagree with the drawn frame).
+            double bgWidth = this._layoutW;
+            double bgHeight = this._layoutH;
+            bool navMenu = this._mode == UiMode.Menu && !this._keepLobbyVisible;
+            this.MainTitleflow.set_minWidth(navMenu ? 0 : (int)bgWidth);
+            this.MainTitleflow.set_minHeight(navMenu ? 0 : (int)bgHeight);
 
             this.bg!.addChild(this.MainTitleflow);
             dc.ui.Text title = Assets.Class.makeText(
@@ -818,6 +1188,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         public override void update()
         {
             base.update();
+            TickTextPrompt();
 
             if (this._mode != UiMode.Menu || this._keepLobbyVisible)
             {
@@ -835,10 +1206,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         private void OnClick(Event e)
         {
-            if (this.bg == null)
-                return;
-
-            // Menu buttons (hit rects are relative to bg).
+            // Menu buttons (hit rects are relative to the Interactive's parent: _navRoot or bg).
             if (this._menuVisible && this._menuRoot != null && this._menuRoot.visible)
             {
                 var x = e.relX;
@@ -856,7 +1224,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             }
 
             // Lobby code copy.
-            if (this.lobbyCodeFlow == null || !this.lobbyCodeFlow.visible)
+            if (this.bg == null || this.lobbyCodeFlow == null || !this.lobbyCodeFlow.visible)
                 return;
 
             var relX = e.relX;

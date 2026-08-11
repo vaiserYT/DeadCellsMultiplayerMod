@@ -1285,29 +1285,19 @@ namespace DeadCellsMultiplayerMod
                 if (noSpaces && initial.Contains(' ', StringComparison.Ordinal))
                     initial = RemoveSpaces(initial);
                 var initialText = initial ?? string.Empty;
-                var input = new TextInput(
-                    screen,
-                    MakeHLString(title),
-                    MakeHLString(initialText),
-                    MakeHLString(initialText),
-                    new HlAction<dc.String>(s =>
+                // Custom ConnectionUI prompt (stock TextInput dialog is too ugly for the hub).
+                ConnectionUI.ShowTextPrompt(
+                    title,
+                    initialText,
+                    value =>
                     {
-                        var text = s?.ToString() ?? string.Empty;
+                        var text = value ?? string.Empty;
                         if (noSpaces)
                             text = RemoveSpaces(text);
-                        try
-                        {
-                            onValidate(text);
-                        }
-                        finally
-                        {
-                            ClearActiveTextInput();
-                        }
-                    }),
-                    MakeHLString(GetText.Instance.GetString("OK")),
-                    MakeHLString(GetText.Instance.GetString("Cancel")),
-                    (dc.hxd.res.Sound?)null);
-                RegisterActiveTextInput(input, noSpaces);
+                        onValidate(text);
+                    },
+                    onCancel: null,
+                    noSpaces: noSpaces);
             }
             catch (Exception ex)
             {
