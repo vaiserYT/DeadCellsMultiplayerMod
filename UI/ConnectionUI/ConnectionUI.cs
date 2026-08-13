@@ -1332,11 +1332,22 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     RebuildLobbyPanelContent(slots);
                 else
                     UpdateLobbyIdLabel(forceRefreshText: false);
+
+                FlushPendingLobbyBeheadedSkinApply();
             }
             else if (this._menuVisible)
             {
                 UpdateLobbyIdLabel(forceRefreshText: false);
             }
+        }
+
+        public override void postUpdate()
+        {
+            base.postUpdate();
+            // Title-screen processes can overwrite DirLighted globals after our update().
+            // Push them again so ColorMap stays in the linked shader while the lobby is up.
+            if (this._lobbyBeheadedRoot != null)
+                PushLobbyBeheadedLighting();
         }
 
         /// <summary>Escape = same as Back/Disconnect, unless the text prompt consumed Escape this frame.</summary>

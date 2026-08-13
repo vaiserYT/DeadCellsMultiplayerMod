@@ -24,6 +24,10 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         /// <summary>Four lobby beheaded seats under / beside the lobby code card.</summary>
         private dc.h2d.Object? _lobbyBeheadedRoot;
+        private MainPageLightingInitializer? _lobbyLighting;
+        private readonly List<string> _lobbyBeheadedSkinIds = new();
+        private readonly List<bool> _lobbyBeheadedSilhouette = new();
+        private bool _lobbyBeheadedNeedsSkinRebind;
 
         private readonly List<string> animlist = new() { "idle", "idle", "idle", "idle" };
 
@@ -41,6 +45,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             try { this._lobbyBeheadedRoot?.remove(); } catch { }
             this._lobbyBeheadedRoot = null;
+            this._lobbyBeheadedSkinIds.Clear();
+            this._lobbyBeheadedSilhouette.Clear();
+            this._lobbyBeheadedNeedsSkinRebind = false;
         }
 
         private void HideLobbyBeheadedSprites()
@@ -108,6 +115,13 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             // Near the top, but not flush against the window edge.
             this._lobbyBeheadedRoot.y = screenPad * 0.85 + belowCode;
 
+            Log.Information(
+                "[ConnectionUI] Lobby beheaded row create slots={SlotCount} panelW={PanelW:0.#} scale={Scale:0.###} lighting={Lighting}",
+                slotCount,
+                panelW,
+                scale,
+                this._lobbyLighting != null);
+
             for (int i = 0; i < slotCount; i++)
             {
                 var slot = i < slots.Count ? slots[i] : _ConnectionUI.LobbyPlayerSlot.Empty;
@@ -138,19 +152,38 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     if (string.IsNullOrWhiteSpace(skinId))
                         skinId = DefaultLobbySkin;
 
+                    Log.Information(
+                        "[ConnectionUI] Lobby beheaded[{Index}] create nick={Nick} occupied={Occupied} connecting={Connecting} host={Host} you={You} requestedSkin={RequestedSkin} effectiveSkin={EffectiveSkin} anim={Anim} silhouette={Silhouette}",
+                        i,
+                        slot.Nick ?? string.Empty,
+                        occupied,
+                        slot.IsConnecting,
+                        slot.IsHost,
+                        slot.IsYou,
+                        slot.Skin ?? string.Empty,
+                        skinId,
+                        ResolveLobbyBeheadedAnim(i),
+                        !occupied);
+
                     var spr = CreateLobbyBeheaded(skinId, i, scale);
                     if (spr == null)
                     {
-                        Log.Warning("[ConnectionUI] Lobby beheaded[{Index}] create returned null", i);
+                        Log.Warning("[ConnectionUI] Lobby beheaded[{Index}] create returned null skin={Skin}", i, skinId);
                     }
                     else
                     {
                         this._lobbyBeheadedRoot.addChild(spr);
                         spr.x = sprX;
                         spr.y = sprY;
+                        // ColorMap must be bound after the sprite is in the live scene tree.
+                        // Applying it on a detached HSprite leaves the raw default atlas on screen
+                        // until a later Hero/run init compiles the title-screen shader combo.
+                        ApplyLobbyBeheadedSkin(spr, skinId, ResolveLobbyBeheadedAnim(i), i, "create");
                         if (!occupied)
                             ApplyLobbyBeheadedSilhouette(spr);
                         this.sprites.Add(spr);
+                        this._lobbyBeheadedSkinIds.Add(skinId);
+                        this._lobbyBeheadedSilhouette.Add(!occupied);
                     }
                 }
                 catch (Exception ex)
@@ -186,6 +219,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             }
 
             try { this._lobbyBeheadedRoot.set_visible(true); } catch { }
+            this._lobbyBeheadedNeedsSkinRebind = this.sprites.Count > 0;
         }
 
         private static string ResolveLobbySlotNick(_ConnectionUI.LobbyPlayerSlot slot)
@@ -203,23 +237,19 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             return slot.Nick;
         }
 
+        private string ResolveLobbyBeheadedAnim(int index)
+        {
+            return index >= 0 && index < this.animlist.Count ? this.animlist[index] : "idle";
+        }
+
         private HSprite? CreateLobbyBeheaded(string skinId, int index, double scale)
         {
             if (string.IsNullOrWhiteSpace(skinId))
                 skinId = DefaultLobbySkin;
 
-            string skinanim = index >= 0 && index < this.animlist.Count ? this.animlist[index] : "idle";
-            virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_ skinInfo;
-            try
-            {
-                skinInfo = Cdb.Class.getSkinInfo(skinId.AsHaxeString());
-            }
-            catch (Exception ex)
-            {
-                Log.Warning("[ConnectionUI] getSkinInfo({Skin}) failed: {Message}; using {Fallback}", skinId, ex.Message, DefaultLobbySkin);
-                skinId = DefaultLobbySkin;
-                skinInfo = Cdb.Class.getSkinInfo(DefaultLobbySkin.AsHaxeString());
-            }
+            string skinanim = ResolveLobbyBeheadedAnim(index);
+            if (!TryResolveLobbySkinInfo(ref skinId, out var skinInfo) || skinInfo == null)
+                return null;
 
             SpriteLib g = Assets.Class.getHeroLib(skinInfo);
             if (g == null)
@@ -238,9 +268,6 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             pivot.isUndefined = false;
 
             this.spriteui = spr;
-            // Must match title-screen hero linker cache:
-            // Base2d + ColorMap + DirLighted + NormalMap. ColorMap alone is NOT cached → invisible.
-            initColorMap(skinId, skinanim);
 
             AnimManager animManager = spr.get_anim().play(skinanim.AsHaxeString(), null, null).loop(null);
             animManager.genSpeed = 0.4;
@@ -249,6 +276,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             // Default idle faces right; negative scaleX faces left.
             spr.scaleX = -absScale;
             spr.scaleY = absScale;
+            try { spr.smooth = false; } catch { }
             spr.set_visible(true);
             return spr;
         }
@@ -272,13 +300,41 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         private void EnsureLobbyBeheadedLighting()
         {
+            PushLobbyBeheadedLighting();
+        }
+
+        private void PushLobbyBeheadedLighting()
+        {
             try
             {
-                _ = new MainPageLightingInitializer(this);
+                this._lobbyLighting ??= new MainPageLightingInitializer(this);
+                this._lobbyLighting.Apply(this);
             }
             catch (Exception ex)
             {
                 Log.Warning("[ConnectionUI] lobby lighting init failed: {Message}", ex.Message);
+            }
+        }
+
+        private void FlushPendingLobbyBeheadedSkinApply()
+        {
+            if (!this._lobbyBeheadedNeedsSkinRebind)
+                return;
+
+            this._lobbyBeheadedNeedsSkinRebind = false;
+            Log.Information("[ConnectionUI] Lobby beheaded skin rebind count={Count}", this.sprites.Count);
+            PushLobbyBeheadedLighting();
+
+            int count = System.Math.Min(this.sprites.Count, this._lobbyBeheadedSkinIds.Count);
+            for (int i = 0; i < count; i++)
+            {
+                var spr = this.sprites[i];
+                if (spr == null)
+                    continue;
+
+                ApplyLobbyBeheadedSkin(spr, this._lobbyBeheadedSkinIds[i], ResolveLobbyBeheadedAnim(i), i, "rebind");
+                if (i < this._lobbyBeheadedSilhouette.Count && this._lobbyBeheadedSilhouette[i])
+                    ApplyLobbyBeheadedSilhouette(spr);
             }
         }
 
@@ -313,21 +369,94 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         {
             if (this.spriteui == null)
                 return;
+            ApplyLobbyBeheadedSkin(this.spriteui, colorMap, animGroup, -1, "initColorMap");
+        }
 
-            string skinId = string.IsNullOrWhiteSpace(colorMap) ? DefaultLobbySkin : colorMap;
+        private static bool TryResolveLobbySkinInfo(
+            ref string skinId,
+            out virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_? skinInfo)
+        {
+            skinInfo = null;
+            if (string.IsNullOrWhiteSpace(skinId))
+                skinId = DefaultLobbySkin;
+
             try
             {
-                dc.shader.ColorMap existing = (dc.shader.ColorMap)this.spriteui.getShader(dc.shader.ColorMap.Class);
+                skinInfo = Cdb.Class.getSkinInfo(skinId.AsHaxeString());
+                if (skinInfo != null)
+                    return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Information("[ConnectionUI] getSkinInfo({Skin}) failed: {Message}", skinId, ex.Message);
+            }
+
+            // Same object GameDataSync/GhostKing use after reading user.heroSkin:
+            // getHeroSkinInfos() already is the CDB row. consoleCmdId is not a getSkinInfo key.
+            if (_ConnectionUI.TryGetCachedLocalSkinInfo(out var cached) && cached != null)
+            {
+                skinInfo = cached;
+                return true;
+            }
+
+            skinId = DefaultLobbySkin;
+            try
+            {
+                skinInfo = Cdb.Class.getSkinInfo(DefaultLobbySkin.AsHaxeString());
+                return skinInfo != null;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("[ConnectionUI] getSkinInfo({Skin}) failed: {Message}", DefaultLobbySkin, ex.Message);
+                return false;
+            }
+        }
+
+        private void ApplyLobbyBeheadedSkin(HSprite spr, string? skinId, string? animGroup, int index, string reason)
+        {
+            if (spr == null)
+                return;
+
+            string requestedSkin = skinId ?? string.Empty;
+            string resolvedSkin = string.IsNullOrWhiteSpace(skinId) ? DefaultLobbySkin : skinId;
+            if (!TryResolveLobbySkinInfo(ref resolvedSkin, out var skinInfo) || skinInfo == null)
+            {
+                Log.Warning(
+                    "[ConnectionUI] Lobby beheaded[{Index}] {Reason} skin resolve failed requested={RequestedSkin}",
+                    index,
+                    reason,
+                    requestedSkin);
+                return;
+            }
+
+            Log.Information(
+                "[ConnectionUI] Lobby beheaded[{Index}] {Reason} requestedSkin={RequestedSkin} resolvedSkin={ResolvedSkin} cmd={Cmd} colorMap={ColorMap} model={Model} group={Group} anim={Anim}",
+                index,
+                reason,
+                requestedSkin,
+                resolvedSkin,
+                SafeSkinField(() => skinInfo.consoleCmdId?.ToString()),
+                SafeSkinField(() => skinInfo.colorMap.ToString()),
+                SafeSkinField(() => skinInfo.model.ToString()),
+                SafeSkinField(() => skinInfo.group.ToString()),
+                animGroup ?? "idle");
+
+            PushLobbyBeheadedLighting();
+            this.spriteui = spr;
+
+            try
+            {
+                dc.shader.ColorMap existing = (dc.shader.ColorMap)spr.getShader(dc.shader.ColorMap.Class);
                 if (existing != null)
-                    this.spriteui.removeShader(existing);
+                    spr.removeShader(existing);
 
-                DirLighted existingLight = (DirLighted)this.spriteui.getShader(DirLighted.Class);
+                DirLighted existingLight = (DirLighted)spr.getShader(DirLighted.Class);
                 if (existingLight != null)
-                    this.spriteui.removeShader(existingLight);
+                    spr.removeShader(existingLight);
 
-                NormalMap existingNormal = (NormalMap)this.spriteui.getShader(NormalMap.Class);
+                NormalMap existingNormal = (NormalMap)spr.getShader(NormalMap.Class);
                 if (existingNormal != null)
-                    this.spriteui.removeShader(existingNormal);
+                    spr.removeShader(existingNormal);
             }
             catch
             {
@@ -335,35 +464,139 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             try
             {
-                var skinInfo = Cdb.Class.getSkinInfo(skinId.AsHaxeString());
-                dc.h3d.mat.Texture heroColorMap = Assets.Class.getHeroColorMap(skinInfo);
+                SpriteLib heroLib = Assets.Class.getHeroLib(skinInfo);
+                if (heroLib != null && !ReferenceEquals(spr.lib, heroLib))
+                {
+                    int startFrame = 0;
+                    bool stopAllAnims = true;
+                    spr.set(heroLib, (animGroup ?? "idle").AsHaxeString(), Ref<int>.From(ref startFrame), Ref<bool>.From(ref stopAllAnims));
+                }
+
+                dc.h3d.mat.Texture? heroColorMap = ResolveLobbyHeroColorMap(skinInfo, resolvedSkin);
                 if (heroColorMap == null)
                 {
-                    Log.Warning("[ConnectionUI] getHeroColorMap returned null for {Skin}", skinId);
+                    Log.Warning(
+                        "[ConnectionUI] Lobby beheaded[{Index}] {Reason} getHeroColorMap null skin={Skin} lib={Lib}",
+                        index,
+                        reason,
+                        resolvedSkin,
+                        spr.lib != null);
                     return;
                 }
 
-                this.spriteui.addShader(new dc.shader.ColorMap(heroColorMap));
-                this.spriteui.addShader(new DirLighted());
+                EnsureLobbyColorMapTextureReady(heroColorMap);
+                int mapW = 0;
+                int mapH = 0;
+                try { mapW = heroColorMap.width; } catch { }
+                try { mapH = heroColorMap.height; } catch { }
+
+                spr.addShader(new dc.shader.ColorMap(heroColorMap));
+                spr.addShader(new DirLighted());
 
                 dc.h3d.mat.Texture? normalMap = null;
                 try
                 {
                     string group = string.IsNullOrWhiteSpace(animGroup) ? "idle" : animGroup;
-                    normalMap = this.spriteui.lib?.getNormalMapFromGroup(group.AsHaxeString());
+                    normalMap = spr.lib?.getNormalMapFromGroup(group.AsHaxeString());
                 }
                 catch
                 {
-                    try { normalMap = this.spriteui.lib?.getNormalMapFromSprite(this.spriteui); } catch { }
+                    try { normalMap = spr.lib?.getNormalMapFromSprite(spr); } catch { }
                 }
 
                 if (normalMap != null)
-                    this.spriteui.addShader(new NormalMap(normalMap));
+                {
+                    try
+                    {
+                        spr.addOrUpdateNormalMapTexture(normalMap);
+                    }
+                    catch
+                    {
+                        spr.addShader(new NormalMap(normalMap));
+                    }
+
+                    if (spr.getShader(NormalMap.Class) == null)
+                        spr.addShader(new NormalMap(normalMap));
+                }
+
+                try { spr.smooth = false; } catch { }
+
+                bool hasColor = false;
+                bool hasLight = false;
+                bool hasNormal = false;
+                try { hasColor = spr.getShader(dc.shader.ColorMap.Class) != null; } catch { }
+                try { hasLight = spr.getShader(DirLighted.Class) != null; } catch { }
+                try { hasNormal = spr.getShader(NormalMap.Class) != null; } catch { }
+
+                Log.Information(
+                    "[ConnectionUI] Lobby beheaded[{Index}] {Reason} applied skin={Skin} lib={Lib} colorMapTex={MapW}x{MapH} shaders color={HasColor} dirLight={HasLight} normal={HasNormal} visible={Visible} parent={HasParent}",
+                    index,
+                    reason,
+                    resolvedSkin,
+                    spr.lib != null,
+                    mapW,
+                    mapH,
+                    hasColor,
+                    hasLight,
+                    hasNormal,
+                    SafeBool(() => spr.visible),
+                    spr.parent != null);
             }
             catch (Exception ex)
             {
-                Log.Warning("[ConnectionUI] initColorMap({Skin}) failed: {Message}", skinId, ex.Message);
+                Log.Warning(
+                    "[ConnectionUI] Lobby beheaded[{Index}] {Reason} initColorMap({Skin}) failed: {Message}",
+                    index,
+                    reason,
+                    resolvedSkin,
+                    ex.Message);
             }
+        }
+
+        private static string SafeSkinField(Func<string?> getter)
+        {
+            try
+            {
+                var value = getter();
+                return string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
+            }
+            catch
+            {
+                return "?";
+            }
+        }
+
+        private static bool SafeBool(Func<bool> getter)
+        {
+            try { return getter(); }
+            catch { return false; }
+        }
+
+        private static dc.h3d.mat.Texture? ResolveLobbyHeroColorMap(
+            virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_ skinInfo,
+            string skinId)
+        {
+            try
+            {
+                var heroColorMap = Assets.Class.getHeroColorMap(skinInfo);
+                if (heroColorMap != null)
+                    return heroColorMap;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("[ConnectionUI] getHeroColorMap({Skin}) failed: {Message}", skinId, ex.Message);
+            }
+
+            return null;
+        }
+
+        private static void EnsureLobbyColorMapTextureReady(dc.h3d.mat.Texture texture)
+        {
+            if (texture == null)
+                return;
+
+            try { _ = texture.width; } catch { }
+            try { _ = texture.height; } catch { }
         }
     }
 }

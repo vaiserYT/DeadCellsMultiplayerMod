@@ -270,7 +270,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                     var mob = ResolveTrackedMobForIncomingStateLocked(effectiveState, s_usedTrackedMobsScratch);
                     if (mob == null)
+                    {
+                        s_diagMissingSyncPackets++;
+                        LogFocusSyncLifecycleLocked(state.Index, "STATE_DROP", "resolve_null");
                         continue;
+                    }
+                    LogFocusSyncLifecycleLocked(state.Index, "STATE_APPLY", $"life={state.Life}");
 
                     s_usedTrackedMobsScratch.Add(mob);
                     var incomingDir = NormalizeDir(state.Dir);
@@ -381,8 +386,18 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         continue;
 
                     var mob = ResolveTrackedMobBySyncIdLocked(move.Index);
+                    if (mob == null &&
+                        TryRecoverTombstonedSyncIdLocked(move.Index, null, move.X, move.Y, out var moveRecovered) &&
+                        moveRecovered != null)
+                    {
+                        mob = moveRecovered;
+                    }
                     if (mob == null)
+                    {
+                        s_diagMissingSyncPackets++;
+                        LogFocusSyncLifecycleLocked(move.Index, "MOVE_DROP", "resolve_null");
                         continue;
+                    }
                     if (!ShouldAcceptHostPositionFrameLocked(move.Index, move.Time, forceWhenUntimed: false))
                         continue;
 
@@ -873,6 +888,15 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     if (!ShouldAcceptPacketGenerationLocked(attack.Generation, ref rejectedCount, ref rejectedGeneration))
                         continue;
                     mob = ResolveTrackedMobForIncomingAttackLocked(attack);
+                    // Dormant client tombstone: the host is pushing an attack for a sync id whose
+                    // local replica was removed without a confirmed death. Recreate it so the attack
+                    // has a target to apply to instead of being buffered/dropped.
+                    if (mob == null &&
+                        TryRecoverTombstonedSyncIdLocked(attack.Index, attack.Type, attack.X, attack.Y, out var attackRecovered) &&
+                        attackRecovered != null)
+                    {
+                        mob = attackRecovered;
+                    }
                     // Phase 3: deterministically drop a replayed / out-of-order boss attack whose
                     // sequence was already applied for this stable identity. Pure check only — the
                     // high-water mark is advanced *after* the attack is actually queued below.
@@ -1927,6 +1951,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     if (!ShouldAcceptPacketGenerationLocked(die.Generation, ref rejectedCount, ref rejectedGeneration))
                         continue;
 
+                    // A host-confirmed death always wins over a dormant client tombstone: the
+                    // identity is dead, never resurrected. Clear the tombstone so no later state/hit
+                    // can recreate a replica for a mob the host has confirmed dead.
+                    if (IsClient(LobbySession.NetRef) && HasClientMobTombstoneLocked(die.MobIndex))
+                        RemoveClientMobTombstoneLocked(die.MobIndex, "authoritative_mobdie");
+
                     var mob = ResolveMobFromDieLocked(die);
                     if (mob == null)
                     {
@@ -2525,6 +2555,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             var missReason = registryMob == null ? "missing_sync_id" : "type_mismatch";
+            s_diagHitResolveFails++;
+            MobSyncTrace.LogHitResolveFail(hit.MobIndex, missReason);
             MobSyncTrace.LogIncomingMappingMismatch(
                 "hit",
                 hit.MobIndex,
@@ -2556,7 +2588,30 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // syncId can only be stale. (type_mismatch means the host DOES have a mob there —
             // echoing a death then could kill a legitimate mob.)
             if (registryMob == null)
+            {
+                // A dormant client tombstone means the host still owns this sync id and is pushing
+                // hits for it. Recreate the replica from the hit's own identity instead of letting
+                // missing_sync_id silently drop the damage forever.
+                if (TryRecoverTombstonedSyncIdLocked(
+                        hit.MobIndex,
+                        hit.Type,
+                        hit.X,
+                        hit.Y,
+                        out var tombstoneHitMob) &&
+                    tombstoneHitMob != null)
+                {
+                    // The replica is bound to the sync id, so the incoming hit now resolves to it.
+                    return tombstoneHitMob;
+                }
+
+                // The id is tombstoned (recovery still cooling down or creation pending). It is NOT
+                // a ghost the host has abandoned — skip the death echo or the client would spook
+                // itself into despawning the very mob the host is still fighting.
+                if (HasClientMobTombstoneLocked(hit.MobIndex))
+                    return null;
+
                 RecordGhostHitMissLocked(hit);
+            }
             else
                 RequestAuthoritativeHitReconcileLocked(registryMob, hit.MobIndex, "type_and_position_mismatch");
 
@@ -2937,25 +2992,37 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         {
             var mob = ResolveTrackedMobBySyncIdLocked(mobIndex);
             if (mob == null || !IsSyncMob(mob))
+            {
+                if (mob == null)
+                    LogFocusSyncLifecycleLocked(mobIndex, "HIT_RESOLVE", "tracked_null");
+                else
+                    LogFocusSyncLifecycleLocked(mobIndex, "HIT_RESOLVE", "not_sync_mob");
                 return null;
+            }
 
             try
             {
                 if (mob.destroyed || mob._level == null)
                 {
                     s_trackedMobValidationPending = true;
+                    LogFocusSyncLifecycleLocked(
+                        mobIndex,
+                        "HIT_RESOLVE",
+                        mob.destroyed ? "mapped_but_destroyed" : "mapped_but_level_null");
                     return null;
                 }
 
                 if (!DoesLevelMatchCurrentIdentityLocked(mob._level))
                 {
                     s_trackedMobValidationPending = true;
+                    LogFocusSyncLifecycleLocked(mobIndex, "HIT_RESOLVE", "mapped_but_level_mismatch");
                     return null;
                 }
             }
             catch
             {
                 s_trackedMobValidationPending = true;
+                LogFocusSyncLifecycleLocked(mobIndex, "HIT_RESOLVE", "mapped_but_threw");
                 return null;
             }
 

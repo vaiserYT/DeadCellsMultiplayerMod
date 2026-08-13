@@ -34,6 +34,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // After all authoritative packets for this frame have been applied, complete any boss
             // death the packets alone could not finish (unresolved MOBDIE, stranded zero-life boss).
             ProcessClientBossDeathWatchdog();
+
+            lock (Sync)
+            {
+                FlushClientDiagPerfLocked();
+            }
         }
     }
 }

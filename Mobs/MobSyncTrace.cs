@@ -183,7 +183,7 @@ internal static class MobSyncTrace
 
     public static void LogBindSyncId(string reason, int syncId, string mobType, double x, double y)
     {
-        if (!Enabled)
+        if (!Enabled && syncId != MobsSynchronization.ClientFocusDesyncSyncId)
             return;
 
         Log.Information(
@@ -715,6 +715,42 @@ internal static class MobSyncTrace
             rebound);
     }
 
+    public static void LogClientTombstoneCreated(int syncId, string mobType, string reason)
+    {
+        if (!Enabled)
+            return;
+
+        Log.Information(
+            "[MobSync] ◆ TOMBSTONE created syncId={SyncId} type={MobType} reason={Reason}",
+            syncId,
+            mobType ?? string.Empty,
+            reason ?? string.Empty);
+    }
+
+    public static void LogClientTombstoneRecovery(int syncId, string mobType, bool recovered, string reason)
+    {
+        if (!Enabled)
+            return;
+
+        Log.Information(
+            "[MobSync] ◆ TOMBSTONE recovery syncId={SyncId} type={MobType} recovered={Recovered} reason={Reason}",
+            syncId,
+            mobType ?? string.Empty,
+            recovered,
+            reason ?? string.Empty);
+    }
+
+    public static void LogClientTombstoneCleared(int syncId, string reason)
+    {
+        if (!Enabled)
+            return;
+
+        Log.Information(
+            "[MobSync] ◆ TOMBSTONE cleared syncId={SyncId} reason={Reason}",
+            syncId,
+            reason ?? string.Empty);
+    }
+
     public static void LogPacketGenerationRejected(string context, int packetGeneration, int currentGeneration, int count)
     {
         Log.Warning(
@@ -740,7 +776,7 @@ internal static class MobSyncTrace
         bool replaySpecial,
         bool forceDie)
     {
-        if (!Enabled)
+        if (!Enabled && syncId != MobsSynchronization.ClientFocusDesyncSyncId)
             return;
 
         Log.Information(
@@ -827,5 +863,78 @@ internal static class MobSyncTrace
         }
 
         return $"attack skill={skill}";
+    }
+
+    public static void LogRemoveAttempt(
+        int syncId,
+        string reason,
+        bool destroyed,
+        int authoritativeClientMobDieDepth,
+        string role)
+    {
+        Log.Information(
+            "[MobSync] REMOVE_ATTEMPT syncId={SyncId} reason={Reason} destroyed={Destroyed} depth={Depth} role={Role}",
+            syncId,
+            reason ?? string.Empty,
+            destroyed,
+            authoritativeClientMobDieDepth,
+            role ?? string.Empty);
+    }
+
+    public static void LogResolveFail(
+        int syncId,
+        bool hasIdToMob,
+        bool hasMobToId,
+        bool destroyed,
+        int generation,
+        string reason)
+    {
+        Log.Information(
+            "[MobSync] RESOLVE_FAIL syncId={SyncId} hasIdToMob={HasIdToMob} hasMobToId={HasMobToId} destroyed={Destroyed} generation={Generation} reason={Reason}",
+            syncId,
+            hasIdToMob,
+            hasMobToId,
+            destroyed,
+            generation,
+            reason ?? string.Empty);
+    }
+
+    /// <summary>Phase 20.1 temporary: hit miss immediately before tombstone recovery.</summary>
+    public static void LogHitResolveFail(int syncId, string reason)
+    {
+        Log.Information(
+            "[MobSync] HIT_RESOLVE_FAIL syncId={SyncId} reason={Reason}",
+            syncId,
+            reason ?? string.Empty);
+    }
+
+    /// <summary>Phase 20.1 temporary: always-on lifecycle breadcrumb for the focus sync id.</summary>
+    public static void LogFocusSyncLifecycle(string evt, int syncId, string detail)
+    {
+        if (syncId != MobsSynchronization.ClientFocusDesyncSyncId)
+            return;
+
+        Log.Information(
+            "[MobSync] FOCUS syncId={SyncId} event={Event} detail={Detail}",
+            syncId,
+            evt ?? string.Empty,
+            detail ?? string.Empty);
+    }
+
+    /// <summary>Phase 20.1 temporary: once-per-interval ClientConsume tombstone/miss counters.</summary>
+    public static void LogClientDiagPerf(
+        int tombstoneLookups,
+        int tombstoneHits,
+        int resolveFails,
+        int hitResolveFails,
+        int missingSyncPackets)
+    {
+        Log.Information(
+            "[MobSync] DIAG_PERF tombstoneLookups={TombstoneLookups} tombstoneHits={TombstoneHits} resolveFails={ResolveFails} hitResolveFails={HitResolveFails} missingSyncPackets={MissingSyncPackets}",
+            tombstoneLookups,
+            tombstoneHits,
+            resolveFails,
+            hitResolveFails,
+            missingSyncPackets);
     }
 }

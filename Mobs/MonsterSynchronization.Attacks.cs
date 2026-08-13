@@ -503,6 +503,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 existingIndex = FindExactTrackedMobIndexLocked(existingMob);
                 if (existingIndex < 0)
                 {
+                    LogRemoveAttemptLocked(existingMob, syncId, "add_tracked_stale_forward");
                     IdToMob.Remove(syncId);
                 }
                 else
@@ -659,6 +660,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             // Per-encounter boss arena state must not survive into the next level/fight.
             BeholderArenaSync.Reset();
             s_hostDeathTombstonesBySyncId.Clear();
+            s_clientMobTombstonesBySyncId.Clear();
             s_lastHostAuthoritativeFullResyncFrame = -99999.0;
             s_lastHostAuthoritativeFullResyncToken = 0;
             s_hostAuthoritativeBootstrapResyncsRemaining = 0;
@@ -746,17 +748,39 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
         }
 
-        private static void RemoveTrackedMobLocked(Mob mob)
+        private static void RemoveTrackedMobLocked(Mob mob, string reason)
         {
             if (mob == null)
                 return;
 
             s_trackedMobValidationPending = true;
+            var mappedSyncId = -1;
+            if (MobToId.TryGetValue(mob, out var ownedSyncId))
+                mappedSyncId = ownedSyncId;
+            LogRemoveAttemptLocked(mob, mappedSyncId, reason);
             var index = FindExactTrackedMobIndexLocked(mob);
             if (index >= 0)
             {
-                RemoveTrackedMobAtIndexLocked(index);
+                RemoveTrackedMobAtIndexLocked(index, reason, alreadyLogged: true);
                 return;
+            }
+
+            // Client-only: a canonical owner that is no longer in trackedMobs can still hold a
+            // live host-owned mapping. Capture the tombstone before wiping it. An alias whose
+            // MobToId is missing, or whose IdToMob points at a different wrapper, must not wipe
+            // the canonical identity. Host keeps the previous alias-only cleanup.
+            if (mappedSyncId > 0 && IsClient(LobbySession.NetRef))
+            {
+                var forwardIsThis = IdToMob.TryGetValue(mappedSyncId, out var forwardMob) &&
+                                    ReferenceEquals(forwardMob, mob);
+                var forwardMissing = !IdToMob.TryGetValue(mappedSyncId, out var existingForward) ||
+                                     existingForward == null;
+                if (forwardIsThis || forwardMissing)
+                {
+                    TryCaptureClientTombstoneForMappedMobLocked(mob, reason);
+                    IdToMob.Remove(mappedSyncId);
+                    MobToId.Remove(mob);
+                }
             }
 
             // This can be a temporary managed wrapper for a still-live canonical native mob. Remove
@@ -861,13 +885,21 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             return -1;
         }
 
-        private static void RemoveTrackedMobAtIndexLocked(int index)
+        private static void RemoveTrackedMobAtIndexLocked(int index, string reason, bool alreadyLogged = false)
         {
             if (index < 0 || index >= trackedMobs.Count)
                 return;
 
             s_trackedMobValidationPending = true;
             var mob = trackedMobs[index];
+            if (!alreadyLogged)
+            {
+                var mappedSyncId = -1;
+                if (mob != null && MobToId.TryGetValue(mob, out var ownedSyncId))
+                    mappedSyncId = ownedSyncId;
+                LogRemoveAttemptLocked(mob, mappedSyncId, reason);
+            }
+            TryCaptureClientTombstoneForMappedMobLocked(mob, reason);
             CleanupTrackedMobCachesLocked(mob);
             if (mob != null)
             {
@@ -1153,6 +1185,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mappedMob == null)
             {
                 MobSyncTrace.LogStaleTrackedMapping(syncId, -1, "null_mob");
+                LogRemoveAttemptLocked(null, syncId, "stale_null_mob");
                 IdToMob.Remove(syncId);
                 s_trackedMobValidationPending = true;
                 return false;
@@ -1181,6 +1214,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 else
                 {
                     MobSyncTrace.LogStaleTrackedMapping(syncId, localIndex, "untracked_mob");
+                    LogRemoveAttemptLocked(mappedMob, syncId, "stale_untracked_mob");
                     IdToMob.Remove(syncId);
                     s_trackedMobValidationPending = true;
                     return false;
@@ -1190,6 +1224,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var canonicalMob = trackedMobs[localIndex];
             if (canonicalMob == null)
             {
+                LogRemoveAttemptLocked(null, syncId, "stale_canonical_null");
                 IdToMob.Remove(syncId);
                 s_trackedMobValidationPending = true;
                 return false;
@@ -1283,6 +1318,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     syncId,
                     localIndex,
                     mappedSyncId == syncId ? "registry_missing" : $"registry_mismatch:{mappedSyncId}");
+                LogRemoveAttemptLocked(
+                    mappedMob,
+                    syncId,
+                    mappedSyncId == syncId ? "stale_registry_missing" : "stale_registry_mismatch");
                 IdToMob.Remove(syncId);
                 s_trackedMobValidationPending = true;
                 return false;
@@ -1300,8 +1339,13 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (IdToMob.TryGetValue(syncId, out var mappedMob) && mappedMob != null)
             {
                 MobSyncTrace.LogStaleTrackedMapping(syncId, FindTrackedMobIndexLocked(mappedMob), reason);
+                LogRemoveAttemptLocked(mappedMob, syncId, "invalidate:" + reason);
                 if (MobToId.TryGetValue(mappedMob, out var reverseSyncId) && reverseSyncId == syncId)
                     MobToId.Remove(mappedMob);
+            }
+            else
+            {
+                LogRemoveAttemptLocked(null, syncId, "invalidate:" + reason);
             }
 
             IdToMob.Remove(syncId);
@@ -1388,7 +1432,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var mob = trackedMobs[i];
                 if (mob == null)
                 {
-                    RemoveTrackedMobAtIndexLocked(i);
+                    RemoveTrackedMobAtIndexLocked(i, "prune_null");
                     continue;
                 }
 
@@ -1418,9 +1462,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 }
 
                 if (shouldRemove)
-                {
-                    RemoveTrackedMobAtIndexLocked(i);
-                }
+                    RemoveTrackedMobAtIndexLocked(i, "prune_invalid");
             }
         }
 
@@ -1566,23 +1608,63 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (syncId < 0)
                 return null;
 
+            var hadIdToMob = IdToMob.TryGetValue(syncId, out var preMob) && preMob != null;
+            var hadMobToId = preMob != null && MobToId.TryGetValue(preMob, out var preRev) && preRev == syncId;
+            var preDestroyed = ReadMobDestroyedSafe(preMob);
+
             if (TryGetTrackedMobBySyncIdLocked(syncId, out var mappedMob) && mappedMob != null)
+            {
+                if (IsClient(LobbySession.NetRef) &&
+                    IsInvalidMappedReplicaLocked(mappedMob) &&
+                    MappingOwnsSyncIdLocked(mappedMob, syncId))
+                {
+                    RemoveTrackedMobLocked(mappedMob, "mapped_but_invalid");
+                    LogResolveFailLocked(
+                        syncId,
+                        hadIdToMob,
+                        hadMobToId,
+                        true,
+                        "mapped_but_invalid");
+                    return null;
+                }
+
+                LogFocusSyncLifecycleLocked(syncId, "RESOLVE_OK", "tracked");
                 return mappedMob;
+            }
 
             if (!IdToMob.TryGetValue(syncId, out var mob) || mob == null || !IsSyncMob(mob))
+            {
+                LogResolveFailLocked(
+                    syncId,
+                    hadIdToMob,
+                    hadMobToId,
+                    preDestroyed,
+                    !hadIdToMob ? "missing_idtomob" : (mob == null ? "forward_null" : "not_sync_mob"));
                 return null;
+            }
 
             try
             {
                 if (!DoesLevelMatchCurrentIdentityLocked(mob._level))
+                {
+                    LogResolveFailLocked(syncId, true, hadMobToId, ReadMobDestroyedSafe(mob), "level_mismatch");
                     return null;
+                }
             }
             catch
             {
+                LogResolveFailLocked(syncId, true, hadMobToId, true, "level_check_threw");
                 return null;
             }
 
-            return AddTrackedMobLocked(mob) >= 0 ? mob : null;
+            if (AddTrackedMobLocked(mob) >= 0)
+            {
+                LogFocusSyncLifecycleLocked(syncId, "RESOLVE_OK", "readded");
+                return mob;
+            }
+
+            LogResolveFailLocked(syncId, true, hadMobToId, ReadMobDestroyedSafe(mob), "add_tracked_failed");
+            return null;
         }
 
         private static Mob? ResolveTrackedMobForIncomingStateLocked(NetNode.MobStateSnapshot state, HashSet<Mob>? reservedMobs)
@@ -1686,6 +1768,22 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     state.X,
                     state.Y);
                 return anchoredBoss;
+            }
+
+            // Last-resort client tombstone recovery: the host still owns this sync id and pushes
+            // states for it, but the local replica was removed without a confirmed death. Recreate
+            // the replica from the host's push data instead of dropping the state forever.
+            if (TryRecoverTombstonedSyncIdLocked(
+                    state.Index,
+                    state.Type,
+                    state.X,
+                    state.Y,
+                    out var tombstoneRecovered) &&
+                tombstoneRecovered != null)
+            {
+                if (bossEntityId > 0)
+                    RememberClientBossEntityIdLocked(tombstoneRecovered, bossEntityId);
+                return tombstoneRecovered;
             }
 
             return null;
@@ -2007,7 +2105,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             var hadOldSyncId = MobToId.TryGetValue(mob, out var oldSyncId);
             if (hadOldSyncId && oldSyncId >= 0 && oldSyncId != syncId)
+            {
+                LogRemoveAttemptLocked(mob, oldSyncId, "rebind_vacate_old_id");
                 ClearPerSyncIdCachesLocked(oldSyncId);
+            }
 
             if (IdToMob.TryGetValue(syncId, out var displacedMob) && displacedMob != null &&
                 !ReferenceEquals(displacedMob, mob))

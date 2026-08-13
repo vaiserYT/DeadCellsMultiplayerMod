@@ -112,6 +112,8 @@ namespace DeadCellsMultiplayerMod
 
             orig(self);
 
+            try { _ConnectionUI.RememberLocalHeroSkinFromUser(self?.user, "titleScreen.leaveSaveMenu"); } catch { }
+
             _multiplayerSaveMenuReturnRole = NetRole.None;
 
             if (returnRole == NetRole.Host)

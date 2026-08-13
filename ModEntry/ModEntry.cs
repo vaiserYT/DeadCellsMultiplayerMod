@@ -602,6 +602,16 @@ namespace DeadCellsMultiplayerMod
             orig(self, skinId);
             try
             {
+                _ConnectionUI.RememberLocalHeroSkin(skinId?.ToString(), "applySkin");
+                try
+                {
+                    var applyUser = dc.Main.Class.ME?.user ?? self?._level?.game?.user;
+                    _ConnectionUI.RememberLocalHeroSkinFromUser(applyUser, "applySkin.user");
+                }
+                catch
+                {
+                }
+
                 if (_netRole == NetRole.None)
                     return;
 
@@ -856,6 +866,7 @@ namespace DeadCellsMultiplayerMod
         private void Hook_User_unserialize(Hook_User.orig_unserialize orig, User self, dc.hxbit.Serializer v)
         {
             orig(self, v);
+            try { _ConnectionUI.RememberLocalHeroSkinFromUser(self, "unserialize"); } catch { }
             if (_netRole == NetRole.Client)
                 GameDataSync.CaptureOriginalUserData(self, allowReplaceWhenBetter: true);
         }
