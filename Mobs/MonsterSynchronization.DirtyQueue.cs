@@ -45,6 +45,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             public readonly string MobType;
             public readonly string StatePayload;
             public readonly bool VisibleForSync;
+            // The managed registration the state was observed from. Mob.type and the runtime class
+            // are immutable for a mob instance, so while the same registration keeps the syncId we
+            // reuse the previous MobType instead of rebuilding the signature every frame.
+            public readonly Mob MobRef;
 
             public HostMobObservedState(
                 double x,
@@ -55,7 +59,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 string animPayload,
                 string mobType,
                 string statePayload,
-                bool visibleForSync)
+                bool visibleForSync,
+                Mob mobRef)
             {
                 X = x;
                 Y = y;
@@ -66,6 +71,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 MobType = mobType ?? string.Empty;
                 StatePayload = statePayload ?? string.Empty;
                 VisibleForSync = visibleForSync;
+                MobRef = mobRef;
             }
         }
 
@@ -96,6 +102,24 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (mob == null || !IsSyncMob(mob))
                 return;
             if (!TryGetMobSyncId(mob, out var syncId) || syncId <= 0)
+                return;
+
+            // Phase 16 relevance-before-observation gate. When no connected client has registered
+            // interest in this mob (MOBDRAW IsOutOfGame=false), skip the snapshot build and dirty
+            // detection entirely: O(1) lock + TryGetValue + Count, no allocations, no per-client
+            // enumeration. Interest is re-established by TryApplyHostDrawRequestLocked, which
+            // re-opens the set AND enqueues State|ForceState on the same frame, so the client still
+            // receives a current authoritative state (the existing re-interest mechanism - no second
+            // resync added). SetHostClientInterestLocked invalidates the observed/last-sent caches
+            // when the last interested client leaves, so that ForceState rebuild is guaranteed fresh.
+            //
+            // Lifecycle and repair traffic deliberately bypasses this gate: MOBREG/MOBUNREG go
+            // through the registry flush, MOBDIE goes through Hook_Mob_onDie/SendMobDie, and every
+            // forced repair (boss phase, stall recovery, remote activation, rebind) enqueues dirty
+            // directly via QueueHostMobDirty/EnqueueHostMobDirtyLocked. The periodic resync
+            // scheduler (FlushHostPriorityResync) also iterates all tracked mobs unconditionally,
+            // which is what bootstraps a freshly connecting client before it can send any MOBDRAW.
+            if (!IsMobClientVisibleForSync(syncId))
                 return;
 
             double x;
@@ -146,7 +170,15 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             var animPayload = needsAnim ? BuildAnimPayload(mob) : string.Empty;
-            var mobType = BuildMobStateTypeSignature(mob);
+            // BuildMobStateTypeSignature allocates (type string + runtime-class FullName + joined
+            // string) and runs per tracked host mob per frame. The previous signature can only be
+            // stale when a different mob took over the syncId, so reuse it while the same managed
+            // registration owns the slot and only rebuild for first observation / rebind.
+            var mobType = hasPrevious &&
+                          !string.IsNullOrEmpty(previous.MobType) &&
+                          ReferenceEquals(previous.MobRef, mob)
+                ? previous.MobType
+                : BuildMobStateTypeSignature(mob);
             var statePayload = needsStatePayload
                 ? BuildHostMobStatePayload(mob)
                 : (hasPrevious ? previous.StatePayload : string.Empty);
@@ -197,7 +229,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     animPayload,
                     mobType,
                     statePayload,
-                    visibleForSync);
+                    visibleForSync,
+                    mob);
 
                 if (flags != HostMobDirtyFlags.None)
                     EnqueueHostMobDirtyLocked(syncId, flags);

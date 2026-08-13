@@ -1,0 +1,1047 @@
+diff --git a/.gitignore b/.gitignore
+index 0b2e6e5..f4fec84 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -9,3 +9,4 @@ logs/
+ last_error.txt
+ log_*.log
+ .cursorrules
++docs/
+\ No newline at end of file
+diff --git a/Ghost/KingActiveSkillsManager.cs b/Ghost/KingActiveSkillsManager.cs
+deleted file mode 100644
+index 94bc038..0000000
+--- a/Ghost/KingActiveSkillsManager.cs
++++ /dev/null
+@@ -1,66 +0,0 @@
+-using dc.en;
+-using dc.hl.types;
+-using dc.pr;
+-using dc.tool;
+-using dc.tool.hero;
+-using ModCore.Storage;
+-
+-namespace DeadCellsMultiplayerMod.Ghost.GhostBase
+-{
+-    public class KingActiveSkillsManager : HeroActiveSkillsManager, IHxbitSerializable<object>
+-    {
+-        private static Hero? lastKnownHero;
+-        private static readonly Random rng = new();
+-
+-        private Hero? me;
+-        private GhostKing? king;
+-        private Level? lvl;
+-
+-        public InventItem? equippedWeapon;
+-
+-        public KingActiveSkillsManager() : base(GetFallbackHero())
+-        {
+-            me = lastKnownHero;
+-        }
+-
+-        public KingActiveSkillsManager(Hero hero, GhostKing kingSkin, Level level) : base(hero)
+-        {
+-            me = hero;
+-            king = kingSkin;
+-            lvl = level;
+-            lastKnownHero = hero;
+-        }
+-
+-
+-        public override void init()
+-        {
+-            if (this.activeSkills == null)
+-                this.activeSkills = new ArrayObj();
+-            if (this.passivePowers == null)
+-                this.passivePowers = new ArrayObj();
+-            base.init();
+-        }
+-
+-
+-        object IHxbitSerializable<object>.GetData()
+-        {
+-            return new();
+-        }
+-
+-        void IHxbitSerializable<object>.SetData(object data)
+-        {
+-        }
+-
+-        private static Hero GetFallbackHero()
+-        {
+-            var hero = ModEntry.me ?? dc.pr.Game.Class.ME?.hero;
+-            if (hero != null)
+-                return hero;
+-
+-            if (lastKnownHero != null)
+-                return lastKnownHero;
+-
+-            throw new InvalidOperationException("KingActiveSkillsManager deserialization requires a Hero.");
+-        }
+-    }
+-}
+diff --git a/Ghost/KingWeapon/KingWeaponsManager.cs b/Ghost/KingWeapon/KingWeaponsManager.cs
+index 0f47868..5526b08 100644
+--- a/Ghost/KingWeapon/KingWeaponsManager.cs
++++ b/Ghost/KingWeapon/KingWeaponsManager.cs
+@@ -70,6 +70,7 @@ namespace DeadCellsMultiplayerMod.Ghost
+         private void UpdateCore()
+         {
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             if(hero == null) return;
+             var inv = king.inventory;
+             if(inventory == null && inv != null)
+@@ -131,12 +132,13 @@ namespace DeadCellsMultiplayerMod.Ghost
+ 
+                 KingWeaponSupport.ActivateRemoteWeapon(candidate, king);
+                 pendingInterrupts = 0;
+-                LogKingWeaponsStepIfSlow(
+-                    "KingWeaponsManager.Rebuild",
+-                    rebuildStart,
+-                    string.Create(
+-                        System.Globalization.CultureInfo.InvariantCulture,
+-                        $"pendingSlot={pendingSlot} permanentId={item.permanentId} kind={kindId} weapon={weapon?.GetType().Name ?? "null"}"));
++                if(perfEnabled)
++                    LogKingWeaponsStepIfSlow(
++                        "KingWeaponsManager.Rebuild",
++                        rebuildStart,
++                        string.Create(
++                            System.Globalization.CultureInfo.InvariantCulture,
++                            $"pendingSlot={pendingSlot} permanentId={item.permanentId} kind={kindId} weapon={weapon?.GetType().Name ?? "null"}"));
+             }
+ 
+             var activeWeapon = weapon;
+@@ -198,15 +200,16 @@ namespace DeadCellsMultiplayerMod.Ghost
+                         ReleaseShield(now);
+                 }
+ 
+-                LogKingWeaponsStepIfSlow(
+-                    "KingWeaponsManager.ShieldUpdate",
+-                    shieldStart,
+-                    string.Create(
+-                        System.Globalization.CultureInfo.InvariantCulture,
+-                        $"shieldActive={(_shieldActive ? 1 : 0)} pendingAttacks={pendingAttacks} pendingInterrupts={pendingInterrupts} weapon={activeWeapon.GetType().Name}"));
++                if(perfEnabled)
++                    LogKingWeaponsStepIfSlow(
++                        "KingWeaponsManager.ShieldUpdate",
++                        shieldStart,
++                        string.Create(
++                            System.Globalization.CultureInfo.InvariantCulture,
++                            $"shieldActive={(_shieldActive ? 1 : 0)} pendingAttacks={pendingAttacks} pendingInterrupts={pendingInterrupts} weapon={activeWeapon.GetType().Name}"));
+ 
+                 var shieldTotalMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-                if(shieldTotalMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
++                if(perfEnabled && shieldTotalMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                 {
+                     RuntimeHitchWatch.LogSlow(
+                         ModEntry.Instance?.Logger,
+@@ -449,12 +452,13 @@ namespace DeadCellsMultiplayerMod.Ghost
+             _lastShieldReleaseTimestamp = now;
+             ClearShieldAffects();
+             RestoreRemoteIdlePose();
+-            LogKingWeaponsStepIfSlow(
+-                "KingWeaponsManager.ReleaseShield",
+-                hitchStart,
+-                string.Create(
+-                    System.Globalization.CultureInfo.InvariantCulture,
+-                    $"weapon={weapon?.GetType().Name ?? "null"}"));
++            if(RuntimeHitchWatch.Enabled)
++                LogKingWeaponsStepIfSlow(
++                    "KingWeaponsManager.ReleaseShield",
++                    hitchStart,
++                    string.Create(
++                        System.Globalization.CultureInfo.InvariantCulture,
++                        $"weapon={weapon?.GetType().Name ?? "null"}"));
+         }
+ 
+         private void RestoreRemoteIdlePose()
+diff --git a/Interaction/InteractionSync.Doors.cs b/Interaction/InteractionSync.Doors.cs
+index b79e2dc..fc0bc07 100644
+--- a/Interaction/InteractionSync.Doors.cs
++++ b/Interaction/InteractionSync.Doors.cs
+@@ -173,13 +173,13 @@ public partial class InteractionSync
+         // A locked door is script-controlled (boss arena seals). Never advertise it as open:
+         // the stale _openedDoors entry from walking through it earlier otherwise made the 2s
+         // heartbeat force the client's sealed door back open for the whole fight.
+-        if (TryReadBooleanMember(door, "locked", "isLocked"))
++        if (TryReadBooleanMember(door, LockedMemberNames))
+             return "state_closed";
+ 
+-        if (TryReadBooleanMember(door, "opened", "isOpen", "open"))
++        if (TryReadBooleanMember(door, OpenedMemberNames))
+             return "state_open";
+ 
+-        var ratio = TryReadNumericMember(door, "ratio", "openRatio", "openingRatio", "curRatio");
++        var ratio = TryReadNumericMember(door, RatioMemberNames);
+         if (ratio.HasValue)
+             return ratio.Value > 0.45 ? "state_open" : "state_closed";
+ 
+@@ -191,12 +191,64 @@ public partial class InteractionSync
+     {
+         // Script-sealed doors (boss arena locks) must never be reopened by replayed remote
+         // events or heartbeats; the local fight script owns them until the encounter ends.
+-        if (TryReadBooleanMember(door, "locked", "isLocked"))
++        if (TryReadBooleanMember(door, LockedMemberNames))
+             return true;
+ 
+         return DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.HasLivingTrackedBoss();
+     }
+ 
++    // Per-frame host hot path: BroadcastAuthoritativeDoorStates re-reads every door's native
++    // state (broken/locked/opened/ratio) once per frame. Raw Type.GetProperty/GetField would
++    // re-run a full metadata scan per door per frame. Member names are fixed literals and the
++    // resolved PropertyInfo/FieldInfo are stable for the runtime type, so cache resolution per
++    // (Type, name). Not-found names are cached too so missing members are probed only once.
++    // Main-thread only (IOnHeroUpdate.OnHeroUpdate).
++    private readonly struct DoorMemberResolution
++    {
++        public readonly PropertyInfo? Property;
++        public readonly FieldInfo? Field;
++
++        public DoorMemberResolution(PropertyInfo? property, FieldInfo? field)
++        {
++            Property = property;
++            Field = field;
++        }
++    }
++
++    private static readonly Dictionary<(System.Type Type, string Name), DoorMemberResolution> s_doorMemberResolutions = new();
++
++    // Fixed literal probe lists for GetAuthoritativeDoorState/ShouldRejectRemoteDoorOpen.
++    // Passed to params helpers as pre-built arrays so the per-frame door broadcast does not
++    // allocate a fresh params String[] per door per frame.
++    private static readonly string[] LockedMemberNames = { "locked", "isLocked" };
++    private static readonly string[] OpenedMemberNames = { "opened", "isOpen", "open" };
++    private static readonly string[] RatioMemberNames = { "ratio", "openRatio", "openingRatio", "curRatio" };
++
++    private static DoorMemberResolution ResolveDoorMember(System.Type type, string name)
++    {
++        var key = (type, name);
++        if (s_doorMemberResolutions.TryGetValue(key, out var cached))
++            return cached;
++
++        PropertyInfo? property = null;
++        FieldInfo? field = null;
++        try
++        {
++            property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
++            if (property?.CanRead != true)
++                property = null;
++            field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
++        }
++        catch
++        {
++            // Ignore optional/generated members that cannot be resolved in this game build.
++        }
++
++        var resolution = new DoorMemberResolution(property, field);
++        s_doorMemberResolutions[key] = resolution;
++        return resolution;
++    }
++
+     private static double? TryReadNumericMember(object instance, params string[] names)
+     {
+         if (instance == null)
+@@ -207,18 +259,12 @@ public partial class InteractionSync
+         {
+             try
+             {
+-                var property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+-                if (property?.CanRead == true)
+-                {
+-                    var value = property.GetValue(instance);
+-                    if (value != null)
+-                        return Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture);
+-                }
++                var member = ResolveDoorMember(type, name);
++                if (member.Property?.GetValue(instance) is { } pv)
++                    return Convert.ToDouble(pv, System.Globalization.CultureInfo.InvariantCulture);
+ 
+-                var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+-                var fieldValue = field?.GetValue(instance);
+-                if (fieldValue != null)
+-                    return Convert.ToDouble(fieldValue, System.Globalization.CultureInfo.InvariantCulture);
++                if (member.Field?.GetValue(instance) is { } fv)
++                    return Convert.ToDouble(fv, System.Globalization.CultureInfo.InvariantCulture);
+             }
+             catch
+             {
+@@ -466,12 +512,11 @@ public partial class InteractionSync
+         {
+             try
+             {
+-                var property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+-                if (property?.CanRead == true && property.GetValue(instance) is bool propertyValue)
++                var member = ResolveDoorMember(type, name);
++                if (member.Property?.GetValue(instance) is bool propertyValue)
+                     return propertyValue;
+ 
+-                var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+-                if (field?.GetValue(instance) is bool fieldValue)
++                if (member.Field?.GetValue(instance) is bool fieldValue)
+                     return fieldValue;
+             }
+             catch
+diff --git a/Mobs/MonsterSynchronization.DirtyQueue.cs b/Mobs/MonsterSynchronization.DirtyQueue.cs
+index eeb210e..de77776 100644
+--- a/Mobs/MonsterSynchronization.DirtyQueue.cs
++++ b/Mobs/MonsterSynchronization.DirtyQueue.cs
+@@ -45,6 +45,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+             public readonly string MobType;
+             public readonly string StatePayload;
+             public readonly bool VisibleForSync;
++            // The managed registration the state was observed from. Mob.type and the runtime class
++            // are immutable for a mob instance, so while the same registration keeps the syncId we
++            // reuse the previous MobType instead of rebuilding the signature every frame.
++            public readonly Mob MobRef;
+ 
+             public HostMobObservedState(
+                 double x,
+@@ -55,7 +59,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+                 string animPayload,
+                 string mobType,
+                 string statePayload,
+-                bool visibleForSync)
++                bool visibleForSync,
++                Mob mobRef)
+             {
+                 X = x;
+                 Y = y;
+@@ -66,6 +71,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+                 MobType = mobType ?? string.Empty;
+                 StatePayload = statePayload ?? string.Empty;
+                 VisibleForSync = visibleForSync;
++                MobRef = mobRef;
+             }
+         }
+ 
+@@ -98,6 +104,24 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+             if (!TryGetMobSyncId(mob, out var syncId) || syncId <= 0)
+                 return;
+ 
++            // Phase 16 relevance-before-observation gate. When no connected client has registered
++            // interest in this mob (MOBDRAW IsOutOfGame=false), skip the snapshot build and dirty
++            // detection entirely: O(1) lock + TryGetValue + Count, no allocations, no per-client
++            // enumeration. Interest is re-established by TryApplyHostDrawRequestLocked, which
++            // re-opens the set AND enqueues State|ForceState on the same frame, so the client still
++            // receives a current authoritative state (the existing re-interest mechanism - no second
++            // resync added). SetHostClientInterestLocked invalidates the observed/last-sent caches
++            // when the last interested client leaves, so that ForceState rebuild is guaranteed fresh.
++            //
++            // Lifecycle and repair traffic deliberately bypasses this gate: MOBREG/MOBUNREG go
++            // through the registry flush, MOBDIE goes through Hook_Mob_onDie/SendMobDie, and every
++            // forced repair (boss phase, stall recovery, remote activation, rebind) enqueues dirty
++            // directly via QueueHostMobDirty/EnqueueHostMobDirtyLocked. The periodic resync
++            // scheduler (FlushHostPriorityResync) also iterates all tracked mobs unconditionally,
++            // which is what bootstraps a freshly connecting client before it can send any MOBDRAW.
++            if (!IsMobClientVisibleForSync(syncId))
++                return;
++
+             double x;
+             double y;
+             int dir;
+@@ -146,7 +170,15 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+             }
+ 
+             var animPayload = needsAnim ? BuildAnimPayload(mob) : string.Empty;
+-            var mobType = BuildMobStateTypeSignature(mob);
++            // BuildMobStateTypeSignature allocates (type string + runtime-class FullName + joined
++            // string) and runs per tracked host mob per frame. The previous signature can only be
++            // stale when a different mob took over the syncId, so reuse it while the same managed
++            // registration owns the slot and only rebuild for first observation / rebind.
++            var mobType = hasPrevious &&
++                          !string.IsNullOrEmpty(previous.MobType) &&
++                          ReferenceEquals(previous.MobRef, mob)
++                ? previous.MobType
++                : BuildMobStateTypeSignature(mob);
+             var statePayload = needsStatePayload
+                 ? BuildHostMobStatePayload(mob)
+                 : (hasPrevious ? previous.StatePayload : string.Empty);
+@@ -197,7 +229,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+                     animPayload,
+                     mobType,
+                     statePayload,
+-                    visibleForSync);
++                    visibleForSync,
++                    mob);
+ 
+                 if (flags != HostMobDirtyFlags.None)
+                     EnqueueHostMobDirtyLocked(syncId, flags);
+diff --git a/Mobs/MonsterSynchronization.HostSend.cs b/Mobs/MonsterSynchronization.HostSend.cs
+index 5c04de6..7b1caf6 100644
+--- a/Mobs/MonsterSynchronization.HostSend.cs
++++ b/Mobs/MonsterSynchronization.HostSend.cs
+@@ -75,7 +75,19 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+ 
+                 existing.Remove(userId);
+                 if (existing.Count <= 0)
++                {
+                     hostClientInterestUsersBySyncId.Remove(mobSyncId);
++
++                    // Phase 16: the last interested client just left this mob, so it is now eligible
++                    // for the relevance-before-observation fast-path skip. Drop the observed and
++                    // last-sent caches carried over from the old interest window: their payload
++                    // strings were built against a possibly-changed mob and would be reused as-is by
++                    // TryBuildHostMobDeltaSnapshot on a later re-interest ForceState, which would
++                    // send stale type/state/animation data. Removing them forces the next
++                    // observation (or ForceState build) to reconstruct a fresh authoritative payload.
++                    hostObservedMobStatesBySyncId.Remove(mobSyncId);
++                    hostLastSentMobStatesBySyncId.Remove(mobSyncId);
++                }
+                 return;
+             }
+ 
+@@ -96,6 +108,54 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+             hostClientInterestUsersBySyncId.Clear();
+         }
+ 
++        private static readonly List<int> s_hostInterestPurgeSyncIdsScratch = new();
++
++        /// <summary>
++        /// Phase 17: purge every interest entry owned by a single client. Called from the host
++        /// disconnect funnel (HandleNetworkDisconnectGhostCleanup) so a disconnected client can
++        /// never keep mobs "interested" — stale userIds otherwise held the Phase 16 relevance gate
++        /// open and kept the host observing/sending for mobs nobody is looking at, until the next
++        /// level reset.
++        /// </summary>
++        internal static void RemoveHostClientInterestForUser(int userId)
++        {
++            if (userId <= 0)
++                return;
++
++            lock (Sync)
++            {
++                if (hostClientInterestUsersBySyncId.Count == 0)
++                    return;
++
++                s_hostInterestPurgeSyncIdsScratch.Clear();
++                foreach (var pair in hostClientInterestUsersBySyncId)
++                {
++                    var users = pair.Value;
++                    if (users == null)
++                        continue;
++                    users.Remove(userId);
++                    if (users.Count == 0)
++                        s_hostInterestPurgeSyncIdsScratch.Add(pair.Key);
++                }
++
++                if (s_hostInterestPurgeSyncIdsScratch.Count == 0)
++                    return;
++
++                for (var i = 0; i < s_hostInterestPurgeSyncIdsScratch.Count; i++)
++                {
++                    var syncId = s_hostInterestPurgeSyncIdsScratch[i];
++                    hostClientInterestUsersBySyncId.Remove(syncId);
++                    // Phase 16 invariant: the last interested client left, so drop the observed and
++                    // last-sent caches. A later re-interest ForceState then rebuilds a fresh
++                    // authoritative payload instead of reusing one built for the old client.
++                    hostObservedMobStatesBySyncId.Remove(syncId);
++                    hostLastSentMobStatesBySyncId.Remove(syncId);
++                }
++
++                s_hostInterestPurgeSyncIdsScratch.Clear();
++            }
++        }
++
+         private static void TryRecoverClientSyncMobLifeAfterLocalDamage(Mob? mob, int fallbackLife)
+         {
+             if (mob == null || mob.destroyed)
+diff --git a/Mobs/MonsterSynchronization.Registry.cs b/Mobs/MonsterSynchronization.Registry.cs
+index 5e54f48..c80aff5 100644
+--- a/Mobs/MonsterSynchronization.Registry.cs
++++ b/Mobs/MonsterSynchronization.Registry.cs
+@@ -9,7 +9,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
+     /// Host-owned NetId registry. Native game entity ids and client entity-list indexes are never
+     /// identities. The host assigns monotonic NetIds per level generation; clients only bind local
+     /// <see cref="Mob"/> references to those NetIds via MOBREG or a one-shot type+spawn state bind.
+-    /// Conceptual portable form: <see cref="DeadCellsMultiplayerMod.PortableCore.NetEntityId"/>.
+     /// </summary>
+     public partial class MobsSynchronization
+     {
+diff --git a/ModEntry/ModEntry.GhostSync.cs b/ModEntry/ModEntry.GhostSync.cs
+index e1d1e81..887e348 100644
+--- a/ModEntry/ModEntry.GhostSync.cs
++++ b/ModEntry/ModEntry.GhostSync.cs
+@@ -26,6 +26,7 @@ namespace DeadCellsMultiplayerMod
+         private void UpdateGhostHeads()
+         {
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             var main = dc.Main.Class.ME;
+             if (main == null || main.user == null)
+             {
+@@ -56,12 +57,13 @@ namespace DeadCellsMultiplayerMod
+                     RecreateClientHead(i);
+                     if (clientHeads[i] != null)
+                         recreatedHeads++;
+-                    LogGhostRuntimeStepIfSlow(
+-                        "ModEntry.UpdateGhostHeads.RecreateClientHead",
+-                        recreateStart,
+-                        string.Create(
+-                            System.Globalization.CultureInfo.InvariantCulture,
+-                            $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
++                    if (perfEnabled)
++                        LogGhostRuntimeStepIfSlow(
++                            "ModEntry.UpdateGhostHeads.RecreateClientHead",
++                            recreateStart,
++                            string.Create(
++                                System.Globalization.CultureInfo.InvariantCulture,
++                                $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
+                 }
+ 
+                 var head = clientHeads[i];
+@@ -77,12 +79,13 @@ namespace DeadCellsMultiplayerMod
+                         RecreateClientHead(i);
+                         if (clientHeads[i] != null)
+                             recreatedHeads++;
+-                        LogGhostRuntimeStepIfSlow(
+-                            "ModEntry.UpdateGhostHeads.RecreateClientHead",
+-                            recreateStart,
+-                            string.Create(
+-                                System.Globalization.CultureInfo.InvariantCulture,
+-                                $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
++                        if (perfEnabled)
++                            LogGhostRuntimeStepIfSlow(
++                                "ModEntry.UpdateGhostHeads.RecreateClientHead",
++                                recreateStart,
++                                string.Create(
++                                    System.Globalization.CultureInfo.InvariantCulture,
++                                    $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
+                     }
+                     continue;
+                 }
+@@ -100,16 +103,17 @@ namespace DeadCellsMultiplayerMod
+                     ? 0
+                     : now + (long)(Stopwatch.Frequency * GhostHeadDormantUpdateSeconds);
+                 updatedHeadFx++;
+-                LogGhostRuntimeStepIfSlow(
+-                    "ModEntry.UpdateGhostHeads.HeadFx",
+-                    fxStart,
+-                    string.Create(
+-                        System.Globalization.CultureInfo.InvariantCulture,
+-                        $"slot={i} remoteId={clientIds[i]}"));
++                if (perfEnabled)
++                    LogGhostRuntimeStepIfSlow(
++                        "ModEntry.UpdateGhostHeads.HeadFx",
++                        fxStart,
++                        string.Create(
++                            System.Globalization.CultureInfo.InvariantCulture,
++                            $"slot={i} remoteId={clientIds[i]}"));
+             }
+ 
+             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-            if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
++            if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+             {
+                 RuntimeHitchWatch.LogSlow(
+                     Logger,
+@@ -442,6 +446,7 @@ namespace DeadCellsMultiplayerMod
+                 return;
+ 
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             if (slot < 0 || slot >= clients.Length)
+                 return;
+ 
+@@ -482,17 +487,19 @@ namespace DeadCellsMultiplayerMod
+                 remoteHeadSkin = previousGlobalHead;
+             }
+ 
+-            LogGhostRuntimeStepIfSlow(
+-                "ModEntry.RecreateClientHead",
+-                hitchStart,
+-                string.Create(
+-                    System.Globalization.CultureInfo.InvariantCulture,
+-                    $"slot={slot} remoteId={clientIds[slot]} hadExisting={(hadExisting ? 1 : 0)} desiredHead={desiredHead}"));
++            if (perfEnabled)
++                LogGhostRuntimeStepIfSlow(
++                    "ModEntry.RecreateClientHead",
++                    hitchStart,
++                    string.Create(
++                        System.Globalization.CultureInfo.InvariantCulture,
++                        $"slot={slot} remoteId={clientIds[slot]} hadExisting={(hadExisting ? 1 : 0)} desiredHead={desiredHead}"));
+         }
+ 
+         private void ReceiveGhostCoords()
+         {
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             var net = _net;
+             var ghost = _ghost;
+             if (net == null || me == null || ghost == null) return;
+@@ -531,12 +538,13 @@ namespace DeadCellsMultiplayerMod
+                     {
+                         QueueClientDisposeWithTransition(index);
+                         disposedSlots++;
+-                        LogGhostRuntimeStepIfSlow(
+-                            "ModEntry.ReceiveGhostCoords.Remote",
+-                            remoteStart,
+-                            string.Create(
+-                                System.Globalization.CultureInfo.InvariantCulture,
+-                                $"remoteId={remote.Id} slot={index} disposed=1 anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
++                        if (perfEnabled)
++                            LogGhostRuntimeStepIfSlow(
++                                "ModEntry.ReceiveGhostCoords.Remote",
++                                remoteStart,
++                                string.Create(
++                                    System.Globalization.CultureInfo.InvariantCulture,
++                                    $"remoteId={remote.Id} slot={index} disposed=1 anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
+                         continue;
+                     }
+ 
+@@ -620,12 +628,13 @@ namespace DeadCellsMultiplayerMod
+                         ghost.SetLabel(client, newLabel);
+                         clientLabels[index] = newLabel;
+                         updatedLabels++;
+-                        LogGhostRuntimeStepIfSlow(
+-                            "ModEntry.ReceiveGhostCoords.SetLabel",
+-                            labelStart,
+-                            string.Create(
+-                                System.Globalization.CultureInfo.InvariantCulture,
+-                                $"remoteId={remote.Id} slot={index} label={newLabel}"));
++                        if (perfEnabled)
++                            LogGhostRuntimeStepIfSlow(
++                                "ModEntry.ReceiveGhostCoords.SetLabel",
++                                labelStart,
++                                string.Create(
++                                    System.Globalization.CultureInfo.InvariantCulture,
++                                    $"remoteId={remote.Id} slot={index} label={newLabel}"));
+                     }
+ 
+                     if (remote.HasAnim &&
+@@ -641,12 +650,13 @@ namespace DeadCellsMultiplayerMod
+                         clientLastBodyAnimGs[index] = remote.AnimG;
+                         playedAnims++;
+                         headDirty = true;
+-                        LogGhostRuntimeStepIfSlow(
+-                            "ModEntry.ReceiveGhostCoords.PlayGhostAnim",
+-                            animStart,
+-                            string.Create(
+-                                System.Globalization.CultureInfo.InvariantCulture,
+-                                $"remoteId={remote.Id} slot={index} anim={remote.Anim}"));
++                        if (perfEnabled)
++                            LogGhostRuntimeStepIfSlow(
++                                "ModEntry.ReceiveGhostCoords.PlayGhostAnim",
++                                animStart,
++                                string.Create(
++                                    System.Globalization.CultureInfo.InvariantCulture,
++                                    $"remoteId={remote.Id} slot={index} anim={remote.Anim}"));
+                     }
+                     if (remote.HasHeadAnim &&
+                         !string.IsNullOrWhiteSpace(remote.HeadAnim) &&
+@@ -657,27 +667,29 @@ namespace DeadCellsMultiplayerMod
+                         clientLastHeadAnims[index] = remote.HeadAnim;
+                         playedHeadAnims++;
+                         headDirty = true;
++                        if (perfEnabled)
++                            LogGhostRuntimeStepIfSlow(
++                                "ModEntry.ReceiveGhostCoords.PlayGhostHeadAnim",
++                                headAnimStart,
++                                string.Create(
++                                    System.Globalization.CultureInfo.InvariantCulture,
++                                    $"remoteId={remote.Id} slot={index} anim={remote.HeadAnim}"));
++                    }
++
++                    if (perfEnabled)
+                         LogGhostRuntimeStepIfSlow(
+-                            "ModEntry.ReceiveGhostCoords.PlayGhostHeadAnim",
+-                            headAnimStart,
++                            "ModEntry.ReceiveGhostCoords.Remote",
++                            remoteStart,
+                             string.Create(
+                                 System.Globalization.CultureInfo.InvariantCulture,
+-                                $"remoteId={remote.Id} slot={index} anim={remote.HeadAnim}"));
+-                    }
+-
+-                    LogGhostRuntimeStepIfSlow(
+-                        "ModEntry.ReceiveGhostCoords.Remote",
+-                        remoteStart,
+-                        string.Create(
+-                            System.Globalization.CultureInfo.InvariantCulture,
+-                            $"remoteId={remote.Id} slot={index} created={(hadClientBefore ? 0 : 1)} downed={(useDownedOffset ? 1 : 0)} anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
++                                $"remoteId={remote.Id} slot={index} created={(hadClientBefore ? 0 : 1)} downed={(useDownedOffset ? 1 : 0)} anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
+ 
+                     if (headDirty)
+                         MarkGhostHeadDirty(index, immediate: true);
+                 }
+ 
+                 var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-                if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
++                if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                 {
+                     RuntimeHitchWatch.LogSlow(
+                         Logger,
+@@ -789,6 +801,7 @@ namespace DeadCellsMultiplayerMod
+                 return existingDuringTransition;
+ 
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             if (slot < 0 || slot >= clients.Length)
+                 return null;
+ 
+@@ -850,12 +863,13 @@ namespace DeadCellsMultiplayerMod
+             {
+             }
+ 
+-            LogGhostRuntimeStepIfSlow(
+-                "ModEntry.EnsureClientKingSlot",
+-                hitchStart,
+-                string.Create(
+-                    System.Globalization.CultureInfo.InvariantCulture,
+-                    $"slot={slot} remoteId={clientIds[slot]} created=1 skin={(string.IsNullOrWhiteSpace(knownSkin) ? 0 : 1)} head={(string.IsNullOrWhiteSpace(knownHead) ? 0 : 1)}"));
++            if (perfEnabled)
++                LogGhostRuntimeStepIfSlow(
++                    "ModEntry.EnsureClientKingSlot",
++                    hitchStart,
++                    string.Create(
++                        System.Globalization.CultureInfo.InvariantCulture,
++                        $"slot={slot} remoteId={clientIds[slot]} created=1 skin={(string.IsNullOrWhiteSpace(knownSkin) ? 0 : 1)} head={(string.IsNullOrWhiteSpace(knownHead) ? 0 : 1)}"));
+ 
+             return created;
+         }
+@@ -1426,6 +1440,7 @@ namespace DeadCellsMultiplayerMod
+         private void ReceiveGhostWeapons()
+         {
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             var net = _net;
+             if (net == null || me == null) return;
+ 
+@@ -1449,16 +1464,17 @@ namespace DeadCellsMultiplayerMod
+                     if (!TryApplyRemoteWeaponUpdate(update.Id, update.Kind, update.Slot, update.PermanentId, update.Ammo))
+                         continue;
+                     applied++;
+-                    LogGhostRuntimeStepIfSlow(
+-                        "ModEntry.ReceiveGhostWeapons.ApplyRemoteWeaponUpdate",
+-                        updateStart,
+-                        string.Create(
+-                            System.Globalization.CultureInfo.InvariantCulture,
+-                            $"remoteId={update.Id} slot={update.Slot} permanentId={update.PermanentId} ammo={(update.Ammo.HasValue ? update.Ammo.Value : -1)}"));
++                    if (perfEnabled)
++                        LogGhostRuntimeStepIfSlow(
++                            "ModEntry.ReceiveGhostWeapons.ApplyRemoteWeaponUpdate",
++                            updateStart,
++                            string.Create(
++                                System.Globalization.CultureInfo.InvariantCulture,
++                                $"remoteId={update.Id} slot={update.Slot} permanentId={update.PermanentId} ammo={(update.Ammo.HasValue ? update.Ammo.Value : -1)}"));
+                 }
+ 
+                 var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-                if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
++                if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                 {
+                     RuntimeHitchWatch.LogSlow(
+                         Logger,
+@@ -1493,6 +1509,7 @@ namespace DeadCellsMultiplayerMod
+         private void ReceiveGhostAttacks()
+         {
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             var net = _net;
+             if (net == null || me == null) return;
+ 
+@@ -1517,12 +1534,13 @@ namespace DeadCellsMultiplayerMod
+                     if (TryHandleRemoteDiveAttack(attack, localId))
+                     {
+                         diveHandled++;
+-                        LogGhostRuntimeStepIfSlow(
+-                            "ModEntry.ReceiveGhostAttacks.Remote",
+-                            attackStart,
+-                            string.Create(
+-                                System.Globalization.CultureInfo.InvariantCulture,
+-                                $"remoteId={attack.Id} slot={attack.Slot} dive=1 action={attack.Action}"));
++                        if (perfEnabled)
++                            LogGhostRuntimeStepIfSlow(
++                                "ModEntry.ReceiveGhostAttacks.Remote",
++                                attackStart,
++                                string.Create(
++                                    System.Globalization.CultureInfo.InvariantCulture,
++                                    $"remoteId={attack.Id} slot={attack.Slot} dive=1 action={attack.Action}"));
+                         continue;
+                     }
+ 
+@@ -1556,16 +1574,17 @@ namespace DeadCellsMultiplayerMod
+                     clientLastBodyAnimGs[index] = null;
+ 
+                     queuedAttacks++;
+-                    LogGhostRuntimeStepIfSlow(
+-                        "ModEntry.ReceiveGhostAttacks.Remote",
+-                        attackStart,
+-                        string.Create(
+-                            System.Globalization.CultureInfo.InvariantCulture,
+-                            $"remoteId={attack.Id} slot={attack.Slot} dive=0 action={attack.Action} kind={attack.Kind ?? string.Empty}"));
++                    if (perfEnabled)
++                        LogGhostRuntimeStepIfSlow(
++                            "ModEntry.ReceiveGhostAttacks.Remote",
++                            attackStart,
++                            string.Create(
++                                System.Globalization.CultureInfo.InvariantCulture,
++                                $"remoteId={attack.Id} slot={attack.Slot} dive=0 action={attack.Action} kind={attack.Kind ?? string.Empty}"));
+                 }
+ 
+                 var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-                if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
++                if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                 {
+                     RuntimeHitchWatch.LogSlow(
+                         Logger,
+@@ -1585,6 +1604,7 @@ namespace DeadCellsMultiplayerMod
+         private void UpdateGhostWeapons()
+         {
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             var activeManagers = 0;
+             for (int i = 0; i < clients.Length; i++)
+             {
+@@ -1593,16 +1613,17 @@ namespace DeadCellsMultiplayerMod
+                 activeManagers++;
+                 var managerStart = RuntimeHitchWatch.Start();
+                 client.kingWeaponsManager.update();
+-                LogGhostRuntimeStepIfSlow(
+-                    "ModEntry.UpdateGhostWeapons.Manager",
+-                    managerStart,
+-                    string.Create(
+-                        System.Globalization.CultureInfo.InvariantCulture,
+-                        $"slot={i} remoteId={clientIds[i]} shield={(client.kingWeaponsManager.IsShieldActive ? 1 : 0)}"));
++                if (perfEnabled)
++                    LogGhostRuntimeStepIfSlow(
++                        "ModEntry.UpdateGhostWeapons.Manager",
++                        managerStart,
++                        string.Create(
++                            System.Globalization.CultureInfo.InvariantCulture,
++                            $"slot={i} remoteId={clientIds[i]} shield={(client.kingWeaponsManager.IsShieldActive ? 1 : 0)}"));
+             }
+ 
+             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-            if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
++            if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+             {
+                 RuntimeHitchWatch.LogSlow(
+                     Logger,
+@@ -1823,6 +1844,7 @@ namespace DeadCellsMultiplayerMod
+         private void ApplyRemoteWeaponUpdate(int remoteId, string? kindId, int slot, int permanentId, int? ammo = null)
+         {
+             var hitchStart = RuntimeHitchWatch.Start();
++            var perfEnabled = RuntimeHitchWatch.Enabled;
+             if (string.IsNullOrWhiteSpace(kindId)) return;
+             if (slot < -1 || slot > 1 || permanentId < 0) return;
+             var net = _net;
+@@ -1915,12 +1937,13 @@ namespace DeadCellsMultiplayerMod
+             // InventItem into the ghost inventory for the rest of the run.
+             TryRemoveSupersededRemoteWeapon(inv, currentSlotItem, existing);
+ 
+-            LogGhostRuntimeStepIfSlow(
+-                "ModEntry.ApplyRemoteWeaponUpdate",
+-                hitchStart,
+-                string.Create(
+-                    System.Globalization.CultureInfo.InvariantCulture,
+-                    $"remoteId={remoteId} slot={slot} permanentId={permanentId} ammo={(ammo.HasValue ? ammo.Value : -1)} kind={cleaned}"));
++            if (perfEnabled)
++                LogGhostRuntimeStepIfSlow(
++                    "ModEntry.ApplyRemoteWeaponUpdate",
++                    hitchStart,
++                    string.Create(
++                        System.Globalization.CultureInfo.InvariantCulture,
++                        $"remoteId={remoteId} slot={slot} permanentId={permanentId} ammo={(ammo.HasValue ? ammo.Value : -1)} kind={cleaned}"));
+         }
+ 
+         private static void TryRemoveSupersededRemoteWeapon(Inventory inv, InventItem? superseded, InventItem replacement)
+@@ -2020,6 +2043,17 @@ namespace DeadCellsMultiplayerMod
+                     if (remoteId <= 0 || activeRemoteIds.Contains(remoteId))
+                         continue;
+ 
++                    try
++                    {
++                        // Phase 17: this client is gone from the network session. Purge its mob
++                        // interest so it can never keep mobs "interested" (stale userIds otherwise
++                        // kept the mob-sync Phase 16 relevance gate open until the next level reset).
++                        global::DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.RemoveHostClientInterestForUser(remoteId);
++                    }
++                    catch
++                    {
++                    }
++
+                     try
+                     {
+                         DisposeClientSlot(i, clearIdentity: true);
+diff --git a/ModEntry/ModEntry.cs b/ModEntry/ModEntry.cs
+index c715415..2ab3439 100644
+--- a/ModEntry/ModEntry.cs
++++ b/ModEntry/ModEntry.cs
+@@ -96,6 +96,14 @@ namespace DeadCellsMultiplayerMod
+ 
+         public dc.pr.Game? game;
+ 
++        // Main-thread-only per-slot projection of remote players for the in-world GhostKing
++        // pipeline. Slot index is derived from remote id via TryGetClientIndex (compact 0..n-1
++        // range, stable within a session). Compare with NetNode._remotes: that structure is the
++        // network-layer RECEIVE buffer (id-keyed, network-thread-written under _sync, session
++        // lifetime, feeds forwarding / late-join / snapshot building), whereas these arrays hold
++        // the APPLIED render state (normalized skin/head, diffed labels/pos/anim/fx, recreatable
++        // GhostKing/Kinghead objects). Same logical players, different projections + lifetimes;
++        // keep-both is intentional (see comment on NetNode._remotes).
+         public static GhostKing[] clients = new GhostKing[NetNode.MaxClientSlots];
+         public static Kinghead?[] clientHeads = new Kinghead?[NetNode.MaxClientSlots];
+         public static string?[] clientLabels = new string?[NetNode.MaxClientSlots];
+@@ -1268,7 +1276,7 @@ namespace DeadCellsMultiplayerMod
+             TraceActiveCineTypeChange();
+ 
+             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-            if (hitchMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
++            if (RuntimeHitchWatch.Enabled && hitchMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
+             {
+                 RuntimeHitchWatch.LogSlow(
+                     Logger,
+@@ -1350,7 +1358,7 @@ namespace DeadCellsMultiplayerMod
+             LogHeroUpdateStepIfSlow("ModEntry.OnHeroUpdate.UpdateGhostHeads", stepStart, null);
+ 
+             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
+-            if (hitchMs >= RuntimeHitchWatch.ModHeroSlowThresholdMs)
++            if (RuntimeHitchWatch.Enabled && hitchMs >= RuntimeHitchWatch.ModHeroSlowThresholdMs)
+             {
+                 RuntimeHitchWatch.LogSlow(
+                     Logger,
+diff --git a/PortableCore/NetEntityId.cs b/PortableCore/NetEntityId.cs
+deleted file mode 100644
+index 452dcd0..0000000
+--- a/PortableCore/NetEntityId.cs
++++ /dev/null
+@@ -1,21 +0,0 @@
+-namespace DeadCellsMultiplayerMod.PortableCore;
+-
+-/// <summary>
+-/// Stable identity assigned by the host authority when an entity is spawned.
+-/// Runtime object addresses, native game ids, list indexes, names, and positions are not identities.
+-/// Wire traffic uses a compact int NetId + level generation; this struct is the conceptual form
+-/// (generation + spawn sequence + archetype) used by host registry bookkeeping.
+-/// </summary>
+-internal readonly record struct NetEntityId(
+-    int LevelGeneration,
+-    long SpawnSequence,
+-    string Archetype)
+-{
+-    public bool IsValid =>
+-        LevelGeneration > 0 &&
+-        SpawnSequence > 0 &&
+-        !string.IsNullOrWhiteSpace(Archetype);
+-
+-    public override string ToString() =>
+-        $"{LevelGeneration}:{SpawnSequence}:{Archetype}";
+-}
+diff --git a/Tools/CreateColor.cs b/Tools/CreateColor.cs
+index 739a380..3c38f8c 100644
+--- a/Tools/CreateColor.cs
++++ b/Tools/CreateColor.cs
+@@ -2,11 +2,6 @@ namespace DeadCellsMultiplayerMod.Tools
+ {
+     public static class MultiColor
+     {
+-        public static int CreateColor(int r, int g, int b, int a = 255)
+-        {
+-            return (a << 24) | (r << 16) | (g << 8) | b;
+-        }
+-
+         public static int ColorFromHex(string hex)
+         {
+             if (hex.StartsWith("#")) hex = hex.Substring(1);
+diff --git a/server/server.NetNode.Steam.cs b/server/server.NetNode.Steam.cs
+index 0c5fb92..4a0f0d9 100644
+--- a/server/server.NetNode.Steam.cs
++++ b/server/server.NetNode.Steam.cs
+@@ -881,11 +881,27 @@ public sealed partial class NetNode
+             _hasRemote = hasClients;
+         }
+ 
+-        if (wasConnected && !hasClients)
+-            MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
++        if (wasConnected)
++        {
++            if (!hasClients)
+             {
+-                if (IsCurrentNetworkSession())
+-                    LobbySession.NotifyRemoteDisconnected(_role);
+-            });
++                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
++                {
++                    if (IsCurrentNetworkSession())
++                        LobbySession.NotifyRemoteDisconnected(_role);
++                });
++            }
++            else
++            {
++                // A connected client left but others remain. Reconcile the departed client's ghost
++                // slot and purge its mob interest (Phase 17) without the full lobby reset, which is
++                // only correct when the last client leaves the session.
++                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-left", () =>
++                {
++                    if (IsCurrentNetworkSession())
++                        ModEntry.Instance?.HandleNetworkDisconnectGhostCleanup(_role);
++                });
++            }
++        }
+     }
+ }
+diff --git a/server/server.Tcp.cs b/server/server.Tcp.cs
+index b8a0552..e019c21 100644
+--- a/server/server.Tcp.cs
++++ b/server/server.Tcp.cs
+@@ -456,7 +456,7 @@ public sealed partial class NetNode
+             _hasRemote = hasClients;
+         }
+ 
+-        if (wasConnected && !hasClients)
++        if (wasConnected)
+         {
+             bool stillNoCompletedClients;
+             lock (_clientsLock)
+@@ -464,11 +464,24 @@ public sealed partial class NetNode
+                 stillNoCompletedClients = CountCompletedHostClientsLocked() == 0;
+             }
+             if (stillNoCompletedClients)
++            {
+                 MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+                 {
+                     if (IsCurrentNetworkSession())
+                         LobbySession.NotifyRemoteDisconnected(_role);
+                 });
++            }
++            else
++            {
++                // A connected client left but others remain. Reconcile the departed client's ghost
++                // slot and purge its mob interest (Phase 17) without the full lobby reset, which is
++                // only correct when the last client leaves the session.
++                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-left", () =>
++                {
++                    if (IsCurrentNetworkSession())
++                        ModEntry.Instance?.HandleNetworkDisconnectGhostCleanup(_role);
++                });
++            }
+         }
+     }
+ 
+diff --git a/server/server.cs b/server/server.cs
+index e73dac4..d75df85 100644
+--- a/server/server.cs
++++ b/server/server.cs
+@@ -681,6 +681,20 @@ public sealed partial class NetNode : IDisposable
+         return _disposed || (active != null && !ReferenceEquals(active, this));
+     }
+ 
++    // Ownership: _clients/_steamClients hold the transport connection objects for this session
++    // (mutually exclusive per _useSteamTransport). _steamClientIdsBySteam is the reverse lookup
++    // from steam id -> assigned client id (needed for packet routing on the steam transport).
++    // _remotes is the network-layer RECEIVE buffer: one RemoteState per remote id, written only
++    // on the network thread under _sync from decoded incoming lines, and consumed on the main
++    // thread through pooled snapshot builders. Its lifetime is exactly this NetNode session:
++    // it is built up by GetOrCreateRemoteLocked, emptied by RemoveRemoteLocked on disconnect,
++    // and wholesale-cleared in CleanupClient()/Dispose(). It intentionally does NOT own render
++    // state; the ModEntry.clients[] slot arrays are a separate main-thread projection of the
++    // same players (slot-keyed, normalized skin/head, applied-state for diffing and GhostKing
++    // recreation). Keep-both: the two hold different projections with different lifetimes
++    // (session-scoped lock-guarded raw field vs main-thread applied visuals) and different
++    // consumers: _remotes feeds forwarding, late-join catch-up, and snapshot building, while
++    // ModEntry.clients[] feeds the in-world GhostKing pipeline.
+     private readonly object _clientsLock = new();
+     private readonly Dictionary<int, ClientConnection> _clients = new();
+     private readonly Dictionary<int, SteamClientConnection> _steamClients = new();

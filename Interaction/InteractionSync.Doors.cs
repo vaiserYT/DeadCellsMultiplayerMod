@@ -173,13 +173,13 @@ public partial class InteractionSync
         // A locked door is script-controlled (boss arena seals). Never advertise it as open:
         // the stale _openedDoors entry from walking through it earlier otherwise made the 2s
         // heartbeat force the client's sealed door back open for the whole fight.
-        if (TryReadBooleanMember(door, "locked", "isLocked"))
+        if (TryReadBooleanMember(door, LockedMemberNames))
             return "state_closed";
 
-        if (TryReadBooleanMember(door, "opened", "isOpen", "open"))
+        if (TryReadBooleanMember(door, OpenedMemberNames))
             return "state_open";
 
-        var ratio = TryReadNumericMember(door, "ratio", "openRatio", "openingRatio", "curRatio");
+        var ratio = TryReadNumericMember(door, RatioMemberNames);
         if (ratio.HasValue)
             return ratio.Value > 0.45 ? "state_open" : "state_closed";
 
@@ -191,10 +191,62 @@ public partial class InteractionSync
     {
         // Script-sealed doors (boss arena locks) must never be reopened by replayed remote
         // events or heartbeats; the local fight script owns them until the encounter ends.
-        if (TryReadBooleanMember(door, "locked", "isLocked"))
+        if (TryReadBooleanMember(door, LockedMemberNames))
             return true;
 
         return DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.HasLivingTrackedBoss();
+    }
+
+    // Per-frame host hot path: BroadcastAuthoritativeDoorStates re-reads every door's native
+    // state (broken/locked/opened/ratio) once per frame. Raw Type.GetProperty/GetField would
+    // re-run a full metadata scan per door per frame. Member names are fixed literals and the
+    // resolved PropertyInfo/FieldInfo are stable for the runtime type, so cache resolution per
+    // (Type, name). Not-found names are cached too so missing members are probed only once.
+    // Main-thread only (IOnHeroUpdate.OnHeroUpdate).
+    private readonly struct DoorMemberResolution
+    {
+        public readonly PropertyInfo? Property;
+        public readonly FieldInfo? Field;
+
+        public DoorMemberResolution(PropertyInfo? property, FieldInfo? field)
+        {
+            Property = property;
+            Field = field;
+        }
+    }
+
+    private static readonly Dictionary<(System.Type Type, string Name), DoorMemberResolution> s_doorMemberResolutions = new();
+
+    // Fixed literal probe lists for GetAuthoritativeDoorState/ShouldRejectRemoteDoorOpen.
+    // Passed to params helpers as pre-built arrays so the per-frame door broadcast does not
+    // allocate a fresh params String[] per door per frame.
+    private static readonly string[] LockedMemberNames = { "locked", "isLocked" };
+    private static readonly string[] OpenedMemberNames = { "opened", "isOpen", "open" };
+    private static readonly string[] RatioMemberNames = { "ratio", "openRatio", "openingRatio", "curRatio" };
+
+    private static DoorMemberResolution ResolveDoorMember(System.Type type, string name)
+    {
+        var key = (type, name);
+        if (s_doorMemberResolutions.TryGetValue(key, out var cached))
+            return cached;
+
+        PropertyInfo? property = null;
+        FieldInfo? field = null;
+        try
+        {
+            property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property?.CanRead != true)
+                property = null;
+            field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        }
+        catch
+        {
+            // Ignore optional/generated members that cannot be resolved in this game build.
+        }
+
+        var resolution = new DoorMemberResolution(property, field);
+        s_doorMemberResolutions[key] = resolution;
+        return resolution;
     }
 
     private static double? TryReadNumericMember(object instance, params string[] names)
@@ -207,18 +259,12 @@ public partial class InteractionSync
         {
             try
             {
-                var property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (property?.CanRead == true)
-                {
-                    var value = property.GetValue(instance);
-                    if (value != null)
-                        return Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture);
-                }
+                var member = ResolveDoorMember(type, name);
+                if (member.Property?.GetValue(instance) is { } pv)
+                    return Convert.ToDouble(pv, System.Globalization.CultureInfo.InvariantCulture);
 
-                var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var fieldValue = field?.GetValue(instance);
-                if (fieldValue != null)
-                    return Convert.ToDouble(fieldValue, System.Globalization.CultureInfo.InvariantCulture);
+                if (member.Field?.GetValue(instance) is { } fv)
+                    return Convert.ToDouble(fv, System.Globalization.CultureInfo.InvariantCulture);
             }
             catch
             {
@@ -466,12 +512,11 @@ public partial class InteractionSync
         {
             try
             {
-                var property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (property?.CanRead == true && property.GetValue(instance) is bool propertyValue)
+                var member = ResolveDoorMember(type, name);
+                if (member.Property?.GetValue(instance) is bool propertyValue)
                     return propertyValue;
 
-                var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (field?.GetValue(instance) is bool fieldValue)
+                if (member.Field?.GetValue(instance) is bool fieldValue)
                     return fieldValue;
             }
             catch

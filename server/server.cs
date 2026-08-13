@@ -681,6 +681,20 @@ public sealed partial class NetNode : IDisposable
         return _disposed || (active != null && !ReferenceEquals(active, this));
     }
 
+    // Ownership: _clients/_steamClients hold the transport connection objects for this session
+    // (mutually exclusive per _useSteamTransport). _steamClientIdsBySteam is the reverse lookup
+    // from steam id -> assigned client id (needed for packet routing on the steam transport).
+    // _remotes is the network-layer RECEIVE buffer: one RemoteState per remote id, written only
+    // on the network thread under _sync from decoded incoming lines, and consumed on the main
+    // thread through pooled snapshot builders. Its lifetime is exactly this NetNode session:
+    // it is built up by GetOrCreateRemoteLocked, emptied by RemoveRemoteLocked on disconnect,
+    // and wholesale-cleared in CleanupClient()/Dispose(). It intentionally does NOT own render
+    // state; the ModEntry.clients[] slot arrays are a separate main-thread projection of the
+    // same players (slot-keyed, normalized skin/head, applied-state for diffing and GhostKing
+    // recreation). Keep-both: the two hold different projections with different lifetimes
+    // (session-scoped lock-guarded raw field vs main-thread applied visuals) and different
+    // consumers: _remotes feeds forwarding, late-join catch-up, and snapshot building, while
+    // ModEntry.clients[] feeds the in-world GhostKing pipeline.
     private readonly object _clientsLock = new();
     private readonly Dictionary<int, ClientConnection> _clients = new();
     private readonly Dictionary<int, SteamClientConnection> _steamClients = new();

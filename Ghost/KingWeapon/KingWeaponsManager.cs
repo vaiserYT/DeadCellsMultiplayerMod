@@ -70,6 +70,7 @@ namespace DeadCellsMultiplayerMod.Ghost
         private void UpdateCore()
         {
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             if(hero == null) return;
             var inv = king.inventory;
             if(inventory == null && inv != null)
@@ -131,12 +132,13 @@ namespace DeadCellsMultiplayerMod.Ghost
 
                 KingWeaponSupport.ActivateRemoteWeapon(candidate, king);
                 pendingInterrupts = 0;
-                LogKingWeaponsStepIfSlow(
-                    "KingWeaponsManager.Rebuild",
-                    rebuildStart,
-                    string.Create(
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        $"pendingSlot={pendingSlot} permanentId={item.permanentId} kind={kindId} weapon={weapon?.GetType().Name ?? "null"}"));
+                if(perfEnabled)
+                    LogKingWeaponsStepIfSlow(
+                        "KingWeaponsManager.Rebuild",
+                        rebuildStart,
+                        string.Create(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            $"pendingSlot={pendingSlot} permanentId={item.permanentId} kind={kindId} weapon={weapon?.GetType().Name ?? "null"}"));
             }
 
             var activeWeapon = weapon;
@@ -198,15 +200,16 @@ namespace DeadCellsMultiplayerMod.Ghost
                         ReleaseShield(now);
                 }
 
-                LogKingWeaponsStepIfSlow(
-                    "KingWeaponsManager.ShieldUpdate",
-                    shieldStart,
-                    string.Create(
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        $"shieldActive={(_shieldActive ? 1 : 0)} pendingAttacks={pendingAttacks} pendingInterrupts={pendingInterrupts} weapon={activeWeapon.GetType().Name}"));
+                if(perfEnabled)
+                    LogKingWeaponsStepIfSlow(
+                        "KingWeaponsManager.ShieldUpdate",
+                        shieldStart,
+                        string.Create(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            $"shieldActive={(_shieldActive ? 1 : 0)} pendingAttacks={pendingAttacks} pendingInterrupts={pendingInterrupts} weapon={activeWeapon.GetType().Name}"));
 
                 var shieldTotalMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-                if(shieldTotalMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                if(perfEnabled && shieldTotalMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
                 {
                     RuntimeHitchWatch.LogSlow(
                         ModEntry.Instance?.Logger,
@@ -449,12 +452,13 @@ namespace DeadCellsMultiplayerMod.Ghost
             _lastShieldReleaseTimestamp = now;
             ClearShieldAffects();
             RestoreRemoteIdlePose();
-            LogKingWeaponsStepIfSlow(
-                "KingWeaponsManager.ReleaseShield",
-                hitchStart,
-                string.Create(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    $"weapon={weapon?.GetType().Name ?? "null"}"));
+            if(RuntimeHitchWatch.Enabled)
+                LogKingWeaponsStepIfSlow(
+                    "KingWeaponsManager.ReleaseShield",
+                    hitchStart,
+                    string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"weapon={weapon?.GetType().Name ?? "null"}"));
         }
 
         private void RestoreRemoteIdlePose()

@@ -26,6 +26,7 @@ namespace DeadCellsMultiplayerMod
         private void UpdateGhostHeads()
         {
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             var main = dc.Main.Class.ME;
             if (main == null || main.user == null)
             {
@@ -56,12 +57,13 @@ namespace DeadCellsMultiplayerMod
                     RecreateClientHead(i);
                     if (clientHeads[i] != null)
                         recreatedHeads++;
-                    LogGhostRuntimeStepIfSlow(
-                        "ModEntry.UpdateGhostHeads.RecreateClientHead",
-                        recreateStart,
-                        string.Create(
-                            System.Globalization.CultureInfo.InvariantCulture,
-                            $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
+                    if (perfEnabled)
+                        LogGhostRuntimeStepIfSlow(
+                            "ModEntry.UpdateGhostHeads.RecreateClientHead",
+                            recreateStart,
+                            string.Create(
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
                 }
 
                 var head = clientHeads[i];
@@ -77,12 +79,13 @@ namespace DeadCellsMultiplayerMod
                         RecreateClientHead(i);
                         if (clientHeads[i] != null)
                             recreatedHeads++;
-                        LogGhostRuntimeStepIfSlow(
-                            "ModEntry.UpdateGhostHeads.RecreateClientHead",
-                            recreateStart,
-                            string.Create(
-                                System.Globalization.CultureInfo.InvariantCulture,
-                                $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
+                        if (perfEnabled)
+                            LogGhostRuntimeStepIfSlow(
+                                "ModEntry.UpdateGhostHeads.RecreateClientHead",
+                                recreateStart,
+                                string.Create(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    $"slot={i} remoteId={clientIds[i]} pending={CountPendingClientHeadRecreate()}"));
                     }
                     continue;
                 }
@@ -100,16 +103,17 @@ namespace DeadCellsMultiplayerMod
                     ? 0
                     : now + (long)(Stopwatch.Frequency * GhostHeadDormantUpdateSeconds);
                 updatedHeadFx++;
-                LogGhostRuntimeStepIfSlow(
-                    "ModEntry.UpdateGhostHeads.HeadFx",
-                    fxStart,
-                    string.Create(
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        $"slot={i} remoteId={clientIds[i]}"));
+                if (perfEnabled)
+                    LogGhostRuntimeStepIfSlow(
+                        "ModEntry.UpdateGhostHeads.HeadFx",
+                        fxStart,
+                        string.Create(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            $"slot={i} remoteId={clientIds[i]}"));
             }
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-            if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+            if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
             {
                 RuntimeHitchWatch.LogSlow(
                     Logger,
@@ -442,6 +446,7 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             if (slot < 0 || slot >= clients.Length)
                 return;
 
@@ -482,17 +487,19 @@ namespace DeadCellsMultiplayerMod
                 remoteHeadSkin = previousGlobalHead;
             }
 
-            LogGhostRuntimeStepIfSlow(
-                "ModEntry.RecreateClientHead",
-                hitchStart,
-                string.Create(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    $"slot={slot} remoteId={clientIds[slot]} hadExisting={(hadExisting ? 1 : 0)} desiredHead={desiredHead}"));
+            if (perfEnabled)
+                LogGhostRuntimeStepIfSlow(
+                    "ModEntry.RecreateClientHead",
+                    hitchStart,
+                    string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"slot={slot} remoteId={clientIds[slot]} hadExisting={(hadExisting ? 1 : 0)} desiredHead={desiredHead}"));
         }
 
         private void ReceiveGhostCoords()
         {
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             var net = _net;
             var ghost = _ghost;
             if (net == null || me == null || ghost == null) return;
@@ -531,12 +538,13 @@ namespace DeadCellsMultiplayerMod
                     {
                         QueueClientDisposeWithTransition(index);
                         disposedSlots++;
-                        LogGhostRuntimeStepIfSlow(
-                            "ModEntry.ReceiveGhostCoords.Remote",
-                            remoteStart,
-                            string.Create(
-                                System.Globalization.CultureInfo.InvariantCulture,
-                                $"remoteId={remote.Id} slot={index} disposed=1 anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
+                        if (perfEnabled)
+                            LogGhostRuntimeStepIfSlow(
+                                "ModEntry.ReceiveGhostCoords.Remote",
+                                remoteStart,
+                                string.Create(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    $"remoteId={remote.Id} slot={index} disposed=1 anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
                         continue;
                     }
 
@@ -620,12 +628,13 @@ namespace DeadCellsMultiplayerMod
                         ghost.SetLabel(client, newLabel);
                         clientLabels[index] = newLabel;
                         updatedLabels++;
-                        LogGhostRuntimeStepIfSlow(
-                            "ModEntry.ReceiveGhostCoords.SetLabel",
-                            labelStart,
-                            string.Create(
-                                System.Globalization.CultureInfo.InvariantCulture,
-                                $"remoteId={remote.Id} slot={index} label={newLabel}"));
+                        if (perfEnabled)
+                            LogGhostRuntimeStepIfSlow(
+                                "ModEntry.ReceiveGhostCoords.SetLabel",
+                                labelStart,
+                                string.Create(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    $"remoteId={remote.Id} slot={index} label={newLabel}"));
                     }
 
                     if (remote.HasAnim &&
@@ -641,12 +650,13 @@ namespace DeadCellsMultiplayerMod
                         clientLastBodyAnimGs[index] = remote.AnimG;
                         playedAnims++;
                         headDirty = true;
-                        LogGhostRuntimeStepIfSlow(
-                            "ModEntry.ReceiveGhostCoords.PlayGhostAnim",
-                            animStart,
-                            string.Create(
-                                System.Globalization.CultureInfo.InvariantCulture,
-                                $"remoteId={remote.Id} slot={index} anim={remote.Anim}"));
+                        if (perfEnabled)
+                            LogGhostRuntimeStepIfSlow(
+                                "ModEntry.ReceiveGhostCoords.PlayGhostAnim",
+                                animStart,
+                                string.Create(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    $"remoteId={remote.Id} slot={index} anim={remote.Anim}"));
                     }
                     if (remote.HasHeadAnim &&
                         !string.IsNullOrWhiteSpace(remote.HeadAnim) &&
@@ -657,27 +667,29 @@ namespace DeadCellsMultiplayerMod
                         clientLastHeadAnims[index] = remote.HeadAnim;
                         playedHeadAnims++;
                         headDirty = true;
-                        LogGhostRuntimeStepIfSlow(
-                            "ModEntry.ReceiveGhostCoords.PlayGhostHeadAnim",
-                            headAnimStart,
-                            string.Create(
-                                System.Globalization.CultureInfo.InvariantCulture,
-                                $"remoteId={remote.Id} slot={index} anim={remote.HeadAnim}"));
+                        if (perfEnabled)
+                            LogGhostRuntimeStepIfSlow(
+                                "ModEntry.ReceiveGhostCoords.PlayGhostHeadAnim",
+                                headAnimStart,
+                                string.Create(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    $"remoteId={remote.Id} slot={index} anim={remote.HeadAnim}"));
                     }
 
-                    LogGhostRuntimeStepIfSlow(
-                        "ModEntry.ReceiveGhostCoords.Remote",
-                        remoteStart,
-                        string.Create(
-                            System.Globalization.CultureInfo.InvariantCulture,
-                            $"remoteId={remote.Id} slot={index} created={(hadClientBefore ? 0 : 1)} downed={(useDownedOffset ? 1 : 0)} anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
+                    if (perfEnabled)
+                        LogGhostRuntimeStepIfSlow(
+                            "ModEntry.ReceiveGhostCoords.Remote",
+                            remoteStart,
+                            string.Create(
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                $"remoteId={remote.Id} slot={index} created={(hadClientBefore ? 0 : 1)} downed={(useDownedOffset ? 1 : 0)} anim={(remote.HasAnim ? 1 : 0)} headAnim={(remote.HasHeadAnim ? 1 : 0)}"));
 
                     if (headDirty)
                         MarkGhostHeadDirty(index, immediate: true);
                 }
 
                 var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-                if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
                 {
                     RuntimeHitchWatch.LogSlow(
                         Logger,
@@ -789,6 +801,7 @@ namespace DeadCellsMultiplayerMod
                 return existingDuringTransition;
 
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             if (slot < 0 || slot >= clients.Length)
                 return null;
 
@@ -850,12 +863,13 @@ namespace DeadCellsMultiplayerMod
             {
             }
 
-            LogGhostRuntimeStepIfSlow(
-                "ModEntry.EnsureClientKingSlot",
-                hitchStart,
-                string.Create(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    $"slot={slot} remoteId={clientIds[slot]} created=1 skin={(string.IsNullOrWhiteSpace(knownSkin) ? 0 : 1)} head={(string.IsNullOrWhiteSpace(knownHead) ? 0 : 1)}"));
+            if (perfEnabled)
+                LogGhostRuntimeStepIfSlow(
+                    "ModEntry.EnsureClientKingSlot",
+                    hitchStart,
+                    string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"slot={slot} remoteId={clientIds[slot]} created=1 skin={(string.IsNullOrWhiteSpace(knownSkin) ? 0 : 1)} head={(string.IsNullOrWhiteSpace(knownHead) ? 0 : 1)}"));
 
             return created;
         }
@@ -1426,6 +1440,7 @@ namespace DeadCellsMultiplayerMod
         private void ReceiveGhostWeapons()
         {
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             var net = _net;
             if (net == null || me == null) return;
 
@@ -1449,16 +1464,17 @@ namespace DeadCellsMultiplayerMod
                     if (!TryApplyRemoteWeaponUpdate(update.Id, update.Kind, update.Slot, update.PermanentId, update.Ammo))
                         continue;
                     applied++;
-                    LogGhostRuntimeStepIfSlow(
-                        "ModEntry.ReceiveGhostWeapons.ApplyRemoteWeaponUpdate",
-                        updateStart,
-                        string.Create(
-                            System.Globalization.CultureInfo.InvariantCulture,
-                            $"remoteId={update.Id} slot={update.Slot} permanentId={update.PermanentId} ammo={(update.Ammo.HasValue ? update.Ammo.Value : -1)}"));
+                    if (perfEnabled)
+                        LogGhostRuntimeStepIfSlow(
+                            "ModEntry.ReceiveGhostWeapons.ApplyRemoteWeaponUpdate",
+                            updateStart,
+                            string.Create(
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                $"remoteId={update.Id} slot={update.Slot} permanentId={update.PermanentId} ammo={(update.Ammo.HasValue ? update.Ammo.Value : -1)}"));
                 }
 
                 var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-                if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
                 {
                     RuntimeHitchWatch.LogSlow(
                         Logger,
@@ -1493,6 +1509,7 @@ namespace DeadCellsMultiplayerMod
         private void ReceiveGhostAttacks()
         {
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             var net = _net;
             if (net == null || me == null) return;
 
@@ -1517,12 +1534,13 @@ namespace DeadCellsMultiplayerMod
                     if (TryHandleRemoteDiveAttack(attack, localId))
                     {
                         diveHandled++;
-                        LogGhostRuntimeStepIfSlow(
-                            "ModEntry.ReceiveGhostAttacks.Remote",
-                            attackStart,
-                            string.Create(
-                                System.Globalization.CultureInfo.InvariantCulture,
-                                $"remoteId={attack.Id} slot={attack.Slot} dive=1 action={attack.Action}"));
+                        if (perfEnabled)
+                            LogGhostRuntimeStepIfSlow(
+                                "ModEntry.ReceiveGhostAttacks.Remote",
+                                attackStart,
+                                string.Create(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    $"remoteId={attack.Id} slot={attack.Slot} dive=1 action={attack.Action}"));
                         continue;
                     }
 
@@ -1556,16 +1574,17 @@ namespace DeadCellsMultiplayerMod
                     clientLastBodyAnimGs[index] = null;
 
                     queuedAttacks++;
-                    LogGhostRuntimeStepIfSlow(
-                        "ModEntry.ReceiveGhostAttacks.Remote",
-                        attackStart,
-                        string.Create(
-                            System.Globalization.CultureInfo.InvariantCulture,
-                            $"remoteId={attack.Id} slot={attack.Slot} dive=0 action={attack.Action} kind={attack.Kind ?? string.Empty}"));
+                    if (perfEnabled)
+                        LogGhostRuntimeStepIfSlow(
+                            "ModEntry.ReceiveGhostAttacks.Remote",
+                            attackStart,
+                            string.Create(
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                $"remoteId={attack.Id} slot={attack.Slot} dive=0 action={attack.Action} kind={attack.Kind ?? string.Empty}"));
                 }
 
                 var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-                if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+                if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
                 {
                     RuntimeHitchWatch.LogSlow(
                         Logger,
@@ -1585,6 +1604,7 @@ namespace DeadCellsMultiplayerMod
         private void UpdateGhostWeapons()
         {
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             var activeManagers = 0;
             for (int i = 0; i < clients.Length; i++)
             {
@@ -1593,16 +1613,17 @@ namespace DeadCellsMultiplayerMod
                 activeManagers++;
                 var managerStart = RuntimeHitchWatch.Start();
                 client.kingWeaponsManager.update();
-                LogGhostRuntimeStepIfSlow(
-                    "ModEntry.UpdateGhostWeapons.Manager",
-                    managerStart,
-                    string.Create(
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        $"slot={i} remoteId={clientIds[i]} shield={(client.kingWeaponsManager.IsShieldActive ? 1 : 0)}"));
+                if (perfEnabled)
+                    LogGhostRuntimeStepIfSlow(
+                        "ModEntry.UpdateGhostWeapons.Manager",
+                        managerStart,
+                        string.Create(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            $"slot={i} remoteId={clientIds[i]} shield={(client.kingWeaponsManager.IsShieldActive ? 1 : 0)}"));
             }
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-            if (hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
+            if (perfEnabled && hitchMs >= RuntimeHitchWatch.GhostRuntimeSlowThresholdMs)
             {
                 RuntimeHitchWatch.LogSlow(
                     Logger,
@@ -1823,6 +1844,7 @@ namespace DeadCellsMultiplayerMod
         private void ApplyRemoteWeaponUpdate(int remoteId, string? kindId, int slot, int permanentId, int? ammo = null)
         {
             var hitchStart = RuntimeHitchWatch.Start();
+            var perfEnabled = RuntimeHitchWatch.Enabled;
             if (string.IsNullOrWhiteSpace(kindId)) return;
             if (slot < -1 || slot > 1 || permanentId < 0) return;
             var net = _net;
@@ -1915,12 +1937,13 @@ namespace DeadCellsMultiplayerMod
             // InventItem into the ghost inventory for the rest of the run.
             TryRemoveSupersededRemoteWeapon(inv, currentSlotItem, existing);
 
-            LogGhostRuntimeStepIfSlow(
-                "ModEntry.ApplyRemoteWeaponUpdate",
-                hitchStart,
-                string.Create(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    $"remoteId={remoteId} slot={slot} permanentId={permanentId} ammo={(ammo.HasValue ? ammo.Value : -1)} kind={cleaned}"));
+            if (perfEnabled)
+                LogGhostRuntimeStepIfSlow(
+                    "ModEntry.ApplyRemoteWeaponUpdate",
+                    hitchStart,
+                    string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"remoteId={remoteId} slot={slot} permanentId={permanentId} ammo={(ammo.HasValue ? ammo.Value : -1)} kind={cleaned}"));
         }
 
         private static void TryRemoveSupersededRemoteWeapon(Inventory inv, InventItem? superseded, InventItem replacement)
@@ -2019,6 +2042,17 @@ namespace DeadCellsMultiplayerMod
                     var remoteId = clientIds[i];
                     if (remoteId <= 0 || activeRemoteIds.Contains(remoteId))
                         continue;
+
+                    try
+                    {
+                        // Phase 17: this client is gone from the network session. Purge its mob
+                        // interest so it can never keep mobs "interested" (stale userIds otherwise
+                        // kept the mob-sync Phase 16 relevance gate open until the next level reset).
+                        global::DeadCellsMultiplayerMod.Mobs.MobsSynchronization.MobsSynchronization.RemoveHostClientInterestForUser(remoteId);
+                    }
+                    catch
+                    {
+                    }
 
                     try
                     {

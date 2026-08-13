@@ -456,7 +456,7 @@ public sealed partial class NetNode
             _hasRemote = hasClients;
         }
 
-        if (wasConnected && !hasClients)
+        if (wasConnected)
         {
             bool stillNoCompletedClients;
             lock (_clientsLock)
@@ -464,11 +464,24 @@ public sealed partial class NetNode
                 stillNoCompletedClients = CountCompletedHostClientsLocked() == 0;
             }
             if (stillNoCompletedClients)
+            {
                 MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
                 {
                     if (IsCurrentNetworkSession())
                         LobbySession.NotifyRemoteDisconnected(_role);
                 });
+            }
+            else
+            {
+                // A connected client left but others remain. Reconcile the departed client's ghost
+                // slot and purge its mob interest (Phase 17) without the full lobby reset, which is
+                // only correct when the last client leaves the session.
+                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-left", () =>
+                {
+                    if (IsCurrentNetworkSession())
+                        ModEntry.Instance?.HandleNetworkDisconnectGhostCleanup(_role);
+                });
+            }
         }
     }
 

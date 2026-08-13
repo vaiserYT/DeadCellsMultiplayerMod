@@ -96,6 +96,14 @@ namespace DeadCellsMultiplayerMod
 
         public dc.pr.Game? game;
 
+        // Main-thread-only per-slot projection of remote players for the in-world GhostKing
+        // pipeline. Slot index is derived from remote id via TryGetClientIndex (compact 0..n-1
+        // range, stable within a session). Compare with NetNode._remotes: that structure is the
+        // network-layer RECEIVE buffer (id-keyed, network-thread-written under _sync, session
+        // lifetime, feeds forwarding / late-join / snapshot building), whereas these arrays hold
+        // the APPLIED render state (normalized skin/head, diffed labels/pos/anim/fx, recreatable
+        // GhostKing/Kinghead objects). Same logical players, different projections + lifetimes;
+        // keep-both is intentional (see comment on NetNode._remotes).
         public static GhostKing[] clients = new GhostKing[NetNode.MaxClientSlots];
         public static Kinghead?[] clientHeads = new Kinghead?[NetNode.MaxClientSlots];
         public static string?[] clientLabels = new string?[NetNode.MaxClientSlots];
@@ -1268,7 +1276,7 @@ namespace DeadCellsMultiplayerMod
             TraceActiveCineTypeChange();
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-            if (hitchMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
+            if (RuntimeHitchWatch.Enabled && hitchMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
             {
                 RuntimeHitchWatch.LogSlow(
                     Logger,
@@ -1350,7 +1358,7 @@ namespace DeadCellsMultiplayerMod
             LogHeroUpdateStepIfSlow("ModEntry.OnHeroUpdate.UpdateGhostHeads", stepStart, null);
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-            if (hitchMs >= RuntimeHitchWatch.ModHeroSlowThresholdMs)
+            if (RuntimeHitchWatch.Enabled && hitchMs >= RuntimeHitchWatch.ModHeroSlowThresholdMs)
             {
                 RuntimeHitchWatch.LogSlow(
                     Logger,

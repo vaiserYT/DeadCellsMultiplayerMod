@@ -9,7 +9,6 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
     /// Host-owned NetId registry. Native game entity ids and client entity-list indexes are never
     /// identities. The host assigns monotonic NetIds per level generation; clients only bind local
     /// <see cref="Mob"/> references to those NetIds via MOBREG or a one-shot type+spawn state bind.
-    /// Conceptual portable form: <see cref="DeadCellsMultiplayerMod.PortableCore.NetEntityId"/>.
     /// </summary>
     public partial class MobsSynchronization
     {

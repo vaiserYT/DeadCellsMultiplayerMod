@@ -75,7 +75,19 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                 existing.Remove(userId);
                 if (existing.Count <= 0)
+                {
                     hostClientInterestUsersBySyncId.Remove(mobSyncId);
+
+                    // Phase 16: the last interested client just left this mob, so it is now eligible
+                    // for the relevance-before-observation fast-path skip. Drop the observed and
+                    // last-sent caches carried over from the old interest window: their payload
+                    // strings were built against a possibly-changed mob and would be reused as-is by
+                    // TryBuildHostMobDeltaSnapshot on a later re-interest ForceState, which would
+                    // send stale type/state/animation data. Removing them forces the next
+                    // observation (or ForceState build) to reconstruct a fresh authoritative payload.
+                    hostObservedMobStatesBySyncId.Remove(mobSyncId);
+                    hostLastSentMobStatesBySyncId.Remove(mobSyncId);
+                }
                 return;
             }
 
@@ -94,6 +106,54 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 users?.Clear();
 
             hostClientInterestUsersBySyncId.Clear();
+        }
+
+        private static readonly List<int> s_hostInterestPurgeSyncIdsScratch = new();
+
+        /// <summary>
+        /// Phase 17: purge every interest entry owned by a single client. Called from the host
+        /// disconnect funnel (HandleNetworkDisconnectGhostCleanup) so a disconnected client can
+        /// never keep mobs "interested" — stale userIds otherwise held the Phase 16 relevance gate
+        /// open and kept the host observing/sending for mobs nobody is looking at, until the next
+        /// level reset.
+        /// </summary>
+        internal static void RemoveHostClientInterestForUser(int userId)
+        {
+            if (userId <= 0)
+                return;
+
+            lock (Sync)
+            {
+                if (hostClientInterestUsersBySyncId.Count == 0)
+                    return;
+
+                s_hostInterestPurgeSyncIdsScratch.Clear();
+                foreach (var pair in hostClientInterestUsersBySyncId)
+                {
+                    var users = pair.Value;
+                    if (users == null)
+                        continue;
+                    users.Remove(userId);
+                    if (users.Count == 0)
+                        s_hostInterestPurgeSyncIdsScratch.Add(pair.Key);
+                }
+
+                if (s_hostInterestPurgeSyncIdsScratch.Count == 0)
+                    return;
+
+                for (var i = 0; i < s_hostInterestPurgeSyncIdsScratch.Count; i++)
+                {
+                    var syncId = s_hostInterestPurgeSyncIdsScratch[i];
+                    hostClientInterestUsersBySyncId.Remove(syncId);
+                    // Phase 16 invariant: the last interested client left, so drop the observed and
+                    // last-sent caches. A later re-interest ForceState then rebuilds a fresh
+                    // authoritative payload instead of reusing one built for the old client.
+                    hostObservedMobStatesBySyncId.Remove(syncId);
+                    hostLastSentMobStatesBySyncId.Remove(syncId);
+                }
+
+                s_hostInterestPurgeSyncIdsScratch.Clear();
+            }
         }
 
         private static void TryRecoverClientSyncMobLifeAfterLocalDamage(Mob? mob, int fallbackLife)
