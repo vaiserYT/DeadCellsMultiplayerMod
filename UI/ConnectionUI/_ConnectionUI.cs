@@ -6,7 +6,6 @@ using DeadCellsMultiplayerMod.Interface.ModuleInitializing;
 using Hashlink.Virtuals;
 using ModCore.Events;
 using ModCore.Utilities;
-using Serilog;
 using System.Collections.Generic;
 using System.Text;
 
@@ -25,21 +24,23 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             public readonly bool Occupied;
             public readonly string Nick;
             public readonly string Skin;
+            public readonly string Head;
             public readonly bool IsHost;
             public readonly bool IsYou;
             public readonly bool IsConnecting;
 
-            public LobbyPlayerSlot(bool occupied, string nick, string skin, bool isHost, bool isYou, bool isConnecting)
+            public LobbyPlayerSlot(bool occupied, string nick, string skin, string head, bool isHost, bool isYou, bool isConnecting)
             {
                 Occupied = occupied;
                 Nick = nick ?? string.Empty;
                 Skin = string.IsNullOrWhiteSpace(skin) ? "PrisonerDefault" : skin.Trim();
+                Head = string.IsNullOrWhiteSpace(head) ? "BaseFlame" : head.Trim();
                 IsHost = isHost;
                 IsYou = isYou;
                 IsConnecting = isConnecting;
             }
 
-            public static LobbyPlayerSlot Empty => new(false, string.Empty, "PrisonerDefault", false, false, false);
+            public static LobbyPlayerSlot Empty => new(false, string.Empty, "PrisonerDefault", "BaseFlame", false, false, false);
         }
 
         public static List<string> GetAllPlayerNames()
@@ -91,6 +92,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         occupied: true,
                         nick: SteamLobbyConnectingMarker,
                         skin: "PrisonerDefault",
+                        head: "BaseFlame",
                         isHost: false,
                         isYou: true,
                         isConnecting: true);
@@ -103,6 +105,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 localName = "Guest";
 
             var localSkin = ResolveLocalHeroSkin();
+            var localHead = ResolveLocalHeroHeadSkin();
             var hasSnapshots = net.TryGetRemoteUserSnapshots(out var snapshots);
             try
             {
@@ -116,6 +119,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         occupied: true,
                         nick: "connecting...",
                         skin: "PrisonerDefault",
+                        head: "BaseFlame",
                         isHost: false,
                         isYou: true,
                         isConnecting: true);
@@ -128,6 +132,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         occupied: true,
                         nick: localName,
                         skin: localSkin,
+                        head: localHead,
                         isHost: true,
                         isYou: true,
                         isConnecting: false);
@@ -145,10 +150,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
                             string displayName = GetPlayerName(localId, remote.Id, remote.Username ?? string.Empty);
                             string skin = ResolveRemoteSkin(localId, remote.Id);
+                            string head = ResolveRemoteHeadSkin(localId, remote.Id);
                             slots[write++] = new LobbyPlayerSlot(
                                 occupied: true,
                                 nick: displayName,
                                 skin: skin,
+                                head: head,
                                 isHost: false,
                                 isYou: false,
                                 isConnecting: false);
@@ -159,6 +166,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 {
                     string hostName = "Host";
                     string hostSkin = "PrisonerDefault";
+                    string hostHead = "BaseFlame";
                     if (hasSnapshots)
                     {
                         for (int i = 0; i < snapshots.Count; i++)
@@ -169,6 +177,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
                             hostName = GetPlayerName(localId, remote.Id, remote.Username ?? string.Empty);
                             hostSkin = ResolveRemoteSkin(localId, remote.Id);
+                            hostHead = ResolveRemoteHeadSkin(localId, remote.Id);
                             break;
                         }
                     }
@@ -189,10 +198,19 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                             hostSkin = cachedHost.Trim();
                     }
 
+                    if (string.IsNullOrWhiteSpace(hostHead) ||
+                        string.Equals(hostHead, "BaseFlame", StringComparison.Ordinal))
+                    {
+                        var cachedHostHead = ModEntry.Instance?.remoteHeadSkin;
+                        if (!string.IsNullOrWhiteSpace(cachedHostHead))
+                            hostHead = cachedHostHead.Trim();
+                    }
+
                     slots[0] = new LobbyPlayerSlot(
                         occupied: true,
                         nick: hostName,
                         skin: hostSkin,
+                        head: hostHead,
                         isHost: true,
                         isYou: false,
                         isConnecting: false);
@@ -201,6 +219,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         occupied: true,
                         nick: localName,
                         skin: localSkin,
+                        head: localHead,
                         isHost: false,
                         isYou: true,
                         isConnecting: false);
@@ -216,10 +235,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
                             string displayName = GetPlayerName(localId, remote.Id, remote.Username ?? string.Empty);
                             string skin = ResolveRemoteSkin(localId, remote.Id);
+                            string head = ResolveRemoteHeadSkin(localId, remote.Id);
                             slots[write++] = new LobbyPlayerSlot(
                                 occupied: true,
                                 nick: displayName,
                                 skin: skin,
+                                head: head,
                                 isHost: false,
                                 isYou: false,
                                 isConnecting: false);
@@ -250,6 +271,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 sb.Append(s.Nick);
                 sb.Append('|');
                 sb.Append(s.Skin);
+                sb.Append('|');
+                sb.Append(s.Head);
                 sb.Append('|');
                 sb.Append(s.IsHost ? 'H' : '-');
                 sb.Append(s.IsYou ? 'Y' : '-');
@@ -290,7 +313,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private static int _cachedLocalHeroSkinSlot = int.MinValue;
         private static int _tryLoadLocalHeroSkinSlot = int.MinValue;
         private static virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_? _cachedLocalSkinInfo;
-        private static string _lastResolveLocalHeroSkinLog = string.Empty;
+        private static string? _cachedLocalHeroHeadSkin;
 
         internal static void RememberLocalHeroSkinFromUser(User? user, string source)
         {
@@ -298,6 +321,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 return;
 
             CacheLocalSkinInfoFromUser(user);
+            RememberLocalHeroHeadSkin(ReadUserHeroHeadSkinId(user));
 
             if (!TryReadUserHeroSkinId(user, out var skin, out var via))
                 return;
@@ -318,15 +342,15 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             _cachedLocalHeroSkin = normalized;
             _cachedLocalHeroSkinSource = source ?? string.Empty;
             _cachedLocalHeroSkinSlot = slot;
+            _ = changed;
+        }
 
-            if (changed)
-            {
-                Log.Information(
-                    "[ConnectionUI] cached local hero skin={Skin} slot={Slot} via={Via}",
-                    normalized,
-                    slot,
-                    _cachedLocalHeroSkinSource);
-            }
+        internal static void RememberLocalHeroHeadSkin(string? head)
+        {
+            var normalized = CleanHeroSkinId(head);
+            if (string.IsNullOrWhiteSpace(normalized))
+                return;
+            _cachedLocalHeroHeadSkin = normalized;
         }
 
         internal static string ResolveLocalHeroSkin()
@@ -362,30 +386,11 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     chosenSource = "cachedSkinInfo";
                 }
 
-                var logLine = string.Create(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    $"{userSource}|{user != null}|{rawHeroSkin}|{infosCmd}|{chosen}|{chosenSource}");
-                if (!string.Equals(_lastResolveLocalHeroSkinLog, logLine, StringComparison.Ordinal))
-                {
-                    _lastResolveLocalHeroSkinLog = logLine;
-                    Log.Information(
-                        "[ConnectionUI] ResolveLocalHeroSkin user={UserSource} present={Present} heroSkin={HeroSkin} infosCmd={InfosCmd} infosRaw={InfosRaw} cache={Cache} chosen={Chosen} via={Via}",
-                        userSource,
-                        user != null,
-                        rawHeroSkin ?? string.Empty,
-                        infosCmd ?? string.Empty,
-                        infosRaw ?? string.Empty,
-                        _cachedLocalHeroSkin ?? string.Empty,
-                        chosen ?? "PrisonerDefault",
-                        chosenSource);
-                }
-
                 if (!string.IsNullOrWhiteSpace(chosen))
                     return chosen;
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Warning("[ConnectionUI] ResolveLocalHeroSkin failed: {Message}", ex.Message);
             }
 
             return "PrisonerDefault";
@@ -449,16 +454,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             {
                 var loaded = Save.Class.tryLoad.Invoke();
                 if (loaded == null)
-                {
-                    Log.Information("[ConnectionUI] Save.tryLoad returned null slot={Slot}", slot);
                     return;
-                }
 
                 RememberLocalHeroSkinFromUser(loaded, "tryLoad");
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Warning("[ConnectionUI] Save.tryLoad for lobby skin failed slot={Slot}: {Message}", slot, ex.Message);
             }
         }
 
@@ -472,6 +473,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             _cachedLocalHeroSkinSource = string.Empty;
             _cachedLocalHeroSkinSlot = int.MinValue;
             _cachedLocalSkinInfo = null;
+            _cachedLocalHeroHeadSkin = null;
         }
 
         private static int ResolveCurrentSaveSlot()
@@ -522,9 +524,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 try { infosRaw = infos.ToString(); } catch { }
                 try { infosCmd = infos.consoleCmdId?.ToString(); } catch { }
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Information("[ConnectionUI] getHeroSkinInfos failed: {Message}", ex.Message);
             }
         }
 
@@ -591,6 +592,84 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(infosCmd))
                 return false;
             return string.Equals(candidate.Trim(), infosCmd.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static string ResolveLocalHeroHeadSkin()
+        {
+            try
+            {
+                InvalidateLocalHeroSkinCacheIfSlotChanged();
+
+                var user = TryResolveLocalUser(out _);
+                if (user == null)
+                    TryLoadLocalUserSkinOnce();
+
+                if (user != null)
+                {
+                    var fromUser = ReadUserHeroHeadSkinId(user);
+                    if (!string.IsNullOrWhiteSpace(fromUser))
+                    {
+                        RememberLocalHeroHeadSkin(fromUser);
+                        return fromUser;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(_cachedLocalHeroHeadSkin))
+                    return _cachedLocalHeroHeadSkin;
+            }
+            catch
+            {
+            }
+
+            return "BaseFlame";
+        }
+
+        private static string ReadUserHeroHeadSkinId(User user)
+        {
+            try
+            {
+                var raw = CleanHeroSkinId(user.heroHeadSkin?.ToString());
+                if (!string.IsNullOrWhiteSpace(raw))
+                    return raw;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var infos = user.getHeroHeadSkinInfos();
+                var item = CleanHeroSkinId(infos?.item?.ToString());
+                if (!string.IsNullOrWhiteSpace(item))
+                    return item;
+            }
+            catch
+            {
+            }
+
+            return string.Empty;
+        }
+
+        private static string ResolveRemoteHeadSkin(int localId, int remoteId)
+        {
+            if (ModEntry.TryGetClientIndex(localId, remoteId, out var slotIndex))
+            {
+                if ((uint)slotIndex < (uint)ModEntry.clientHeadSkins.Length)
+                {
+                    var known = ModEntry.clientHeadSkins[slotIndex];
+                    if (!string.IsNullOrWhiteSpace(known))
+                        return known.Replace("|", "/").Trim();
+                }
+            }
+
+            if (remoteId == 1)
+            {
+                var hostHead = ModEntry.Instance?.remoteHeadSkin;
+                if (!string.IsNullOrWhiteSpace(hostHead))
+                    return hostHead.Replace("|", "/").Trim();
+            }
+
+            return "BaseFlame";
         }
 
         private static string ResolveRemoteSkin(int localId, int remoteId)
