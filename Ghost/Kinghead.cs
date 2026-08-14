@@ -82,6 +82,7 @@ namespace DeadCellsMultiplayerMod.KingHead
             this.forcedCustomHead = null!;
             this._customHeadInfoCache = null!;
             TryResolveRemoteCustomHeadInfo(remoteHeadSkin);
+            bool isBaseFlameDefault = string.Equals(remoteHeadSkin, "BaseFlame", StringComparison.Ordinal);
             if (headSprite != null)
             {
                 headMaterial = headSprite.frameData?.tile;
@@ -98,6 +99,7 @@ namespace DeadCellsMultiplayerMod.KingHead
                     headParticleContainer = new dc.h2d.Object(fromUI);
                 }
                 InitBaseHead(parent, headParticleContainer, fromUI1);
+                TintBaseHeadEye(isBaseFlameDefault);
                 RebuildHeadParticles(headParticleContainer, headMaterial);
                 this.heroHasHead = true;
                 this.alwaysShowHead = true;
@@ -105,6 +107,7 @@ namespace DeadCellsMultiplayerMod.KingHead
                 return;
             }
             InitBaseHead(parent, fromUI, fromUI1);
+            TintBaseHeadEye(isBaseFlameDefault);
             this.heroHasHead = true;
             this.alwaysShowHead = true;
             this.alwaysShowEye = true;
@@ -178,6 +181,28 @@ namespace DeadCellsMultiplayerMod.KingHead
                 {
                     try { user.heroHeadSkin = savedHeadSkin; } catch { }
                 }
+            }
+        }
+
+        private void TintBaseHeadEye(bool isBaseFlameDefault)
+        {
+            if (!isBaseFlameDefault)
+                return;
+            try
+            {
+                var eyeSpr = this.eye;
+                if (eyeSpr == null)
+                    return;
+
+                // Mirrors the lobby default head: the base homunculus eye star
+                // (fxSmallStar, Add blend) is tinted warm-orange 0xFFBF00 when usable.
+                var color = eyeSpr.color;
+                color.x = 1.0;
+                color.y = 191.0 / 255.0;
+                color.z = 0.0;
+            }
+            catch
+            {
             }
         }
 

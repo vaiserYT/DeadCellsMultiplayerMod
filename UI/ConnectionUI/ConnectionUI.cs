@@ -1325,6 +1325,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             TickTextPrompt();
             TickMenuEscape(promptWasOpen);
 
+            // Lobby head particle emitters advance on a fixed 60fps step (game baseFps).
+            try { LobbyHeadFx.TickAll(1.0 / 60.0); } catch { }
+
             if (this._mode != UiMode.Menu || this._keepLobbyVisible)
             {
                 var slots = _ConnectionUI.GetLobbyPlayerSlots();
@@ -1339,6 +1342,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             {
                 UpdateLobbyIdLabel(forceRefreshText: false);
             }
+
+            // After skin rebind: step idle, then place heads on this frame's headBone.
+            try { TickLobbyHeadBones(); } catch { }
         }
 
         public override void postUpdate()
