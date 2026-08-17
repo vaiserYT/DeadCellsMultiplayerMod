@@ -14,6 +14,7 @@ public sealed partial class NetNode
             _pendingAttacks.Clear();
             _pendingMobStates.Clear();
             _pendingMobMoves.Clear();
+            _pendingMobMoveSlots.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
             _pendingMobAttacks.Clear();
@@ -51,11 +52,11 @@ public sealed partial class NetNode
         });
     }
 
-    private RemoteState GetOrCreateRemoteLocked(int id)
+    private RemotePlayerState GetOrCreateRemoteLocked(int id)
     {
         if (!_remotes.TryGetValue(id, out var state))
         {
-            state = new RemoteState(id);
+            state = new RemotePlayerState(id);
             _remotes[id] = state;
         }
         return state;

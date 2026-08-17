@@ -3,6 +3,8 @@ using System.Text;
 using DeadCellsMultiplayerMod;
 using DeadCellsMultiplayerMod.Interaction;
 using DeadCellsMultiplayerMod.AdvancedCoop;
+using DeadCellsMultiplayerMod.Mobs.MobsSynchronization;
+using DeadCellsMultiplayerMod.Network;
 
 public sealed partial class NetNode
 {
@@ -42,6 +44,35 @@ public sealed partial class NetNode
 
         for (var i = firstIncoming; i < items.Count; i++)
             target.Add(items[i]);
+    }
+
+    private void AppendLatestMobMovesLocked(IReadOnlyList<MobMoveSnapshot> moves)
+    {
+        if (moves == null || moves.Count == 0)
+            return;
+
+        for (var i = 0; i < moves.Count; i++)
+        {
+            var move = moves[i];
+            var key = (move.Generation, move.Index);
+            if (_pendingMobMoveSlots.TryGetValue(key, out var slot))
+            {
+                _pendingMobMoves[slot] = move;
+                continue;
+            }
+
+            // Movement is disposable presentation traffic. If the consumer is stalled, keeping a
+            // complete history is actively harmful: the game thread would spend time applying
+            // positions that are already obsolete. Start a fresh latest-only window at the bound.
+            if (_pendingMobMoves.Count >= PendingMobMoveLimit)
+            {
+                _pendingMobMoves.Clear();
+                _pendingMobMoveSlots.Clear();
+            }
+
+            _pendingMobMoveSlots[key] = _pendingMobMoves.Count;
+            _pendingMobMoves.Add(move);
+        }
     }
 
     private static void AddBoundedLocked<T>(List<T> target, T item, int maxCount)
@@ -156,6 +187,8 @@ public sealed partial class NetNode
                 return false;
 
             NetNodeMobTrafficStats.RecordFastPathLine();
+            NetTrafficDiagnostics.RecordReceived(line.Length);
+            NetTrafficDiagnostics.TryFlush(_log, _role.ToString());
             return true;
         }
         catch (Exception ex)
@@ -180,6 +213,7 @@ public sealed partial class NetNode
             var parsedStates = new List<MobStateSnapshot>();
             if (MobWireBinary.TryParseMobStatesBase64(payload, parsedStates))
             {
+                MobSyncTrace.RecordWireReceive("state", parsedStates.Count, line.Length);
                 lock (_sync)
                 {
                     // MOBSTATE packets are often split into multiple wire lines when a level has
@@ -203,6 +237,7 @@ public sealed partial class NetNode
         {
             var payload = line["MOBSTATE|".Length..];
             var parsedStates = ParseMobStatesPayload(payload);
+            MobSyncTrace.RecordWireReceive("state", parsedStates.Count, line.Length);
             lock (_sync)
             {
                 // MOBSTATE packets can be chunked. Appending on the client is required so a
@@ -242,7 +277,8 @@ public sealed partial class NetNode
                 {
                     if (parsedMoves.Count > 0)
                     {
-                        AppendBoundedLocked(_pendingMobMoves, parsedMoves, PendingMobMoveLimit);
+                        MobSyncTrace.RecordWireReceive("move", parsedMoves.Count, line.Length);
+                        AppendLatestMobMovesLocked(parsedMoves);
                         _hasRemote = true;
                     }
                 }

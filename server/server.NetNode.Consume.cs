@@ -167,6 +167,7 @@ public sealed partial class NetNode
         {
             _pendingMobStates.Clear();
             _pendingMobMoves.Clear();
+            _pendingMobMoveSlots.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
             _pendingMobAttacks.Clear();
@@ -212,7 +213,16 @@ public sealed partial class NetNode
     {
         lock (_sync)
         {
-            return TryConsumePendingListLocked(ref _pendingMobMoves, out moves);
+            if (_pendingMobMoves.Count == 0)
+            {
+                moves = EmptyListCache<MobMoveSnapshot>.Instance;
+                return false;
+            }
+
+            moves = _pendingMobMoves;
+            _pendingMobMoves = RentConsumedList<MobMoveSnapshot>(moves.Count);
+            _pendingMobMoveSlots.Clear();
+            return true;
         }
     }
 

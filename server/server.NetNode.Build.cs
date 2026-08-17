@@ -1,4 +1,5 @@
 using System.Globalization;
+using DeadCellsMultiplayerMod.Network;
 
 
 public sealed partial class NetNode
@@ -74,13 +75,7 @@ public sealed partial class NetNode
 
     private static string SanitizeProtocolToken(string? value, int maxLength)
     {
-        var safe = (value ?? string.Empty)
-            .Replace("|", string.Empty, StringComparison.Ordinal)
-            .Replace("\r", string.Empty, StringComparison.Ordinal)
-            .Replace("\n", string.Empty, StringComparison.Ordinal)
-            .Trim();
-
-        return safe.Length > maxLength ? safe[..maxLength] : safe;
+        return ProtocolWire.SanitizeToken(value, maxLength);
     }
 
     private bool TryBuildLocalHpLine(out string line)

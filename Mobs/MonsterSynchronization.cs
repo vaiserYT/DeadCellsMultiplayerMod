@@ -632,6 +632,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (flushMs >= RuntimeHitchWatch.MobSyncFlushSlowThresholdMs)
                     RuntimeHitchWatch.LogSlow(modEntry.Logger, "MobsSynchronization.HostFlush", flushMs, BuildRuntimeQueueDetails());
 
+                MobSyncTrace.FlushPerformance("host");
+
                 return;
             }
 
@@ -649,6 +651,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var flushMs = RuntimeHitchWatch.GetElapsedMilliseconds(flushStart);
                 if (flushMs >= RuntimeHitchWatch.MobSyncFlushSlowThresholdMs)
                     RuntimeHitchWatch.LogSlow(modEntry.Logger, "MobsSynchronization.ClientFlush", flushMs, BuildRuntimeQueueDetails());
+
+                MobSyncTrace.FlushPerformance("client");
             }
         }
 
@@ -1209,7 +1213,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                     ObserveClientMobForDirtyQueue(self);
                     ApplyClientAnimationStateBeforeUpdate(self);
-                    TryRepairClientMobAttackTarget(self);
+                    if (IsClientNetworkAttackActive(self))
+                        TryRepairClientMobAttackTarget(self);
                 }
 
                 return;

@@ -576,7 +576,10 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
                 EnsureLobbyColorMapTextureReady(heroColorMap);
 
-                spr.addShader(new dc.shader.ColorMap(heroColorMap));
+                // Match dc.Entity.initSprite/KingSkin.initGfx ordering from GamePseudocode.dll:
+                // lighting is composed first, then the normal map, and KingSkin.initColorMap adds
+                // ColorMap last. Putting ColorMap before lighting changes the normal/shadow result
+                // in the title renderer.
                 spr.addShader(new DirLighted());
 
                 dc.h3d.mat.Texture? normalMap = null;
@@ -604,6 +607,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     if (spr.getShader(NormalMap.Class) == null)
                         spr.addShader(new NormalMap(normalMap));
                 }
+
+                spr.addShader(new dc.shader.ColorMap(heroColorMap));
 
                 try { spr.smooth = false; } catch { }
             }

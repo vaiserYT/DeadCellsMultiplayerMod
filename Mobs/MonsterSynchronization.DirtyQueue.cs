@@ -182,6 +182,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var statePayload = needsStatePayload
                 ? BuildHostMobStatePayload(mob)
                 : (hasPrevious ? previous.StatePayload : string.Empty);
+            MobSyncTrace.RecordHostObservation(visibleForSync, needsAnim, needsStatePayload);
 
             lock (Sync)
             {

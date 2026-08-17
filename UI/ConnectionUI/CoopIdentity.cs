@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -68,7 +69,9 @@ namespace DeadCellsMultiplayerMod
         internal static void NotifyMultiplayerSaveSlotChanged()
         {
             InvalidateLocalContinueSaveStateCache();
+            _ConnectionUI.RefreshLocalHeroCosmeticsForSaveSlot();
             SendCoopStateToRemote();
+            SendLocalCosmeticsToRemote();
             RequestLobbyMenuRefresh();
         }
 

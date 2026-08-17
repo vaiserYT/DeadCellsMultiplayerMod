@@ -174,6 +174,8 @@ public sealed partial class NetNode
                     string? cachedGeneratePayload;
                     string? cachedCustomGameDataPayload;
                     string? cachedRuneProgressPayload;
+                    string? cachedHeroSkin;
+                    string? cachedHeroHeadSkin;
                     string? cachedCoopId;
                     bool cachedHasContinueSave;
                     double? cachedMobsHpMult;
@@ -198,6 +200,8 @@ public sealed partial class NetNode
                         cachedGeneratePayload = _cachedHostGeneratePayload;
                         cachedCustomGameDataPayload = _cachedHostCustomGameDataPayload;
                         cachedRuneProgressPayload = _cachedHostRuneProgressPayload;
+                        cachedHeroSkin = _cachedHostHeroSkin;
+                        cachedHeroHeadSkin = _cachedHostHeroHeadSkin;
                         cachedCoopId = _cachedHostCoopId;
                         cachedHasContinueSave = _cachedHostHasContinueSave;
                         cachedMobsHpMult = _cachedHostMobsHpMult;
@@ -249,6 +253,11 @@ public sealed partial class NetNode
 
                     if (!string.IsNullOrWhiteSpace(cachedRunExecutePayload))
                         await SendLineToClientSafe(connection, $"{RunLaunchWireCodec.ExecuteTag}|{cachedRunExecutePayload}\n").ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(cachedHeroSkin))
+                        await SendLineToClientSafe(connection, BuildTaggedLine("SKIN", 1, cachedHeroSkin)).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(cachedHeroHeadSkin))
+                        await SendLineToClientSafe(connection, BuildTaggedLine("HEAD", 1, cachedHeroHeadSkin)).ConfigureAwait(false);
 
                     if (cachedMobsHpMult.HasValue && cachedBossesHpMult.HasValue)
                         await SendLineToClientSafe(connection, $"HPMULT|{cachedMobsHpMult.Value.ToString(CultureInfo.InvariantCulture)}|{cachedBossesHpMult.Value.ToString(CultureInfo.InvariantCulture)}\n").ConfigureAwait(false);
@@ -492,12 +501,12 @@ public sealed partial class NetNode
 
     private async Task SendKnownUsersToClientSafe(ClientConnection connection)
     {
-        List<RemoteState> snapshot;
+        List<RemotePlayerState> snapshot;
         lock (_sync)
         {
             if (_remotes.Count == 0)
                 return;
-            snapshot = new List<RemoteState>(_remotes.Values);
+            snapshot = new List<RemotePlayerState>(_remotes.Values);
         }
 
         foreach (var state in snapshot)

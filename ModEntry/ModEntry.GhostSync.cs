@@ -403,6 +403,10 @@ namespace DeadCellsMultiplayerMod
             var prev = clientSkins[index];
             clientSkins[index] = cleaned;
 
+            // LobbyBeheaded reads the same per-client cache. Refresh the title UI even when the
+            // GhostKing has not been created yet (the normal lobby connection case).
+            MultiplayerModUI.Connection.ConnectionUI.NotifyConnectionsChanged();
+
             var client = clients[index];
             if (client != null && !IsRemoteKingTransitionActive)
             {
@@ -425,6 +429,8 @@ namespace DeadCellsMultiplayerMod
             var cleaned = NormalizeSkin(skin, "BaseFlame");
             var prev = clientHeadSkins[index];
             clientHeadSkins[index] = cleaned;
+
+            MultiplayerModUI.Connection.ConnectionUI.NotifyConnectionsChanged();
 
             var client = clients[index];
             if (client != null)

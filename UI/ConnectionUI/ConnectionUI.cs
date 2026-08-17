@@ -123,6 +123,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private bool _menuVisible;
         private int _layoutW = 255;
         private int _layoutH = 720;
+        private double _lastLayoutUiScale = double.NaN;
+        private double _lastLayoutTextBoost = double.NaN;
         private Graphics? _hoverBorder;
         private static readonly int HoverBorderColor = 0x59D5FF;
         /// <summary>Same callback as the screen's Back/Disconnect button; fired on Escape.</summary>
@@ -395,8 +397,10 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 : System.Math.Min(bgWidth - padX * 2.0 - lobbyReserve, SideContentWidth * uiScale);
             double colGap = 14.0 * uiScale;
             double rowGap = 16.0 * uiScale;
-            // Same typography boost as the hub for every styled menu screen.
-            double menuText = textUi * 1.55;
+            // Keep button labels at their existing scale; menu information gets the requested
+            // additional readability boost without changing button or prompt text.
+            double buttonText = textUi * 1.55;
+            double menuText = buttonText * MenuTextScaleBoost;
             double cursorY;
 
             if (this._keepLobbyVisible)
@@ -490,14 +494,14 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         double btnH = System.Math.Max(
                             GetButtonHeight(actions[i], showHelp: true, uiScale, styled: true),
                             GetButtonHeight(actions[i + 1], showHelp: true, uiScale, styled: true));
-                        PlaceMenuButton(actions[i], clusterX, cursorY, btnW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
-                        PlaceMenuButton(actions[i + 1], clusterX + btnW + colGap, cursorY, btnW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
+                        PlaceMenuButton(actions[i], clusterX, cursorY, btnW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
+                        PlaceMenuButton(actions[i + 1], clusterX + btnW + colGap, cursorY, btnW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
                         cursorY += btnH + rowGap;
                     }
                     else
                     {
                         double btnH = GetButtonHeight(actions[i], showHelp: true, uiScale, styled: true);
-                        PlaceMenuButton(actions[i], clusterX, cursorY, clusterW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
+                        PlaceMenuButton(actions[i], clusterX, cursorY, clusterW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
                         cursorY += btnH + rowGap;
                     }
                 }
@@ -505,7 +509,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 for (int i = 0; i < backs.Count; i++)
                 {
                     double btnH = GetButtonHeight(backs[i], showHelp: true, uiScale, styled: true);
-                    PlaceMenuButton(backs[i], clusterX, cursorY, clusterW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
+                    PlaceMenuButton(backs[i], clusterX, cursorY, clusterW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
                     cursorY += btnH + rowGap;
                 }
             }
@@ -516,7 +520,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 {
                     var btn = PendingButtons[i];
                     double btnH = GetButtonHeight(btn, showHelp: true, uiScale, styled: true);
-                    PlaceMenuButton(btn, padX, cursorY, listW, btnH, menuText, uiScale, showHelp: true, centerText: false, styled: true);
+                    PlaceMenuButton(btn, padX, cursorY, listW, btnH, buttonText, uiScale, showHelp: true, centerText: false, styled: true);
                     cursorY += btnH + rowGap;
                 }
             }
@@ -1220,7 +1224,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         // Button column width inside the full-screen panel (non-hub menus).
         private const int SideContentWidth = 560;
         private const double NavButtonClusterWidth = 780.0;
-
+        private const double MenuTextScaleBoost = 1.15;
         public override void onResize()
         {
             base.onResize();
@@ -1242,6 +1246,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             // Panel is always absolute full screen — never a short/cropped box.
             BuildFullScreenPanel(screenWidth, screenHeight);
+            this._lastLayoutUiScale = UiScale.GetResolutionScale();
+            this._lastLayoutTextBoost = GetWindowedTextBoost();
 
             bool showLobbyCard = this._mode == UiMode.Lobby || this._keepLobbyVisible;
             if (showLobbyCard)
@@ -1321,6 +1327,29 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         public override void update()
         {
             base.update();
+
+            // Some display-mode changes do not dispatch Process.onResize. Detect them from the
+            // live window and rebuild after the game has applied the new metrics, otherwise text
+            // keeps the old bitmap scale/positions while the panel has already moved.
+            try
+            {
+                var win = dc.hxd.Window.Class.getInstance();
+                var liveUiScale = UiScale.GetResolutionScale();
+                var liveTextBoost = GetWindowedTextBoost();
+                if (win != null &&
+                    (win.get_width() != this._layoutW ||
+                     win.get_height() != this._layoutH ||
+                     double.IsNaN(this._lastLayoutUiScale) ||
+                     System.Math.Abs(liveUiScale - this._lastLayoutUiScale) > 0.001 ||
+                     System.Math.Abs(liveTextBoost - this._lastLayoutTextBoost) > 0.001))
+                {
+                    this.onResize();
+                }
+            }
+            catch
+            {
+            }
+
             bool promptWasOpen = this._promptOpen;
             TickTextPrompt();
             TickMenuEscape(promptWasOpen);

@@ -50,6 +50,14 @@ internal static class RunLaunchCoordinator
         }
     }
 
+    internal static CoopSessionSnapshot GetSessionSnapshot()
+    {
+        lock (Sync)
+        {
+            return _state.Snapshot;
+        }
+    }
+
     internal static void OnRoleChanged(NetRole previous, NetRole next)
     {
         if (previous == next)

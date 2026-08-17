@@ -353,6 +353,24 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             _cachedLocalHeroHeadSkin = normalized;
         }
 
+        internal static void RefreshLocalHeroCosmeticsForSaveSlot()
+        {
+            InvalidateLocalHeroSkinCacheIfSlotChanged();
+            _tryLoadLocalHeroSkinSlot = int.MinValue;
+
+            try
+            {
+                var user = TryResolveLocalUser(out _);
+                if (user != null)
+                    RememberLocalHeroSkinFromUser(user, "saveSlotChanged");
+                else
+                    TryLoadLocalUserSkinOnce();
+            }
+            catch
+            {
+            }
+        }
+
         internal static string ResolveLocalHeroSkin()
         {
             try

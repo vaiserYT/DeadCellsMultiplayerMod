@@ -5,6 +5,7 @@ using dc.hl.types;
 using dc.pr;
 using dc.tool.atk;
 using DeadCellsMultiplayerMod.Interface.ModuleInitializing;
+using DeadCellsMultiplayerMod.PortableCore;
 using HaxeProxy.Runtime;
 using ModCore.Events;
 using ModCore.Events.Interfaces.Game.Hero;
@@ -18,40 +19,6 @@ public partial class InteractionSync :
     IOnAdvancedModuleInitializing,
     IOnHeroUpdate
 {
-    private sealed class LevelInteractionCache
-    {
-        public readonly List<Door> Doors = new();
-        public readonly List<Elevator> Elevators = new();
-        public readonly List<VineLadder> VineLadders = new();
-        public readonly List<Teleport> Teleports = new();
-        public readonly List<Portal> Portals = new();
-        public readonly List<PressurePlate> PressurePlates = new();
-        public readonly List<dc.en.inter.button.Button> Buttons = new();
-        public readonly List<TreasureChest> TreasureChests = new();
-        public readonly List<SwitchBossRune> SwitchBossRunes = new();
-        public readonly List<Elevator> TriggerElevators = new();
-        public readonly List<Teleport> TriggerTeleports = new();
-        public readonly List<Portal> TriggerPortals = new();
-        public readonly List<dc.en.inter.button.Button> TriggerButtons = new();
-
-        public void Clear()
-        {
-            Doors.Clear();
-            Elevators.Clear();
-            VineLadders.Clear();
-            Teleports.Clear();
-            Portals.Clear();
-            PressurePlates.Clear();
-            Buttons.Clear();
-            TreasureChests.Clear();
-            SwitchBossRunes.Clear();
-            TriggerElevators.Clear();
-            TriggerTeleports.Clear();
-            TriggerPortals.Clear();
-            TriggerButtons.Clear();
-        }
-    }
-
     private const double PosTolerance = 1.0;
 
     private const double PlatePosTolerance = 8.0;
@@ -228,8 +195,7 @@ public partial class InteractionSync :
 
     private static T SafeRead<T>(Func<T> fn, T fallback)
     {
-        try { return fn(); }
-        catch { return fallback; }
+        return NativeCall.Read(fn, fallback);
     }
 
     private static void ApplyAndRelease<T>(List<T> events, Action<List<T>> apply)
@@ -352,12 +318,21 @@ public partial class InteractionSync :
         for (var i = 0; i < staleDoorAnchors.Count; i++)
             _doorStableAnchors.Remove(staleDoorAnchors[i]);
 
+        ClearRuntimeStateForLevel();
+    }
+
+    private void ClearRuntimeStateForLevel()
+    {
         _lastAuthoritativeDoorState.Clear();
         _lastDoorStateSentTickMs.Clear();
         _elevatorLastInterSendTickMs.Clear();
         _elevatorLastAppliedSequence.Clear();
         _pressurePlateLastAppliedSequence.Clear();
         _buttonActivationState.Clear();
+        CachedInteractionLevelData.Clear();
+        _cachedInteractionLevel = null;
+        _cachedInteractionEntityCount = -1;
+        _cachedInteractionTriggerCount = -1;
         ClearPersistentInteractionStateForLevel();
     }
 
