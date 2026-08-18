@@ -5,6 +5,7 @@ using HaxeProxy.Runtime;
 using ModCore.Utilities;
 using ModCore.Modules;
 using DeadCellsMultiplayerMod.UI;
+using DeadCellsMultiplayerMod.Tools;
 using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 
 namespace DeadCellsMultiplayerMod
@@ -31,6 +32,7 @@ namespace DeadCellsMultiplayerMod
             try
             {
                 LoadConfig();
+                DailyLeaderboardGuard.Initialize();
                 MultiplayerSaves.InitializeMultiplayerSaveHooks();
                 InitializeMultiplayerLaunchHooks();
                 Hook_TitleScreen.mainMenu += MainMenuHook;
@@ -59,6 +61,8 @@ namespace DeadCellsMultiplayerMod
             ResetOriginalMainMenuUiState();
             ConnectionUI.set_visible = false;
             orig(self);
+
+            try { _ConnectionUI.RememberLocalHeroSkinFromUser(self?.user, "titleScreen.mainMenu"); } catch { }
 
             EnsureMainMenuMultiplayerButton(self);
             ProcessPendingOverlayJoinRequest(self);

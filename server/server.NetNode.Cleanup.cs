@@ -51,11 +51,11 @@ public sealed partial class NetNode
         });
     }
 
-    private RemoteState GetOrCreateRemoteLocked(int id)
+    private RemotePlayerState GetOrCreateRemoteLocked(int id)
     {
         if (!_remotes.TryGetValue(id, out var state))
         {
-            state = new RemoteState(id);
+            state = new RemotePlayerState(id);
             _remotes[id] = state;
         }
         return state;
@@ -73,6 +73,17 @@ public sealed partial class NetNode
                     _primaryRemoteId = key;
             }
         }
+    }
+
+    private void RemovePendingPeerStateLocked(int userId)
+    {
+        RemoveRemoteLocked(userId);
+        _pendingAttacks.RemoveAll(a => a.Id == userId);
+        _pendingMobHits.RemoveAll(h => h.UserId == userId);
+        _pendingMobDies.RemoveAll(d => d.UserId == userId);
+        _pendingExitReadyStates.RemoveAll(s => s.UserId == userId);
+        _pendingPlayerDownStates.RemoveAll(s => s.UserId == userId);
+        _pendingPlayerReviveRequests.RemoveAll(s => s.ReviverId == userId || s.TargetId == userId);
     }
 
     private static int? ResolvePayloadId(string payload, int? senderId, out string cleanedPayload)

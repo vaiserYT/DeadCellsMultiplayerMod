@@ -154,12 +154,7 @@ public sealed partial class NetNode
     }
 
     public bool TryConsumeRemoteAttacks(out List<RemoteAttack> attacks)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingAttacks, out attacks);
-        }
-    }
+        => TryConsumePending(_pendingAttacks, out attacks);
 
     public void ClearMobSyncQueues()
     {
@@ -201,60 +196,30 @@ public sealed partial class NetNode
     }
 
     public bool TryConsumeMobStates(out List<MobStateSnapshot> snapshot)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobStates, out snapshot);
-        }
-    }
+        => TryConsumePending(_pendingMobStates, out snapshot);
 
     public bool TryConsumeMobMoves(out List<MobMoveSnapshot> moves)
     {
         lock (_sync)
         {
-            return TryConsumePendingListLocked(ref _pendingMobMoves, out moves);
+            return _pendingMobMoves.TryConsume(out moves);
         }
     }
 
     public bool TryConsumeMobHits(out List<MobHit> hits)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobHits, out hits);
-        }
-    }
+        => TryConsumePending(_pendingMobHits, out hits);
 
     public bool TryConsumeMobDies(out List<MobDie> dies)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobDies, out dies);
-        }
-    }
+        => TryConsumePending(_pendingMobDies, out dies);
 
     public bool TryConsumeMobAttacks(out List<MobAttack> attacks)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobAttacks, out attacks);
-        }
-    }
+        => TryConsumePending(_pendingMobAttacks, out attacks);
 
     public bool TryConsumeMobDraws(out List<MobDraw> draws)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobDraws, out draws);
-        }
-    }
+        => TryConsumePending(_pendingMobDraws, out draws);
 
     public bool TryConsumeMobRegistry(out List<MobRegistryEntry> entries)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingMobRegistry, out entries);
-        }
-    }
+        => TryConsumePending(_pendingMobRegistry, out entries);
 
     private static bool TryConsumePendingListLocked<T>(ref List<T> pending, out List<T> snapshot)
     {
@@ -269,133 +234,61 @@ public sealed partial class NetNode
         return true;
     }
 
-    public bool TryConsumeExitReadyStates(out List<ExitReadyState> states)
+    private bool TryConsumePending<T>(PendingQueue<T> pending, out List<T> snapshot)
     {
         lock (_sync)
         {
-            return TryConsumePendingListLocked(ref _pendingExitReadyStates, out states);
+            return pending.TryConsume(out snapshot);
         }
     }
+
+    public bool TryConsumeExitReadyStates(out List<ExitReadyState> states)
+        => TryConsumePending(_pendingExitReadyStates, out states);
 
     public bool TryConsumeExitTransitionCommits(out List<ExitTransitionCommit> commits)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingExitTransitionCommits, out commits);
-        }
-    }
+        => TryConsumePending(_pendingExitTransitionCommits, out commits);
 
     public bool TryConsumeBossCineLevelIds(out List<string> levelIds)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossCineLevelIds, out levelIds);
-        }
-    }
+        => TryConsumePending(_pendingBossCineLevelIds, out levelIds);
 
     public bool TryConsumeBossHeroTeleportEvents(out List<BossHeroTeleportEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossHeroTeleports, out events);
-        }
-    }
+        => TryConsumePending(_pendingBossHeroTeleports, out events);
 
     public bool TryConsumePlayerDownStates(out List<PlayerDownState> states)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingPlayerDownStates, out states);
-        }
-    }
+        => TryConsumePending(_pendingPlayerDownStates, out states);
 
     public bool TryConsumePlayerReviveRequests(out List<PlayerReviveRequest> requests)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingPlayerReviveRequests, out requests);
-        }
-    }
+        => TryConsumePending(_pendingPlayerReviveRequests, out requests);
 
     public bool TryConsumeInterDoorEvents(out List<InterDoorEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterDoorEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterDoorEvents, out events);
 
     public bool TryConsumeInterElevatorEvents(out List<InterElevatorEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterElevatorEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterElevatorEvents, out events);
 
     public bool TryConsumeInterElevatorStateEvents(out List<InterElevatorStateEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterElevatorStateEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterElevatorStateEvents, out events);
 
     public bool TryConsumeInterPressurePlateEvents(out List<InterPressurePlateEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterPressurePlateEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterPressurePlateEvents, out events);
 
     public bool TryConsumeInterTreasureChestEvents(out List<InterTreasureChestEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterTreasureChestEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterTreasureChestEvents, out events);
 
     public bool TryConsumeInterVineLadderEvents(out List<InterVineLadderEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterVineLadderEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterVineLadderEvents, out events);
 
     public bool TryConsumeInterTeleportEvents(out List<InterTeleportEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterTeleportEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterTeleportEvents, out events);
 
     public bool TryConsumeInterBreakableGroundEvents(out List<InterBreakableGroundEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterBreakableGroundEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterBreakableGroundEvents, out events);
 
     public bool TryConsumeBossRuneUpdateCells(out List<InterBossRuneUpdateCellsEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingBossRuneUpdateCells, out events);
-        }
-    }
+        => TryConsumePending(_pendingBossRuneUpdateCells, out events);
 
     public bool TryConsumeInterPortalEvents(out List<InterPortalEvent> events)
-    {
-        lock (_sync)
-        {
-            return TryConsumePendingListLocked(ref _pendingInterPortalEvents, out events);
-        }
-    }
+        => TryConsumePending(_pendingInterPortalEvents, out events);
 
     public bool TryGetRemoteHpSnapshots(out List<RemoteHpSnapshot> snapshot)
     {

@@ -60,16 +60,23 @@ namespace DeadCellsMultiplayerMod
 
         internal static void ToggleLocalReadyFromMenu(TitleScreen screen)
         {
-            SetLocalReady(!_localReady, sendToRemote: true, refreshMenu: true);
+            SetLocalReady(!ReadSessionSnapshot().LocalReady, sendToRemote: true, refreshMenu: true);
             screen.ShouldAutoHideConnectionUI(true);
         }
 
         internal static void SetLocalReady(bool ready, bool sendToRemote, bool refreshMenu)
         {
-            if (_localReady == ready && !refreshMenu)
+            bool changed;
+            lock (Sync)
+            {
+                changed = _localReady != ready;
+                if (changed)
+                    _localReady = ready;
+            }
+
+            if (!changed && !refreshMenu)
                 return;
 
-            _localReady = ready;
             if (sendToRemote)
                 SendLocalReadyState();
             if (refreshMenu)
@@ -82,9 +89,11 @@ namespace DeadCellsMultiplayerMod
             if (net == null || !net.IsAlive || net.id <= 0)
                 return;
 
+            var ready = ReadSessionSnapshot().LocalReady;
+
             try
             {
-                net.SendReady(_localReady);
+                net.SendReady(ready);
             }
             catch (Exception ex)
             {
@@ -104,11 +113,9 @@ namespace DeadCellsMultiplayerMod
         {
             MainThreadPump.EnqueueMainThreadCoalesced("ui:lobby-ready-refresh", () =>
             {
-                lock (Sync)
-                {
-                    if (_inActualRun || _autoStartTriggered)
-                        return;
-                }
+                var state = ReadSessionSnapshot();
+                if (state.InActualRun || state.AutoStartTriggered)
+                    return;
 
                 var screen = GetTitleScreen();
                 if (screen == null)
@@ -130,16 +137,17 @@ namespace DeadCellsMultiplayerMod
             _playersDisplay.Clear();
 
             var net = NetRef;
-            var localId = net?.id ?? (_role == NetRole.Host ? 1 : 0);
-            var localName = string.IsNullOrWhiteSpace(_username) ? "Guest" : _username.Trim();
-            if (_role != NetRole.None)
+            var state = ReadSessionSnapshot();
+            var localId = net?.id ?? (state.Role == NetRole.Host ? 1 : 0);
+            var localName = string.IsNullOrWhiteSpace(state.Username) ? "Guest" : state.Username.Trim();
+            if (state.Role != NetRole.None)
             {
                 _playersDisplay.Add(new PlayerInfo
                 {
                     UserId = localId,
                     Name = localName,
-                    Ready = _localReady,
-                    IsHost = _role == NetRole.Host
+                    Ready = state.LocalReady,
+                    IsHost = state.Role == NetRole.Host
                 });
             }
 
@@ -163,9 +171,9 @@ namespace DeadCellsMultiplayerMod
                     var name = _ConnectionUI.GetPlayerName(localId, remote.Id, remote.Username ?? string.Empty);
                     if (string.IsNullOrWhiteSpace(name) &&
                         remote.Id == 1 &&
-                        !string.IsNullOrWhiteSpace(_remoteUsername))
+                        !string.IsNullOrWhiteSpace(state.RemoteUsername))
                     {
-                        name = _remoteUsername.Trim();
+                        name = state.RemoteUsername.Trim();
                     }
 
                     if (string.IsNullOrWhiteSpace(name))
@@ -195,18 +203,14 @@ namespace DeadCellsMultiplayerMod
 
         internal static string GetReadyButtonLabel()
         {
-            return _localReady ? "Ready: On" : "Ready: Off";
+            return ReadSessionSnapshot().LocalReady ? "Ready: On" : "Ready: Off";
         }
 
         internal static string GetPendingLaunchSummaryLabel(TitleScreen? screen)
         {
-            PendingLaunchAction action;
-            bool custom;
-            lock (Sync)
-            {
-                action = _pendingLaunchAction;
-                custom = _pendingLaunchCustom;
-            }
+            var state = ReadSessionSnapshot();
+            var action = state.PendingLaunchAction;
+            var custom = state.PendingLaunchCustom;
 
             if (action == PendingLaunchAction.LoadSave)
             {

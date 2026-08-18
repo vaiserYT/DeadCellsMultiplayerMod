@@ -19,20 +19,30 @@ internal static partial class LobbySession
 
     internal static ClientLaunchPhase _clientLaunchPhase = ClientLaunchPhase.Lobby;
 
+    private static void SetClientLaunchPhaseLocked(ClientLaunchPhase phase)
+    {
+        _clientLaunchPhase = phase;
+        _pendingAutoStart = phase == ClientLaunchPhase.Armed;
+
+        // Starting is the only phase that owns an active auto-start claim. All other transitions
+        // release an old claim so a later prerequisite update can arm the client again safely.
+        if (phase != ClientLaunchPhase.Starting)
+            _autoStartTriggered = false;
+    }
+
     internal static void ResetClientLaunchSessionLocked()
     {
-        _clientLaunchPhase = ClientLaunchPhase.Lobby;
+        SetClientLaunchPhaseLocked(ClientLaunchPhase.Lobby);
     }
 
     internal static void MarkClientLaunchInRunLocked()
     {
-        _clientLaunchPhase = ClientLaunchPhase.InRun;
+        SetClientLaunchPhaseLocked(ClientLaunchPhase.InRun);
     }
 
     internal static void MarkClientLaunchRestartPendingLocked()
     {
-        _clientLaunchPhase = ClientLaunchPhase.RestartPending;
-        _pendingAutoStart = false;
+        SetClientLaunchPhaseLocked(ClientLaunchPhase.RestartPending);
     }
 
     /// <summary>
@@ -61,19 +71,19 @@ internal static partial class LobbySession
     {
         if (_role != NetRole.Client)
         {
-            _clientLaunchPhase = ClientLaunchPhase.Lobby;
+            SetClientLaunchPhaseLocked(ClientLaunchPhase.Lobby);
             return;
         }
 
         if (_pendingClientRestartSeed.HasValue)
         {
-            _clientLaunchPhase = ClientLaunchPhase.RestartPending;
+            SetClientLaunchPhaseLocked(ClientLaunchPhase.RestartPending);
             return;
         }
 
         if (_inActualRun)
         {
-            _clientLaunchPhase = ClientLaunchPhase.InRun;
+            SetClientLaunchPhaseLocked(ClientLaunchPhase.InRun);
             return;
         }
 
@@ -87,30 +97,27 @@ internal static partial class LobbySession
                         _remoteCustomGameDataReady;
         if (!hasIntent)
         {
-            _clientLaunchPhase = ClientLaunchPhase.Lobby;
+            SetClientLaunchPhaseLocked(ClientLaunchPhase.Lobby);
             return;
         }
 
-        _clientLaunchPhase = ClientLaunchPhase.IntentReceived;
+        SetClientLaunchPhaseLocked(ClientLaunchPhase.IntentReceived);
 
         if (!IsPendingLaunchReadyForAutoStartLocked())
         {
-            _clientLaunchPhase = ClientLaunchPhase.AwaitingPrereqs;
-            _pendingAutoStart = false;
+            SetClientLaunchPhaseLocked(ClientLaunchPhase.AwaitingPrereqs);
             return;
         }
 
         // Fresh NewGame still requires the structured commit/execute barrier.
-        if (_pendingLaunchAction != PendingLaunchAction.LoadSave &&
+        if (RunLaunchCoordinator.GetPendingLaunchIntent().Action != PendingLaunchAction.LoadSave &&
             !CanAutoStartStructuredClientLaunchLocked())
         {
-            _clientLaunchPhase = ClientLaunchPhase.AwaitingPrereqs;
-            _pendingAutoStart = false;
+            SetClientLaunchPhaseLocked(ClientLaunchPhase.AwaitingPrereqs);
             return;
         }
 
-        _pendingAutoStart = true;
-        _clientLaunchPhase = ClientLaunchPhase.Armed;
+        SetClientLaunchPhaseLocked(ClientLaunchPhase.Armed);
     }
 
     /// <summary>
@@ -128,21 +135,20 @@ internal static partial class LobbySession
             return false;
         }
 
-        if (_pendingLaunchAction != PendingLaunchAction.LoadSave &&
+        if (RunLaunchCoordinator.GetPendingLaunchIntent().Action != PendingLaunchAction.LoadSave &&
             !CanAutoStartStructuredClientLaunchLocked())
         {
             return false;
         }
 
         _autoStartTriggered = true;
-        _clientLaunchPhase = ClientLaunchPhase.Starting;
+        SetClientLaunchPhaseLocked(ClientLaunchPhase.Starting);
         return true;
     }
 
     internal static void ReleaseClientAutoStartClaimLocked()
     {
         _autoStartTriggered = false;
-        _pendingAutoStart = true;
-        _clientLaunchPhase = ClientLaunchPhase.Armed;
+        SetClientLaunchPhaseLocked(ClientLaunchPhase.Armed);
     }
 }

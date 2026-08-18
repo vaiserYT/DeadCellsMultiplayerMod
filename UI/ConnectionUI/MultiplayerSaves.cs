@@ -63,11 +63,12 @@ namespace DeadCellsMultiplayerMod
 
         internal static void OpenMultiplayerSlotMenu(TitleScreen screen)
         {
-            _multiplayerSaveMenuReturnRole = _inHostStatusMenu
+            var state = ReadSessionSnapshot();
+            _multiplayerSaveMenuReturnRole = state.InHostStatusMenu
                 ? NetRole.Host
-                : _inClientWaitingMenu
+                : state.InClientWaitingMenu
                     ? NetRole.Client
-                    : _role;
+                    : state.Role;
 
             OpenSaveMenu(screen, MultiplayerSaveMenuKind.MultiplayerSlots);
         }
@@ -111,6 +112,12 @@ namespace DeadCellsMultiplayerMod
             _pendingSaveChoiceReflowKind = MultiplayerSaveMenuKind.None;
 
             orig(self);
+
+            try
+            {
+                NotifyMultiplayerSaveSlotChanged();
+            }
+            catch { }
 
             _multiplayerSaveMenuReturnRole = NetRole.None;
 

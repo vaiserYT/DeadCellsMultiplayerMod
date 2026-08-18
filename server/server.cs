@@ -1,9 +1,9 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using DeadCellsMultiplayerMod;
-using DeadCellsMultiplayerMod.Interaction;
+using DeadCellsMultiplayerMod.Network;
+using DeadCellsMultiplayerMod.Tools;
 using Serilog;
 using Steamworks;
 
@@ -14,589 +14,8 @@ public sealed partial class NetNode : IDisposable
 {
     private readonly ILogger _log;
     private readonly NetRole _role;
-
-    private sealed class ClientConnection : IDisposable
-    {
-        public TcpClient Client { get; }
-        public NetworkStream Stream { get; }
-        public SemaphoreSlim SendLock { get; } = new(1, 1);
-        public int AssignedId { get; }
-        public EndPoint? RemoteEndPoint => Client.Client?.RemoteEndPoint;
-        private int _handshakeComplete;
-        public bool HandshakeComplete => Volatile.Read(ref _handshakeComplete) != 0;
-
-        public ClientConnection(TcpClient client, int assignedId)
-        {
-            Client = client;
-            Stream = client.GetStream();
-            AssignedId = assignedId;
-        }
-
-        public bool TryCompleteHandshake() => Interlocked.Exchange(ref _handshakeComplete, 1) == 0;
-
-        public void Dispose()
-        {
-            try { Stream.Close(); } catch { }
-            try { Client.Close(); } catch { }
-            try { SendLock.Dispose(); } catch { }
-        }
-    }
-
-    private sealed class SteamClientConnection : IDisposable
-    {
-        public CSteamID SteamId { get; }
-        public SemaphoreSlim SendLock { get; } = new(1, 1);
-        public int AssignedId { get; }
-        private int _handshakeComplete;
-        public bool HandshakeComplete => Volatile.Read(ref _handshakeComplete) != 0;
-        private readonly object _initialStateSync = new();
-        private DateTime _lastInitialStateSentUtc = DateTime.MinValue;
-        private long _lastPacketReceivedTicks;
-
-        public SteamClientConnection(CSteamID steamId, int assignedId)
-        {
-            SteamId = steamId;
-            AssignedId = assignedId;
-            _lastPacketReceivedTicks = Stopwatch.GetTimestamp();
-        }
-
-        public long LastPacketReceivedTicks => Interlocked.Read(ref _lastPacketReceivedTicks);
-        public void MarkPacketReceived() => Interlocked.Exchange(ref _lastPacketReceivedTicks, Stopwatch.GetTimestamp());
-
-        public bool TryCompleteHandshake() => Interlocked.Exchange(ref _handshakeComplete, 1) == 0;
-
-        public bool TryReserveInitialStateSend(TimeSpan minInterval, bool force = false)
-        {
-            var now = DateTime.UtcNow;
-            lock (_initialStateSync)
-            {
-                if (!force &&
-                    _lastInitialStateSentUtc != DateTime.MinValue &&
-                    now - _lastInitialStateSentUtc < minInterval)
-                {
-                    return false;
-                }
-
-                _lastInitialStateSentUtc = now;
-                return true;
-            }
-        }
-
-        public void Dispose()
-        {
-            try { SendLock.Dispose(); } catch { }
-        }
-    }
-
-    private sealed class RemoteState
-    {
-        public int Id { get; }
-        public double X;
-        public double Y;
-        public int Dir = 1;
-        public bool HasPosition;
-        public long LastPositionSequence;
-        public bool HasRemote;
-        public string? LevelId;
-        public string? RoomLevelId;
-        public int? RoomId;
-        public bool HasRoom;
-        public string? Anim;
-        public int? AnimQueue;
-        public bool? AnimG;
-        public bool HasAnim;
-        public int Life;
-        public int MaxLife;
-        public int Lif;
-        public int BonusLife;
-        public int Recover;
-        public string? Username;
-        public bool Ready;
-        public string? CoopId;
-        public bool HasContinueSave;
-        public string? Skin;
-        public string? Head;
-
-        public string HeadAnim;
-        public bool HasHeadAnim;
-
-        public string? WeaponKind;
-        public int WeaponSlot;
-        public int WeaponPermanentId;
-        public int WeaponAmmo = int.MinValue;
-        public bool HasWeaponUpdate;
-
-        public RemoteState(int id)
-        {
-            Id = id;
-            HeadAnim = string.Empty;
-        }
-    }
-
-    public readonly struct RemoteSnapshot
-    {
-        public readonly int Id;
-        public readonly double X;
-        public readonly double Y;
-        public readonly int Dir;
-        public readonly string? LevelId;
-        public readonly string? RoomLevelId;
-        public readonly int? RoomId;
-        public readonly bool HasRoom;
-        public readonly string? Anim;
-        public readonly int? AnimQueue;
-        public readonly bool? AnimG;
-        public readonly bool HasAnim;
-        public readonly string? Username;
-        public readonly string? HeadAnim;
-        public readonly bool HasHeadAnim;
-
-        public RemoteSnapshot(
-            int id,
-            double x,
-            double y,
-            int dir,
-            string? levelId,
-            string? roomLevelId,
-            int? roomId,
-            bool hasRoom,
-            string? anim,
-            int? animQueue,
-            bool? animG,
-            bool hasAnim,
-            string? username,
-            string? headAnim,
-            bool hasHeadAnim)
-        {
-            Id = id;
-            X = x;
-            Y = y;
-            Dir = dir;
-            LevelId = levelId;
-            RoomLevelId = roomLevelId;
-            RoomId = roomId;
-            HasRoom = hasRoom;
-            Anim = anim;
-            AnimQueue = animQueue;
-            AnimG = animG;
-            HasAnim = hasAnim;
-            Username = username;
-            HeadAnim = headAnim;
-            HasHeadAnim = hasHeadAnim;
-        }
-    }
-
-    public readonly struct RemoteWeaponSnapshot
-    {
-        public readonly int Id;
-        public readonly string? Kind;
-        public readonly int Slot;
-        public readonly int PermanentId;
-        public readonly int? Ammo;
-
-        public RemoteWeaponSnapshot(int id, string? kind, int slot, int permanentId, int? ammo)
-        {
-            Id = id;
-            Kind = kind;
-            Slot = slot;
-            PermanentId = permanentId;
-            Ammo = ammo;
-        }
-    }
-
-    public readonly struct RemoteAttack
-    {
-        public readonly int Id;
-        public readonly string? Kind;
-        public readonly int Slot;
-        public readonly int PermanentId;
-        public readonly int? Ammo;
-        public readonly RemoteAttackAction Action;
-
-        public RemoteAttack(int id, string? kind, int slot, int permanentId, int? ammo, RemoteAttackAction action)
-        {
-            Id = id;
-            Kind = kind;
-            Slot = slot;
-            PermanentId = permanentId;
-            Ammo = ammo;
-            Action = action;
-        }
-    }
-
-    public readonly struct RemoteHpSnapshot
-    {
-        public readonly int Id;
-        public readonly int Life;
-        public readonly int MaxLife;
-        public readonly int Lif;
-        public readonly int BonusLife;
-        public readonly int Recover;
-        public readonly string? Username;
-
-        public RemoteHpSnapshot(int id, int life, int maxLife, int lif, int bonusLife, int recover, string? username)
-        {
-            Id = id;
-            Life = life;
-            MaxLife = maxLife;
-            Lif = lif;
-            BonusLife = bonusLife;
-            Recover = recover;
-            Username = username;
-        }
-    }
-
-    public readonly struct RemoteUserSnapshot
-    {
-        public readonly int Id;
-        public readonly string? Username;
-
-        public RemoteUserSnapshot(int id, string? username)
-        {
-            Id = id;
-            Username = username;
-        }
-    }
-
-    public readonly struct MobStateSnapshot
-    {
-        public readonly int Index;
-        public readonly int Generation;
-        public readonly double X;
-        public readonly double Y;
-        public readonly int Dir;
-        public readonly int Life;
-        public readonly int MaxLife;
-        public readonly string AnimPayload;
-        public readonly string Type;
-        public readonly string StatePayload;
-        public readonly double Time;
-        public readonly double Dx;
-        public readonly double Dy;
-
-        public MobStateSnapshot(int index, double x, double y, int dir, int life, int maxLife, string animPayload, string type, string statePayload = "", int generation = 0, double time = 0.0, double dx = 0.0, double dy = 0.0)
-        {
-            Index = index;
-            Generation = generation;
-            X = x;
-            Y = y;
-            Dir = dir;
-            Life = life;
-            MaxLife = maxLife;
-            AnimPayload = animPayload ?? string.Empty;
-            Type = type ?? string.Empty;
-            StatePayload = statePayload ?? string.Empty;
-            Time = time;
-            Dx = dx;
-            Dy = dy;
-        }
-    }
-
-    public readonly struct MobMoveSnapshot
-    {
-        public readonly int Index;
-        public readonly int Generation;
-        public readonly double X;
-        public readonly double Y;
-        public readonly int Dir;
-        public readonly string AnimPayload;
-        public readonly double Time;
-        public readonly double Dx;
-        public readonly double Dy;
-
-        public MobMoveSnapshot(int index, double x, double y, int dir, string animPayload, int generation = 0, double time = 0.0, double dx = 0.0, double dy = 0.0)
-        {
-            Index = index;
-            Generation = generation;
-            X = x;
-            Y = y;
-            Dir = dir;
-            AnimPayload = animPayload ?? string.Empty;
-            Time = time;
-            Dx = dx;
-            Dy = dy;
-        }
-    }
-
-    public readonly struct MobHit
-    {
-        public readonly int UserId;
-        public readonly int MobIndex;
-        public readonly int Generation;
-        public readonly int Hp;
-        public readonly double X;
-        public readonly double Y;
-        /// <summary>Mob type signature from MOBEVENT row (for host hit routing when syncId was rebound to a nearby same-type mob).</summary>
-        public readonly string Type;
-        /// <summary>Best-effort client damage intent. Used only when local client state rejected the hit and HP did not decrease.</summary>
-        public readonly double DamageHint;
-
-        public MobHit(int userId, int mobIndex, int hp, double x, double y, string type = "", int generation = 0, double damageHint = 0.0)
-        {
-            UserId = userId;
-            MobIndex = mobIndex;
-            Generation = generation;
-            Hp = hp;
-            X = x;
-            Y = y;
-            Type = type ?? string.Empty;
-            DamageHint = double.IsFinite(damageHint) && damageHint > 0.0 ? damageHint : 0.0;
-        }
-    }
-
-    public readonly struct MobDie
-    {
-        public readonly int UserId;
-        public readonly int MobIndex;
-        public readonly int Generation;
-        public readonly double X;
-        public readonly double Y;
-        /// <summary>Optional MOBEVENT type signature used to recover a rebuilt boss mapping.</summary>
-        public readonly string Type;
-
-        public MobDie(int userId, int mobIndex, double x, double y, int generation = 0, string type = "")
-        {
-            UserId = userId;
-            MobIndex = mobIndex;
-            Generation = generation;
-            X = x;
-            Y = y;
-            Type = type ?? string.Empty;
-        }
-    }
-
-    /// <summary>
-    /// Host-authored spawn table entry. NetId is host-owned identity; Type+X+Y are bind hints for clients.
-    /// </summary>
-    public readonly struct MobRegistryEntry
-    {
-        public readonly int NetId;
-        public readonly int Generation;
-        public readonly string Type;
-        public readonly double X;
-        public readonly double Y;
-
-        public MobRegistryEntry(int netId, int generation, string type, double x, double y)
-        {
-            NetId = netId;
-            Generation = generation;
-            Type = type ?? string.Empty;
-            X = x;
-            Y = y;
-        }
-    }
-
-    public readonly struct MobAttack
-    {
-        public readonly int Index;
-        public readonly int Generation;
-        public readonly string SkillId;
-        public readonly bool RequiresTargetInArea;
-        public readonly int? Data;
-        public readonly double X;
-        public readonly double Y;
-        public readonly int TargetUserId;
-        public readonly int Dir;
-        /// <summary>Block client simulation for this many seconds. From event; 0 = use legacy lookup.</summary>
-        public readonly double BlockSeconds;
-        /// <summary>Force facing dir for this many seconds. From event; 0 = use legacy.</summary>
-        public readonly double ForcedDirSeconds;
-        /// <summary>Mob type for rebind when syncId mapping is missing. From MOBEVENT.</summary>
-        public readonly string Type;
-        /// <summary>
-        /// Phase 3: host-assigned per-boss monotonic attack sequence (0 = none / non-boss). Lets the
-        /// client drop replayed or out-of-order boss attacks deterministically via a high-water mark.
-        /// </summary>
-        public readonly int AttackSeq;
-
-        public MobAttack(int index, string skillId, bool requiresTargetInArea, int? data, double x, double y, int targetUserId, int dir = 0, double blockSeconds = 0, double forcedDirSeconds = 0, string type = "", int generation = 0, int attackSeq = 0)
-        {
-            Index = index;
-            Generation = generation;
-            SkillId = skillId ?? string.Empty;
-            RequiresTargetInArea = requiresTargetInArea;
-            Data = data;
-            X = x;
-            Y = y;
-            TargetUserId = targetUserId;
-            Dir = dir;
-            BlockSeconds = blockSeconds;
-            ForcedDirSeconds = forcedDirSeconds;
-            Type = type ?? string.Empty;
-            AttackSeq = attackSeq;
-        }
-    }
-
-    /// <summary>Event-based mob update: x, y, dir + events (attack, hit, die, oldSkill). Sent when something changes, not repeatedly.</summary>
-    public readonly struct MobEventUpdate
-    {
-        public readonly int Index;
-        public readonly int Generation;
-        public readonly double X;
-        public readonly double Y;
-        public readonly int Dir;
-        public readonly IReadOnlyList<string> Events;
-        /// <summary>Mob type for rebind when syncId mapping is missing. Optional.</summary>
-        public readonly string Type;
-
-        public MobEventUpdate(int index, double x, double y, int dir, IReadOnlyList<string> events, string type = "", int generation = 0)
-        {
-            Index = index;
-            Generation = generation;
-            X = x;
-            Y = y;
-            Dir = dir;
-            Events = events ?? Array.Empty<string>();
-            Type = type ?? string.Empty;
-        }
-    }
-
-    public readonly struct MobDraw
-    {
-        public readonly int UserId;
-        public readonly int MobIndex;
-        public readonly int Generation;
-        public readonly bool IsOutOfGame;
-        public readonly bool IsOnScreen;
-
-        public MobDraw(int userId, int mobIndex, bool isOutOfGame, bool isOnScreen, int generation = 0)
-        {
-            UserId = userId;
-            MobIndex = mobIndex;
-            Generation = generation;
-            IsOutOfGame = isOutOfGame;
-            IsOnScreen = isOnScreen;
-        }
-    }
-
-    public readonly struct ExitReadyState
-    {
-        public readonly int UserId;
-        public readonly int DoorCx;
-        public readonly int DoorCy;
-        public readonly bool Pressed;
-        public readonly bool InsideCircle;
-        public readonly bool IsOutOfGame;
-        public readonly bool IsOnScreen;
-        /// <summary>
-        /// Level this readiness belongs to. Door keys are level-local grid coordinates, so without
-        /// it a peer standing on an exit at the same cx/cy in a DIFFERENT biome satisfies the
-        /// rendezvous for a level it already left — an old-level packet changing new-level state.
-        /// Empty means "peer predates this field"; treated as matching for compatibility.
-        /// </summary>
-        public readonly string LevelId;
-
-        public ExitReadyState(int userId, int doorCx, int doorCy, bool pressed, bool insideCircle, bool isOutOfGame, bool isOnScreen, string? levelId = null)
-        {
-            UserId = userId;
-            DoorCx = doorCx;
-            DoorCy = doorCy;
-            Pressed = pressed;
-            InsideCircle = insideCircle;
-            IsOutOfGame = isOutOfGame;
-            IsOnScreen = isOnScreen;
-            LevelId = levelId ?? string.Empty;
-        }
-    }
-
-    public readonly struct PlayerDownState
-    {
-        public readonly int UserId;
-        public readonly bool IsDowned;
-        public readonly double X;
-        public readonly double Y;
-        public readonly string LevelId;
-        public readonly bool HasHeadPosition;
-        public readonly double HeadX;
-        public readonly double HeadY;
-        public readonly bool HasHeadAnim;
-        public readonly string? HeadAnim;
-
-        public PlayerDownState(int userId, bool isDowned, double x, double y, string levelId, bool hasHeadPosition = false, double headX = 0, double headY = 0, bool hasHeadAnim = false, string? headAnim = null)
-        {
-            UserId = userId;
-            IsDowned = isDowned;
-            X = x;
-            Y = y;
-            LevelId = levelId ?? string.Empty;
-            HasHeadPosition = hasHeadPosition;
-            HeadX = headX;
-            HeadY = headY;
-            HasHeadAnim = hasHeadAnim;
-            HeadAnim = hasHeadAnim ? (headAnim ?? string.Empty) : null;
-        }
-    }
-
-    /// <summary>
-    /// Host-approved safe spawn for a player joining an already-running level.
-    /// </summary>
-    /// <remarks>
-    /// The cell is simply where the host's hero is standing right now. That is the strongest
-    /// possible validity proof available and it needs no collision heuristics: a live hero is
-    /// occupying it, so it is inside the level, inside a room, not solid, and reachable. The
-    /// joining client still re-validates it against its OWN level data before using it, which
-    /// doubles as a world-agreement check — if the client's map has no room at the host's cell, the
-    /// two peers did not generate the same world and the client keeps its native entrance instead
-    /// of teleporting into nothing.
-    /// </remarks>
-    public readonly struct HostSpawnAnchor
-    {
-        public readonly int Cx;
-        public readonly int Cy;
-        public readonly string LevelId;
-
-        public HostSpawnAnchor(int cx, int cy, string? levelId)
-        {
-            Cx = cx;
-            Cy = cy;
-            LevelId = levelId ?? string.Empty;
-        }
-    }
-
-    /// <summary>
-    /// Host-authored decision to perform one level transition.
-    /// </summary>
-    /// <remarks>
-    /// The exit used to be a purely mutual rendezvous: whichever peer noticed "everyone is ready"
-    /// first went through, and so did the other, independently. That has no transaction identity,
-    /// so a duplicate or replayed readiness burst could start a second transition, and nothing
-    /// could distinguish "this trigger belongs to the level I am in now" from a stale one.
-    ///
-    /// This makes the host the single authority for WHEN a transition starts and WHICH door it
-    /// starts from, and gives the decision a monotonic sequence so duplicates and stale triggers
-    /// are rejected by identity rather than by timing. The destination is still generated natively
-    /// by each peer from the synchronized level graph; <see cref="DestinationLevelId"/> is carried
-    /// so a divergence is detected and reported instead of silently splitting the party.
-    /// </remarks>
-    public readonly struct ExitTransitionCommit
-    {
-        public readonly long Sequence;
-        public readonly int DoorCx;
-        public readonly int DoorCy;
-        public readonly string FromLevelId;
-        public readonly string DestinationLevelId;
-
-        public ExitTransitionCommit(long sequence, int doorCx, int doorCy, string? fromLevelId, string? destinationLevelId)
-        {
-            Sequence = sequence;
-            DoorCx = doorCx;
-            DoorCy = doorCy;
-            FromLevelId = fromLevelId ?? string.Empty;
-            DestinationLevelId = destinationLevelId ?? string.Empty;
-        }
-    }
-
-    public readonly struct PlayerReviveRequest
-    {
-        public readonly int ReviverId;
-        public readonly int TargetId;
-
-        public PlayerReviveRequest(int reviverId, int targetId)
-        {
-            ReviverId = reviverId;
-            TargetId = targetId;
-        }
-    }
+    private readonly NetPacketBudget _realtimePacketBudget = new(96 * 1024, 16.0);
+    private readonly LifecycleTracker _lifecycle = new("NetNode");
 
     private TcpListener? _listener;   // host
     private TcpClient? _client;     // client
@@ -632,6 +51,17 @@ public sealed partial class NetNode : IDisposable
     private int ID;
 
     public int id => ID;
+
+    internal NetTransportSnapshot ReadTransportSnapshot()
+    {
+        return new NetTransportSnapshot(
+            _useSteamTransport ? NetTransportKind.Steam : NetTransportKind.Tcp,
+            _role,
+            HasAnyConnection(),
+            _disposed);
+    }
+
+    internal LifecycleSnapshot ReadLifecycleSnapshot() => _lifecycle.Snapshot;
 
     private static readonly int[] ClientIds = { 2, 3, 4 };
     public static int MaxClientSlots => ClientIds.Length;
@@ -681,39 +111,25 @@ public sealed partial class NetNode : IDisposable
         return _disposed || (active != null && !ReferenceEquals(active, this));
     }
 
+    // Ownership: _clients/_steamClients hold the transport connection objects for this session
+    // (mutually exclusive per _useSteamTransport). _steamClientIdsBySteam is the reverse lookup
+    // from steam id -> assigned client id (needed for packet routing on the steam transport).
+    // _remotes is the network-layer RECEIVE buffer: one RemotePlayerState per remote id, written only
+    // on the network thread under _sync from decoded incoming lines, and consumed on the main
+    // thread through pooled snapshot builders. Its lifetime is exactly this NetNode session:
+    // it is built up by GetOrCreateRemoteLocked, emptied by RemoveRemoteLocked on disconnect,
+    // and wholesale-cleared in CleanupClient()/Dispose(). It intentionally does NOT own render
+    // state; the ModEntry.clients[] slot arrays are a separate main-thread projection of the
+    // same players (slot-keyed, normalized skin/head, applied-state for diffing and GhostKing
+    // recreation). Keep-both: the two hold different projections with different lifetimes
+    // (session-scoped lock-guarded raw field vs main-thread applied visuals) and different
+    // consumers: _remotes feeds forwarding, late-join catch-up, and snapshot building, while
+    // ModEntry.clients[] feeds the in-world GhostKing pipeline.
     private readonly object _clientsLock = new();
     private readonly Dictionary<int, ClientConnection> _clients = new();
     private readonly Dictionary<int, SteamClientConnection> _steamClients = new();
     private readonly Dictionary<ulong, int> _steamClientIdsBySteam = new();
-    private readonly Dictionary<int, RemoteState> _remotes = new();
-    private List<RemoteAttack> _pendingAttacks = new();
-    private List<MobStateSnapshot> _pendingMobStates = new();
-    private List<MobMoveSnapshot> _pendingMobMoves = new();
-    private List<MobHit> _pendingMobHits = new();
-    private List<MobDie> _pendingMobDies = new();
-    private List<MobAttack> _pendingMobAttacks = new();
-    private List<MobDraw> _pendingMobDraws = new();
-    private List<MobRegistryEntry> _pendingMobRegistry = new();
-    private List<ExitReadyState> _pendingExitReadyStates = new();
-    private List<ExitTransitionCommit> _pendingExitTransitionCommits = new();
-    /// <summary>Latest host spawn anchor (single value, newest wins). Guarded by <c>_sync</c>.</summary>
-    private HostSpawnAnchor? _latestHostSpawnAnchor;
-    private List<PlayerDownState> _pendingPlayerDownStates = new();
-    private List<PlayerReviveRequest> _pendingPlayerReviveRequests = new();
-    private List<string> _pendingBossCineLevelIds = new();
-    private List<BossHeroTeleportEvent> _pendingBossHeroTeleports = new();
-    private List<InterDoorEvent> _pendingInterDoorEvents = new();
-    private List<InterElevatorEvent> _pendingInterElevatorEvents = new();
-    private List<InterElevatorStateEvent> _pendingInterElevatorStateEvents = new();
-    private List<InterPressurePlateEvent> _pendingInterPressurePlateEvents = new();
-    private List<InterTreasureChestEvent> _pendingInterTreasureChestEvents = new();
-    private List<InterVineLadderEvent> _pendingInterVineLadderEvents = new();
-    private List<InterTeleportEvent> _pendingInterTeleportEvents = new();
-    private List<InterBreakableGroundEvent> _pendingInterBreakableGroundEvents = new();
-    private List<InterBossRuneUpdateCellsEvent> _pendingBossRuneUpdateCells = new();
-    private List<InterPortalEvent> _pendingInterPortalEvents = new();
-    private int _primaryRemoteId;
-
+    private readonly Dictionary<int, RemotePlayerState> _remotes = new();
     private readonly IPEndPoint _bindEp;   // host bind
     private readonly IPEndPoint _destEp;   // client connect
 
@@ -854,6 +270,8 @@ public sealed partial class NetNode : IDisposable
             StartClient();
             ID = 0;
         }
+
+        _lifecycle.Start();
     }
 
     private readonly int _steamHostPort;
@@ -885,5 +303,7 @@ public sealed partial class NetNode : IDisposable
             ID = 0;
             StartSteamClient();
         }
+
+        _lifecycle.Start();
     }
 }

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using DeadCellsMultiplayerMod;
 using Serilog;
 
@@ -8,6 +11,20 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization;
 /// <summary>Opt-in verbose tracing for mob sync (env DCCM_MOB_SYNC_TRACE=1 or debug settings).</summary>
 internal static class MobSyncTrace
 {
+    private static long s_hostObservationCalls;
+    private static long s_hostVisibleObservations;
+    private static long s_hostAnimPayloadBuilds;
+    private static long s_hostStatePayloadBuilds;
+    private static long s_wireSendBatches;
+    private static long s_wireSendEntries;
+    private static long s_wireSendBytes;
+    private static long s_wireReceiveBatches;
+    private static long s_wireReceiveEntries;
+    private static long s_wireReceiveBytes;
+    private static long s_lastPerfLogTicks;
+    private static readonly ConcurrentDictionary<string, long> s_focusLogLastTicks = new();
+    private static readonly long FocusLogIntervalTicks = Math.Max(1L, Stopwatch.Frequency);
+
     private static readonly bool EnvTraceEnabled = string.Equals(
         Environment.GetEnvironmentVariable("DCCM_MOB_SYNC_TRACE"),
         "1",
@@ -19,6 +36,77 @@ internal static class MobSyncTrace
 
     public static bool Enabled => EnvTraceEnabled || MultiplayerSettingsStorage.DebugMobsSyncTrace;
     public static bool AssertEnabled => EnvAssertEnabled || MultiplayerSettingsStorage.DebugMobsSyncTrace;
+
+    public static void RecordHostObservation(bool visible, bool builtAnimPayload, bool builtStatePayload)
+    {
+        if (!Enabled)
+            return;
+
+        Interlocked.Increment(ref s_hostObservationCalls);
+        if (visible)
+            Interlocked.Increment(ref s_hostVisibleObservations);
+        if (builtAnimPayload)
+            Interlocked.Increment(ref s_hostAnimPayloadBuilds);
+        if (builtStatePayload)
+            Interlocked.Increment(ref s_hostStatePayloadBuilds);
+    }
+
+    public static void RecordWireSend(string kind, int entries, int bytes)
+    {
+        if (!Enabled)
+            return;
+
+        Interlocked.Increment(ref s_wireSendBatches);
+        Interlocked.Add(ref s_wireSendEntries, entries);
+        Interlocked.Add(ref s_wireSendBytes, bytes);
+    }
+
+    public static void RecordWireReceive(string kind, int entries, int bytes)
+    {
+        if (!Enabled)
+            return;
+
+        Interlocked.Increment(ref s_wireReceiveBatches);
+        Interlocked.Add(ref s_wireReceiveEntries, entries);
+        Interlocked.Add(ref s_wireReceiveBytes, bytes);
+    }
+
+    public static void FlushPerformance(string role)
+    {
+        if (!Enabled)
+            return;
+
+        var now = Stopwatch.GetTimestamp();
+        var previous = Interlocked.Read(ref s_lastPerfLogTicks);
+        if (previous != 0 && now - previous < Stopwatch.Frequency * 5L)
+            return;
+        Interlocked.Exchange(ref s_lastPerfLogTicks, now);
+
+        var observations = Interlocked.Exchange(ref s_hostObservationCalls, 0);
+        var visible = Interlocked.Exchange(ref s_hostVisibleObservations, 0);
+        var animBuilds = Interlocked.Exchange(ref s_hostAnimPayloadBuilds, 0);
+        var stateBuilds = Interlocked.Exchange(ref s_hostStatePayloadBuilds, 0);
+        var sendBatches = Interlocked.Exchange(ref s_wireSendBatches, 0);
+        var sendEntries = Interlocked.Exchange(ref s_wireSendEntries, 0);
+        var sendBytes = Interlocked.Exchange(ref s_wireSendBytes, 0);
+        var receiveBatches = Interlocked.Exchange(ref s_wireReceiveBatches, 0);
+        var receiveEntries = Interlocked.Exchange(ref s_wireReceiveEntries, 0);
+        var receiveBytes = Interlocked.Exchange(ref s_wireReceiveBytes, 0);
+
+        Log.Information(
+            "[MobSync] PERF role={Role} observe={Observe} visible={Visible} animBuild={AnimBuild} stateBuild={StateBuild} sendBatches={SendBatches} sendEntries={SendEntries} sendBytes={SendBytes} recvBatches={ReceiveBatches} recvEntries={ReceiveEntries} recvBytes={ReceiveBytes}",
+            role ?? string.Empty,
+            observations,
+            visible,
+            animBuilds,
+            stateBuilds,
+            sendBatches,
+            sendEntries,
+            sendBytes,
+            receiveBatches,
+            receiveEntries,
+            receiveBytes);
+    }
 
     public static void LogSendStatesBatch(string role, IReadOnlyList<NetNode.MobStateSnapshot> states)
     {
@@ -183,7 +271,7 @@ internal static class MobSyncTrace
 
     public static void LogBindSyncId(string reason, int syncId, string mobType, double x, double y)
     {
-        if (!Enabled)
+        if (!Enabled && syncId != MobsSynchronization.ClientFocusDesyncSyncId)
             return;
 
         Log.Information(
@@ -715,6 +803,42 @@ internal static class MobSyncTrace
             rebound);
     }
 
+    public static void LogClientTombstoneCreated(int syncId, string mobType, string reason)
+    {
+        if (!Enabled)
+            return;
+
+        Log.Information(
+            "[MobSync] ◆ TOMBSTONE created syncId={SyncId} type={MobType} reason={Reason}",
+            syncId,
+            mobType ?? string.Empty,
+            reason ?? string.Empty);
+    }
+
+    public static void LogClientTombstoneRecovery(int syncId, string mobType, bool recovered, string reason)
+    {
+        if (!Enabled)
+            return;
+
+        Log.Information(
+            "[MobSync] ◆ TOMBSTONE recovery syncId={SyncId} type={MobType} recovered={Recovered} reason={Reason}",
+            syncId,
+            mobType ?? string.Empty,
+            recovered,
+            reason ?? string.Empty);
+    }
+
+    public static void LogClientTombstoneCleared(int syncId, string reason)
+    {
+        if (!Enabled)
+            return;
+
+        Log.Information(
+            "[MobSync] ◆ TOMBSTONE cleared syncId={SyncId} reason={Reason}",
+            syncId,
+            reason ?? string.Empty);
+    }
+
     public static void LogPacketGenerationRejected(string context, int packetGeneration, int currentGeneration, int count)
     {
         Log.Warning(
@@ -740,7 +864,7 @@ internal static class MobSyncTrace
         bool replaySpecial,
         bool forceDie)
     {
-        if (!Enabled)
+        if (!Enabled && syncId != MobsSynchronization.ClientFocusDesyncSyncId)
             return;
 
         Log.Information(
@@ -827,5 +951,87 @@ internal static class MobSyncTrace
         }
 
         return $"attack skill={skill}";
+    }
+
+    public static void LogRemoveAttempt(
+        int syncId,
+        string reason,
+        bool destroyed,
+        int authoritativeClientMobDieDepth,
+        string role)
+    {
+        Log.Information(
+            "[MobSync] REMOVE_ATTEMPT syncId={SyncId} reason={Reason} destroyed={Destroyed} depth={Depth} role={Role}",
+            syncId,
+            reason ?? string.Empty,
+            destroyed,
+            authoritativeClientMobDieDepth,
+            role ?? string.Empty);
+    }
+
+    public static void LogResolveFail(
+        int syncId,
+        bool hasIdToMob,
+        bool hasMobToId,
+        bool destroyed,
+        int generation,
+        string reason)
+    {
+        Log.Information(
+            "[MobSync] RESOLVE_FAIL syncId={SyncId} hasIdToMob={HasIdToMob} hasMobToId={HasMobToId} destroyed={Destroyed} generation={Generation} reason={Reason}",
+            syncId,
+            hasIdToMob,
+            hasMobToId,
+            destroyed,
+            generation,
+            reason ?? string.Empty);
+    }
+
+    /// <summary>Phase 20.1 temporary: hit miss immediately before tombstone recovery.</summary>
+    public static void LogHitResolveFail(int syncId, string reason)
+    {
+        Log.Information(
+            "[MobSync] HIT_RESOLVE_FAIL syncId={SyncId} reason={Reason}",
+            syncId,
+            reason ?? string.Empty);
+    }
+
+    /// <summary>Phase 20.1 temporary: always-on lifecycle breadcrumb for the focus sync id.</summary>
+    public static void LogFocusSyncLifecycle(string evt, int syncId, string detail)
+    {
+        if (syncId != MobsSynchronization.ClientFocusDesyncSyncId)
+            return;
+
+        // Focus tracing is useful for transitions, but state packets can arrive every frame.
+        // Keep one breadcrumb per event kind per second so diagnostics cannot dominate runtime IO.
+        var eventKey = evt ?? string.Empty;
+        var now = Stopwatch.GetTimestamp();
+        var previous = s_focusLogLastTicks.GetOrAdd(eventKey, 0L);
+        if (previous != 0 && now - previous < FocusLogIntervalTicks)
+            return;
+        s_focusLogLastTicks[eventKey] = now;
+
+        Log.Information(
+            "[MobSync] FOCUS syncId={SyncId} event={Event} detail={Detail}",
+            syncId,
+            evt ?? string.Empty,
+            detail ?? string.Empty);
+    }
+
+    /// <summary>Phase 20.1 temporary: once-per-interval ClientConsume tombstone/miss counters.</summary>
+    public static void LogClientDiagPerf(
+        int tombstoneLookups,
+        int tombstoneHits,
+        int resolveFails,
+        int hitResolveFails,
+        int missingSyncPackets)
+    {
+        Log.Information(
+            "[MobSync] DIAG_PERF tombstoneLookups={TombstoneLookups} tombstoneHits={TombstoneHits} resolveFails={ResolveFails} hitResolveFails={HitResolveFails} missingSyncPackets={MissingSyncPackets}",
+            tombstoneLookups,
+            tombstoneHits,
+            resolveFails,
+            hitResolveFails,
+            missingSyncPackets);
     }
 }

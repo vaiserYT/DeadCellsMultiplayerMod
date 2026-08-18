@@ -43,6 +43,14 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private const double HostAuthoritativeDeathTombstoneRetainFrames = 30.0 * 20.0;
         /// <summary>After this many frames a locally culled 0-HP client mob is hidden if vanilla never wakes it for a safe onDie.</summary>
         private const double ClientPendingCulledDeathHideFrames = 30.0 * 6.0;
+        /// <summary>Client-side dormant tombstone for a host-owned sync id whose local replica was removed without a host-confirmed death.</summary>
+        private const double ClientMobTombstoneRetainFrames = 30.0 * 30.0;
+        /// <summary>Cap on simultaneous client tombstones so a desync storm cannot grow the dictionary unbounded.</summary>
+        private const int ClientMobTombstoneMaxCount = 128;
+        /// <summary>Cooldown between replica-recreate attempts for a tombstoned sync id (rate-limits recreation without starving recovery).</summary>
+        private const double ClientMobTombstoneRecreateCooldownFrames = 10.0;
+        /// <summary>After this many failed recreate attempts the tombstone is released (e.g. an unconstructable host-only type).</summary>
+        private const int ClientMobTombstoneMaxRecreateFails = 4;
         /// <summary>Distance where the client stops smoothing and snaps to the host to avoid drawing enemies through walls.</summary>
         private const double ClientAuthoritativeHardSnapDistancePx = 24.0 * 10.0;
         /// <summary>Clamp host velocity prediction so reduced-rate packets cannot overshoot through walls on clients.</summary>

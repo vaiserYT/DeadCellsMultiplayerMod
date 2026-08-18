@@ -190,6 +190,36 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly List<HostDeathTombstone> s_hostDeathTombstoneScratch = new();
         private static readonly List<NetNode.MobStateSnapshot> s_hostDeathTombstoneStateScratch = new();
         private static readonly List<int> s_hostDeathTombstoneRemoveScratch = new();
+        /// <summary>
+        /// Client-side dormant tombstone: metadata-only memory of a host-owned sync id whose local
+        /// replica was removed WITHOUT a host-confirmed death. Kept only on the client. When a later
+        /// host packet (state/hit) misses every resolver, the tombstone lets the client recreate the
+        /// replica from the host's own push data instead of silently dropping it forever. Never holds
+        /// a Mob reference; never survives an authoritative MOBDIE, level reset, or generation change.
+        /// </summary>
+        private sealed class ClientMobTombstone
+        {
+            public int SyncId;
+            public int Generation;
+            public string Type = string.Empty;
+            public double X;
+            public double Y;
+            public double CreatedFrame;
+            public double LastSeenFrame;
+            public double LastRecreateAttemptFrame = -99999.0;
+            public int RecreateFailCount;
+        }
+        private static readonly Dictionary<int, ClientMobTombstone> s_clientMobTombstonesBySyncId = new();
+        /// <summary>Phase 20.1 temporary focus id for the original Rampager regression. Remove after the audit.</summary>
+        public const int ClientFocusDesyncSyncId = 43;
+        private static int s_diagTombstoneLookups;
+        private static int s_diagTombstoneHits;
+        private static int s_diagResolveFails;
+        private static int s_diagHitResolveFails;
+        private static int s_diagMissingSyncPackets;
+        private static double s_diagLastPerfFlushFrame = -99999.0;
+        private static double s_diagLastResolveFailLogFrame = -99999.0;
+        private static int s_diagLastResolveFailSyncId;
         private static int s_ghostHitMissGeneration;
         private const int GhostHitMissMinCount = 3;
         private const double GhostHitMissMinSeconds = 2.0;
@@ -602,6 +632,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (flushMs >= RuntimeHitchWatch.MobSyncFlushSlowThresholdMs)
                     RuntimeHitchWatch.LogSlow(modEntry.Logger, "MobsSynchronization.HostFlush", flushMs, BuildRuntimeQueueDetails());
 
+                MobSyncTrace.FlushPerformance("host");
+
                 return;
             }
 
@@ -619,6 +651,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 var flushMs = RuntimeHitchWatch.GetElapsedMilliseconds(flushStart);
                 if (flushMs >= RuntimeHitchWatch.MobSyncFlushSlowThresholdMs)
                     RuntimeHitchWatch.LogSlow(modEntry.Logger, "MobsSynchronization.ClientFlush", flushMs, BuildRuntimeQueueDetails());
+
+                MobSyncTrace.FlushPerformance("client");
             }
         }
 
@@ -1068,9 +1102,20 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 lock (Sync)
                 {
                     if (ShouldRetainMobSyncIdOnTemporaryUnregisterLocked(self, mob))
+                    {
+                        if (MobToId.TryGetValue(mob, out var retainedSyncId))
+                            LogFocusSyncLifecycleLocked(retainedSyncId, "UNREGISTER_RETAINED", "temporary_unregister");
                         DetachTrackedMobForTemporaryUnregisterLocked(mob);
+                    }
                     else
-                        RemoveTrackedMobLocked(mob);
+                    {
+                        // The full removal path wipes MobToId/IdToMob. Capture the sync id and, when
+                        // the removal is NOT a host-confirmed death, remember it as a dormant
+                        // client tombstone so a later host state/hit can still recreate the replica.
+                        if (!MobToId.ContainsKey(mob))
+                            LogFocusUnregisterWithoutMappingLocked(mob);
+                        RemoveTrackedMobLocked(mob, "unregister_entity");
+                    }
                 }
             }
 
@@ -1168,7 +1213,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                     ObserveClientMobForDirtyQueue(self);
                     ApplyClientAnimationStateBeforeUpdate(self);
-                    TryRepairClientMobAttackTarget(self);
+                    if (IsClientNetworkAttackActive(self))
+                        TryRepairClientMobAttackTarget(self);
                 }
 
                 return;
@@ -1287,7 +1333,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
             lock (Sync)
             {
-                RemoveTrackedMobLocked(self);
+                RemoveTrackedMobLocked(self, "on_die");
             }
         }
 

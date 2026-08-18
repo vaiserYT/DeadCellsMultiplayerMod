@@ -15,6 +15,26 @@ namespace DeadCellsMultiplayerMod
 {
     internal static partial class LobbySession
     {
+        internal static string GetSteamLobbyCodeForUi()
+        {
+            if (!string.IsNullOrWhiteSpace(_steamLobbyCode))
+                return _steamLobbyCode;
+
+            if (_steamLobbyId > 0)
+                return SteamConnect.BuildLobbyCodeFromLobbyId(_steamLobbyId);
+
+            return string.Empty;
+        }
+
+        internal static bool TryCopySteamLobbyCodeFromUi()
+        {
+            var code = GetSteamLobbyCodeForUi();
+            if (string.IsNullOrWhiteSpace(code))
+                return false;
+
+            return SteamConnect.TryCopyLobbyCodeToClipboard(code);
+        }
+
         internal static void AbortClientWorldSync(string reason)
         {
             if (CurrentRole != NetRole.Client)
@@ -314,6 +334,7 @@ namespace DeadCellsMultiplayerMod
             SendUsernameToRemote();
             SendLocalReadyState();
             SendCoopStateToRemote();
+            SendLocalCosmeticsToRemote();
 
             if (role == NetRole.Host)
             {
@@ -342,6 +363,26 @@ namespace DeadCellsMultiplayerMod
             }
 
             RequestLobbyMenuRefresh();
+        }
+
+        private static void SendLocalCosmeticsToRemote()
+        {
+            var net = NetRef;
+            if (net == null || !net.IsAlive)
+                return;
+
+            try
+            {
+                // Lobby cosmetics must be sent before a game/hero bootstrap exists. Resolve through
+                // the same title/save/cache path that renders LobbyBeheaded, then force the first
+                // wire send through NetNode so a previous session's dedup state cannot suppress it.
+                net.SendHeroSkin(_ConnectionUI.ResolveLocalHeroSkin());
+                net.SendHeroHeadSkin(_ConnectionUI.ResolveLocalHeroHeadSkin());
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to send lobby cosmetics: {Message}", ex.Message);
+            }
         }
 
         internal static void NotifyClientConnectAttempt(int attempt)

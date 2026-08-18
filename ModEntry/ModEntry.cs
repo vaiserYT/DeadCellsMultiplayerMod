@@ -14,6 +14,7 @@ using dc.libs.heaps.slib;
 using Rand = dc.libs.Rand;
 using dc.ui.hud;
 using dc.h2d;
+using dc.shader;
 using Hashlink.Virtuals;
 using dc.tool;
 using dc.tool.mainSkills;
@@ -96,6 +97,14 @@ namespace DeadCellsMultiplayerMod
 
         public dc.pr.Game? game;
 
+        // Main-thread-only per-slot projection of remote players for the in-world GhostKing
+        // pipeline. Slot index is derived from remote id via TryGetClientIndex (compact 0..n-1
+        // range, stable within a session). Compare with NetNode._remotes: that structure is the
+        // network-layer RECEIVE buffer (id-keyed, network-thread-written under _sync, session
+        // lifetime, feeds forwarding / late-join / snapshot building), whereas these arrays hold
+        // the APPLIED render state (normalized skin/head, diffed labels/pos/anim/fx, recreatable
+        // GhostKing/Kinghead objects). Same logical players, different projections + lifetimes;
+        // keep-both is intentional (see comment on NetNode._remotes).
         public static GhostKing[] clients = new GhostKing[NetNode.MaxClientSlots];
         public static Kinghead?[] clientHeads = new Kinghead?[NetNode.MaxClientSlots];
         public static string?[] clientLabels = new string?[NetNode.MaxClientSlots];
@@ -538,6 +547,7 @@ namespace DeadCellsMultiplayerMod
             entry.Logger.Information("[NetMod][MobSyncStack] mode=host-authoritative-vanilla-ai-transport-neutral-replica-keyframes");
             entry.Logger.Information("[NetMod][SteamCallbacks] mode=main-thread-only-no-timer");
             Hook_Game.init += Hook_gameinit;
+            Hook_GlowKey.applyGlowData += Hook_GlowKey_applyGlowData;
             Hook_Hero.wakeup += hook_hero_wakeup;
             Hook_Hero.onLevelChanged += hook_level_changed;
             Hook_Game.activateSubLevel += Hook_Game_activateSubLevel;
@@ -588,12 +598,40 @@ namespace DeadCellsMultiplayerMod
             Ghost.KingWeaponHooks.Install();
         }
 
+        private static void Hook_GlowKey_applyGlowData(
+            Hook_GlowKey.orig_applyGlowData orig,
+            GlowKey self,
+            int index,
+            Hashlink.Virtuals.virtual_animationIntensity_animationScale_animationSpeed_animationTextureMask_inner_key_outer_power_ glowData)
+        {
+            // Custom head/body glow data can contain more entries than the shader has allocated.
+            // Grow the count before the vanilla write instead of allowing an indexed native write
+            // to address an unallocated color slot.
+            if (index >= 0 && self.colorsCount__ <= index)
+            {
+                self.colorsCount__ = index + 1;
+                self.constModified = true;
+            }
+
+            orig(self, index, glowData);
+        }
+
 
         private void Hook_Hero_applySkin(Hook_Hero.orig_applySkin orig, Hero self, dc.String skinId)
         {
             orig(self, skinId);
             try
             {
+                _ConnectionUI.RememberLocalHeroSkin(skinId?.ToString(), "applySkin");
+                try
+                {
+                    var applyUser = dc.Main.Class.ME?.user ?? self?._level?.game?.user;
+                    _ConnectionUI.RememberLocalHeroSkinFromUser(applyUser, "applySkin.user");
+                }
+                catch
+                {
+                }
+
                 if (_netRole == NetRole.None)
                     return;
 
@@ -848,6 +886,7 @@ namespace DeadCellsMultiplayerMod
         private void Hook_User_unserialize(Hook_User.orig_unserialize orig, User self, dc.hxbit.Serializer v)
         {
             orig(self, v);
+            try { _ConnectionUI.RememberLocalHeroSkinFromUser(self, "unserialize"); } catch { }
             if (_netRole == NetRole.Client)
                 GameDataSync.CaptureOriginalUserData(self, allowReplaceWhenBetter: true);
         }
@@ -1268,7 +1307,7 @@ namespace DeadCellsMultiplayerMod
             TraceActiveCineTypeChange();
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-            if (hitchMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
+            if (RuntimeHitchWatch.Enabled && hitchMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
             {
                 RuntimeHitchWatch.LogSlow(
                     Logger,
@@ -1350,7 +1389,7 @@ namespace DeadCellsMultiplayerMod
             LogHeroUpdateStepIfSlow("ModEntry.OnHeroUpdate.UpdateGhostHeads", stepStart, null);
 
             var hitchMs = RuntimeHitchWatch.GetElapsedMilliseconds(hitchStart);
-            if (hitchMs >= RuntimeHitchWatch.ModHeroSlowThresholdMs)
+            if (RuntimeHitchWatch.Enabled && hitchMs >= RuntimeHitchWatch.ModHeroSlowThresholdMs)
             {
                 RuntimeHitchWatch.LogSlow(
                     Logger,

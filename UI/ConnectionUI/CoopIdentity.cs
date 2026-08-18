@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using DeadCellsMultiplayerMod.MultiplayerModUI.Connection;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -68,7 +69,9 @@ namespace DeadCellsMultiplayerMod
         internal static void NotifyMultiplayerSaveSlotChanged()
         {
             InvalidateLocalContinueSaveStateCache();
+            _ConnectionUI.RefreshLocalHeroCosmeticsForSaveSlot();
             SendCoopStateToRemote();
+            SendLocalCosmeticsToRemote();
             RequestLobbyMenuRefresh();
         }
 
@@ -91,7 +94,8 @@ namespace DeadCellsMultiplayerMod
             var shouldCreate = false;
             lock (Sync)
             {
-                if (!_pendingNewCoopWorldIdAssigned || _pendingLaunchAction != PendingLaunchAction.NewGame)
+                if (!_pendingNewCoopWorldIdAssigned ||
+                    RunLaunchCoordinator.GetPendingLaunchIntent().Action != PendingLaunchAction.NewGame)
                 {
                     _pendingNewCoopWorldIdAssigned = true;
                     shouldCreate = true;
@@ -124,7 +128,7 @@ namespace DeadCellsMultiplayerMod
                 if (_role != NetRole.Client ||
                     !_receivedLaunchPayload ||
                     !_receivedNewCoopWorldPrepared ||
-                    _pendingLaunchAction != PendingLaunchAction.NewGame)
+                    RunLaunchCoordinator.GetPendingLaunchIntent().Action != PendingLaunchAction.NewGame)
                 {
                     return;
                 }

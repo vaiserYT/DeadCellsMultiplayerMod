@@ -3,12 +3,24 @@ using Serilog;
 
 namespace DeadCellsMultiplayerMod;
 
+internal enum PendingLaunchAction
+{
+    None,
+    LoadSave,
+    NewGame
+}
+
 /// <summary>
 /// DCCM integration adapter for the portable run-launch contracts. It owns no Dead Cells
 /// objects: the menu and User.newGame hooks call it before performing game-specific work.
 /// </summary>
 internal static class RunLaunchCoordinator
 {
+    internal readonly record struct PendingLaunchIntent(
+        PendingLaunchAction Action,
+        bool Custom,
+        bool StreamEnabled);
+
     private static readonly object Sync = new();
 
     private static ILogger? _log;
@@ -17,6 +29,8 @@ internal static class RunLaunchCoordinator
     private static long _stateSequence;
     private static Guid _hostSessionId;
     private static long _nextRunId;
+    private static PendingLaunchIntent _pendingLaunchIntent =
+        new(PendingLaunchAction.NewGame, false, false);
 
     private static RunLaunchDescriptor? _hostDescriptor;
     private static RunLaunchDescriptor? _remoteDescriptor;
@@ -47,6 +61,58 @@ internal static class RunLaunchCoordinator
         {
             _log = logger;
             ResetLocked(NetRole.None, "initialize");
+        }
+    }
+
+    internal static CoopSessionSnapshot GetSessionSnapshot()
+    {
+        lock (Sync)
+        {
+            return _state.Snapshot;
+        }
+    }
+
+    internal static NetRole CurrentRole
+    {
+        get
+        {
+            lock (Sync)
+                return _role;
+        }
+    }
+
+    internal static PortableCore.CoopSessionPhase MapClientLaunchPhaseToSessionPhase(
+        LobbySession.ClientLaunchPhase phase)
+    {
+        return phase switch
+        {
+            LobbySession.ClientLaunchPhase.Lobby => PortableCore.CoopSessionPhase.Lobby,
+            LobbySession.ClientLaunchPhase.IntentReceived => PortableCore.CoopSessionPhase.LaunchCommitted,
+            LobbySession.ClientLaunchPhase.AwaitingPrereqs => PortableCore.CoopSessionPhase.LaunchCommitted,
+            LobbySession.ClientLaunchPhase.Armed => PortableCore.CoopSessionPhase.LaunchCommitted,
+            LobbySession.ClientLaunchPhase.Starting => PortableCore.CoopSessionPhase.LoadingLevel,
+            LobbySession.ClientLaunchPhase.InRun => PortableCore.CoopSessionPhase.Playing,
+            LobbySession.ClientLaunchPhase.RestartPending => PortableCore.CoopSessionPhase.TransitionCommitted,
+            _ => PortableCore.CoopSessionPhase.Faulted
+        };
+    }
+
+    internal static PendingLaunchIntent GetPendingLaunchIntent()
+    {
+        lock (Sync)
+        {
+            return _pendingLaunchIntent;
+        }
+    }
+
+    internal static void SetPendingLaunchIntent(
+        PendingLaunchAction action,
+        bool custom,
+        bool streamEnabled)
+    {
+        lock (Sync)
+        {
+            _pendingLaunchIntent = new PendingLaunchIntent(action, custom, streamEnabled);
         }
     }
 
@@ -882,6 +948,7 @@ internal static class RunLaunchCoordinator
         _stateSequence = 0;
         _hostSessionId = role == NetRole.Host ? Guid.NewGuid() : Guid.Empty;
         _nextRunId = 0;
+        _pendingLaunchIntent = new PendingLaunchIntent(PendingLaunchAction.NewGame, false, false);
         _hostDescriptor = null;
         _remoteDescriptor = null;
         _hostExecutedSequence = 0;

@@ -22,6 +22,7 @@ internal sealed class CoopSessionStateMachine
     public CoopSessionPhase Phase { get; private set; } = CoopSessionPhase.Disconnected;
     public long TransitionSequence { get; private set; }
     public string LastReason { get; private set; } = string.Empty;
+    public CoopSessionSnapshot Snapshot => new(Phase, TransitionSequence, LastReason);
 
     public bool TryTransition(
         CoopSessionPhase next,

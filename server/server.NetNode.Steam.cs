@@ -871,21 +871,31 @@ public sealed partial class NetNode
 
         lock (_sync)
         {
-            RemoveRemoteLocked(sender.AssignedId);
-            _pendingAttacks.RemoveAll(a => a.Id == sender.AssignedId);
-            _pendingMobHits.RemoveAll(h => h.UserId == sender.AssignedId);
-            _pendingMobDies.RemoveAll(d => d.UserId == sender.AssignedId);
-            _pendingExitReadyStates.RemoveAll(s => s.UserId == sender.AssignedId);
-            _pendingPlayerDownStates.RemoveAll(s => s.UserId == sender.AssignedId);
-            _pendingPlayerReviveRequests.RemoveAll(s => s.ReviverId == sender.AssignedId || s.TargetId == sender.AssignedId);
+            RemovePendingPeerStateLocked(sender.AssignedId);
             _hasRemote = hasClients;
         }
 
-        if (wasConnected && !hasClients)
-            MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+        if (wasConnected)
+        {
+            if (!hasClients)
             {
-                if (IsCurrentNetworkSession())
-                    LobbySession.NotifyRemoteDisconnected(_role);
-            });
+                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-disconnected", () =>
+                {
+                    if (IsCurrentNetworkSession())
+                        LobbySession.NotifyRemoteDisconnected(_role);
+                });
+            }
+            else
+            {
+                // A connected client left but others remain. Reconcile the departed client's ghost
+                // slot and purge its mob interest (Phase 17) without the full lobby reset, which is
+                // only correct when the last client leaves the session.
+                MainThreadPump.EnqueueCriticalMainThreadCoalesced("net:remote-left", () =>
+                {
+                    if (IsCurrentNetworkSession())
+                        ModEntry.Instance?.HandleNetworkDisconnectGhostCleanup(_role);
+                });
+            }
+        }
     }
 }

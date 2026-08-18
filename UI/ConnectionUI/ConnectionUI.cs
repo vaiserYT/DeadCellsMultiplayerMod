@@ -123,6 +123,11 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private bool _menuVisible;
         private int _layoutW = 255;
         private int _layoutH = 720;
+        private double _lastLayoutUiScale = double.NaN;
+        private double _lastLayoutTextBoost = double.NaN;
+        private int _layoutMetricProbeCountdown;
+        private const int LayoutMetricProbeIntervalFrames = 10;
+        private int _lobbyCodeProbeCountdown;
         private Graphics? _hoverBorder;
         private static readonly int HoverBorderColor = 0x59D5FF;
         /// <summary>Same callback as the screen's Back/Disconnect button; fired on Escape.</summary>
@@ -130,9 +135,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         private static ConnectionUI? Instance;
         private HSprite? spriteui;
+        private readonly LifecycleTracker _lifecycle = new("ConnectionUI");
+        private readonly long _lifecycleGeneration;
 
         public ConnectionUI(Process parent) : base(parent)
         {
+            _lifecycleGeneration = _lifecycle.Start();
             Instance = this;
             this.createRoot(parent.root);
             MainPageLightingInitializer mainPage = new MainPageLightingInitializer(this);
@@ -177,7 +185,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             try
             {
-                if (instance.root == null || instance.destroyed)
+                if (!instance._lifecycle.IsCurrent(instance._lifecycleGeneration) ||
+                    instance.root == null || instance.destroyed)
                 {
                     Instance = null;
                     return null;
@@ -255,6 +264,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         {
             PendingButtons.Clear();
             PendingInfos.Clear();
+            _ConnectionUI.InvalidateLobbyPlayerSlots();
             var instance = TryGetLiveInstance();
             if (instance != null)
             {
@@ -319,6 +329,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             var instance = TryGetLiveInstance();
             if (instance == null)
                 return;
+            _ConnectionUI.InvalidateLobbyPlayerSlots();
             instance._mode = UiMode.Lobby;
             instance._menuVisible = false;
             instance._keepLobbyVisible = false;
@@ -395,8 +406,10 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 : System.Math.Min(bgWidth - padX * 2.0 - lobbyReserve, SideContentWidth * uiScale);
             double colGap = 14.0 * uiScale;
             double rowGap = 16.0 * uiScale;
-            // Same typography boost as the hub for every styled menu screen.
-            double menuText = textUi * 1.55;
+            // Keep button labels at their existing scale; menu information gets the requested
+            // additional readability boost without changing button or prompt text.
+            double buttonText = textUi * 1.55;
+            double menuText = buttonText * MenuTextScaleBoost;
             double cursorY;
 
             if (this._keepLobbyVisible)
@@ -453,7 +466,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     cardH,
                     CardCornerRadius * uiScale,
                     ContentCardFill,
-                    ContentCardEdge);
+                    ContentCardEdge,
+                    accentColor: AccentColor);
             }
 
             foreach (var info in PendingInfos)
@@ -490,14 +504,14 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         double btnH = System.Math.Max(
                             GetButtonHeight(actions[i], showHelp: true, uiScale, styled: true),
                             GetButtonHeight(actions[i + 1], showHelp: true, uiScale, styled: true));
-                        PlaceMenuButton(actions[i], clusterX, cursorY, btnW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
-                        PlaceMenuButton(actions[i + 1], clusterX + btnW + colGap, cursorY, btnW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
+                        PlaceMenuButton(actions[i], clusterX, cursorY, btnW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
+                        PlaceMenuButton(actions[i + 1], clusterX + btnW + colGap, cursorY, btnW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
                         cursorY += btnH + rowGap;
                     }
                     else
                     {
                         double btnH = GetButtonHeight(actions[i], showHelp: true, uiScale, styled: true);
-                        PlaceMenuButton(actions[i], clusterX, cursorY, clusterW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
+                        PlaceMenuButton(actions[i], clusterX, cursorY, clusterW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
                         cursorY += btnH + rowGap;
                     }
                 }
@@ -505,7 +519,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 for (int i = 0; i < backs.Count; i++)
                 {
                     double btnH = GetButtonHeight(backs[i], showHelp: true, uiScale, styled: true);
-                    PlaceMenuButton(backs[i], clusterX, cursorY, clusterW, btnH, menuText, uiScale, showHelp: true, centerText: true, styled: true);
+                    PlaceMenuButton(backs[i], clusterX, cursorY, clusterW, btnH, buttonText, uiScale, showHelp: true, centerText: true, styled: true);
                     cursorY += btnH + rowGap;
                 }
             }
@@ -516,7 +530,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 {
                     var btn = PendingButtons[i];
                     double btnH = GetButtonHeight(btn, showHelp: true, uiScale, styled: true);
-                    PlaceMenuButton(btn, padX, cursorY, listW, btnH, menuText, uiScale, showHelp: true, centerText: false, styled: true);
+                    PlaceMenuButton(btn, padX, cursorY, listW, btnH, buttonText, uiScale, showHelp: true, centerText: false, styled: true);
                     cursorY += btnH + rowGap;
                 }
             }
@@ -1021,6 +1035,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         public static void NotifyConnectionsChanged()
         {
+            _ConnectionUI.InvalidateLobbyPlayerSlots();
             TryGetLiveInstance()?.updateConnections();
         }
 
@@ -1174,6 +1189,17 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             if (this._lobbyPanelRoot == null)
                 return;
 
+            if (!forceRefreshText)
+            {
+                if (this._lobbyCodeProbeCountdown > 0)
+                {
+                    this._lobbyCodeProbeCountdown--;
+                    return;
+                }
+
+                this._lobbyCodeProbeCountdown = LayoutMetricProbeIntervalFrames;
+            }
+
             string? lobbyCode = null;
             try
             {
@@ -1220,7 +1246,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         // Button column width inside the full-screen panel (non-hub menus).
         private const int SideContentWidth = 560;
         private const double NavButtonClusterWidth = 780.0;
-
+        private const double MenuTextScaleBoost = 1.15;
         public override void onResize()
         {
             base.onResize();
@@ -1242,6 +1268,10 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             // Panel is always absolute full screen — never a short/cropped box.
             BuildFullScreenPanel(screenWidth, screenHeight);
+            this._lastLayoutUiScale = UiScale.GetResolutionScale();
+            this._lastLayoutTextBoost = GetWindowedTextBoost();
+            this._layoutMetricProbeCountdown = LayoutMetricProbeIntervalFrames;
+            this._lobbyCodeProbeCountdown = LayoutMetricProbeIntervalFrames;
 
             bool showLobbyCard = this._mode == UiMode.Lobby || this._keepLobbyVisible;
             if (showLobbyCard)
@@ -1320,10 +1350,46 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         public override void update()
         {
+            var perfEnabled = RuntimeHitchWatch.Enabled;
+            var perfStart = perfEnabled ? RuntimeHitchWatch.Start() : 0L;
             base.update();
+
+            // Some display-mode changes do not dispatch Process.onResize. Detect them from the
+            // live window and rebuild after the game has applied the new metrics, otherwise text
+            // keeps the old bitmap scale/positions while the panel has already moved.
+            if (this._layoutMetricProbeCountdown > 0)
+            {
+                this._layoutMetricProbeCountdown--;
+            }
+            else
+            {
+                this._layoutMetricProbeCountdown = LayoutMetricProbeIntervalFrames;
+                try
+                {
+                    var win = dc.hxd.Window.Class.getInstance();
+                    var liveUiScale = UiScale.GetResolutionScale();
+                    var liveTextBoost = GetWindowedTextBoost();
+                    if (win != null &&
+                        (win.get_width() != this._layoutW ||
+                         win.get_height() != this._layoutH ||
+                         double.IsNaN(this._lastLayoutUiScale) ||
+                         System.Math.Abs(liveUiScale - this._lastLayoutUiScale) > 0.001 ||
+                         System.Math.Abs(liveTextBoost - this._lastLayoutTextBoost) > 0.001))
+                    {
+                        this.onResize();
+                    }
+                }
+                catch
+                {
+                }
+            }
+
             bool promptWasOpen = this._promptOpen;
             TickTextPrompt();
             TickMenuEscape(promptWasOpen);
+
+            // Lobby head particle emitters advance on a fixed 60fps step (game baseFps).
+            try { LobbyHeadFx.TickAll(1.0 / 60.0); } catch { }
 
             if (this._mode != UiMode.Menu || this._keepLobbyVisible)
             {
@@ -1332,11 +1398,56 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     RebuildLobbyPanelContent(slots);
                 else
                     UpdateLobbyIdLabel(forceRefreshText: false);
+
+                FlushPendingLobbyBeheadedSkinApply();
             }
             else if (this._menuVisible)
             {
                 UpdateLobbyIdLabel(forceRefreshText: false);
             }
+
+            // After skin rebind: step idle, then place heads on this frame's headBone.
+            try { TickLobbyHeadBones(); } catch { }
+
+            if (perfEnabled)
+            {
+                var elapsedMs = RuntimeHitchWatch.GetElapsedMilliseconds(perfStart);
+                if (elapsedMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
+                    RuntimeHitchWatch.LogSlow(Log.Logger, "ConnectionUI.Update", elapsedMs);
+            }
+        }
+
+        public override void onDispose()
+        {
+            if (!_lifecycle.TryBeginStop())
+            {
+                base.onDispose();
+                return;
+            }
+
+            try
+            {
+                clean();
+            }
+            catch
+            {
+            }
+            finally
+            {
+                _lifecycle.MarkDisposed();
+                if (ReferenceEquals(Instance, this))
+                    Instance = null;
+                base.onDispose();
+            }
+        }
+
+        public override void postUpdate()
+        {
+            base.postUpdate();
+            // Title-screen processes can overwrite DirLighted globals after our update().
+            // Push them again so ColorMap stays in the linked shader while the lobby is up.
+            if (this._lobbyBeheadedRoot != null)
+                PushLobbyBeheadedLighting();
         }
 
         /// <summary>Escape = same as Back/Disconnect, unless the text prompt consumed Escape this frame.</summary>

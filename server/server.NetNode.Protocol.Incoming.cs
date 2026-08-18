@@ -3,6 +3,8 @@ using System.Text;
 using DeadCellsMultiplayerMod;
 using DeadCellsMultiplayerMod.Interaction;
 using DeadCellsMultiplayerMod.AdvancedCoop;
+using DeadCellsMultiplayerMod.Mobs.MobsSynchronization;
+using DeadCellsMultiplayerMod.Network;
 
 public sealed partial class NetNode
 {
@@ -44,6 +46,26 @@ public sealed partial class NetNode
             target.Add(items[i]);
     }
 
+    private static void AppendBoundedLocked<T>(PendingQueue<T> target, IReadOnlyList<T> items, int maxCount)
+    {
+        target.AppendBounded(items, maxCount);
+    }
+
+    private void AppendLatestMobMovesLocked(IReadOnlyList<MobMoveSnapshot> moves)
+    {
+        if (moves == null || moves.Count == 0)
+            return;
+
+        for (var i = 0; i < moves.Count; i++)
+        {
+            var move = moves[i];
+            // Movement is disposable presentation traffic. If the consumer is stalled, keeping a
+            // complete history is actively harmful: the game thread would spend time applying
+            // positions that are already obsolete. Start a fresh latest-only window at the bound.
+            _pendingMobMoves.Upsert((move.Generation, move.Index), move);
+        }
+    }
+
     private static void AddBoundedLocked<T>(List<T> target, T item, int maxCount)
     {
         if (maxCount <= 0)
@@ -51,6 +73,11 @@ public sealed partial class NetNode
         if (target.Count >= maxCount)
             target.RemoveRange(0, target.Count - maxCount + 1);
         target.Add(item);
+    }
+
+    private static void AddBoundedLocked<T>(PendingQueue<T> target, T item, int maxCount)
+    {
+        target.AddBounded(item, maxCount);
     }
 
     /// <summary>
@@ -82,61 +109,12 @@ public sealed partial class NetNode
             return true;
 
         if (_role == NetRole.Host)
-        {
-            if (line.StartsWith("LSEEDREQ|", StringComparison.Ordinal))
-            {
-                var levelId = ClampProtocolText(line["LSEEDREQ|".Length..], MaxIdentityFieldChars);
-                if (!string.IsNullOrWhiteSpace(levelId))
-                    ResendCachedLevelSeed(levelId);
-                return true;
-            }
-
-            if (line.StartsWith("LGRAPHREQ|", StringComparison.Ordinal))
-            {
-                var levelId = ClampProtocolText(line["LGRAPHREQ|".Length..], MaxIdentityFieldChars);
-                if (!string.IsNullOrWhiteSpace(levelId))
-                    ResendCachedLevelGraph(levelId);
-                return true;
-            }
-
-            return false;
-        }
+            return TryHandleHostFastPathLine(line);
 
         if (_role != NetRole.Client)
             return false;
 
-        try
-        {
-            if (line.StartsWith("HXSYNC|", StringComparison.Ordinal))
-            {
-                var payload = line["HXSYNC|".Length..];
-                lock (_sync) _hasRemote = true;
-                GameDataSync.ReceiveSerializerSync(payload);
-                return true;
-            }
-
-            if (line.StartsWith("LSEED|", StringComparison.Ordinal))
-            {
-                var payload = line["LSEED|".Length..];
-                lock (_sync) _hasRemote = true;
-                GameDataSync.ReceiveLevelSeed(payload);
-                return true;
-            }
-
-            if (line.StartsWith("LGRAPH|", StringComparison.Ordinal))
-            {
-                var payload = line["LGRAPH|".Length..];
-                lock (_sync) _hasRemote = true;
-                GameDataSync.ReceiveLevelGraph(payload);
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.Warning("[NetNode] Fast-path line handling failed: {msg}", ex.Message);
-        }
-
-        return false;
+        return TryHandleClientFastPathLine(line);
     }
 
     private bool TryHandleMobTrafficFastPath(string line, int? senderId)
@@ -156,6 +134,8 @@ public sealed partial class NetNode
                 return false;
 
             NetNodeMobTrafficStats.RecordFastPathLine();
+            NetTrafficDiagnostics.RecordReceived(line.Length);
+            NetTrafficDiagnostics.TryFlush(_log, _role.ToString());
             return true;
         }
         catch (Exception ex)
@@ -180,6 +160,7 @@ public sealed partial class NetNode
             var parsedStates = new List<MobStateSnapshot>();
             if (MobWireBinary.TryParseMobStatesBase64(payload, parsedStates))
             {
+                MobSyncTrace.RecordWireReceive("state", parsedStates.Count, line.Length);
                 lock (_sync)
                 {
                     // MOBSTATE packets are often split into multiple wire lines when a level has
@@ -203,6 +184,7 @@ public sealed partial class NetNode
         {
             var payload = line["MOBSTATE|".Length..];
             var parsedStates = ParseMobStatesPayload(payload);
+            MobSyncTrace.RecordWireReceive("state", parsedStates.Count, line.Length);
             lock (_sync)
             {
                 // MOBSTATE packets can be chunked. Appending on the client is required so a
@@ -242,7 +224,8 @@ public sealed partial class NetNode
                 {
                     if (parsedMoves.Count > 0)
                     {
-                        AppendBoundedLocked(_pendingMobMoves, parsedMoves, PendingMobMoveLimit);
+                        MobSyncTrace.RecordWireReceive("move", parsedMoves.Count, line.Length);
+                        AppendLatestMobMovesLocked(parsedMoves);
                         _hasRemote = true;
                     }
                 }

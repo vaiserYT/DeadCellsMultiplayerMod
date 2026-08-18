@@ -17,6 +17,7 @@ public sealed partial class NetNode
     /// </summary>
     public void Dispose()
     {
+        _lifecycle.TryBeginStop();
         if (Interlocked.Exchange(ref _disposeState, 1) != 0)
             return;
 
@@ -170,5 +171,6 @@ public sealed partial class NetNode
         // buys nothing, while an in-flight SendLineToStreamSafe on another thread would observe an
         // ObjectDisposedException from WaitAsync during shutdown - noise on Windows, and one more
         // way to fault a background task while the Linux runtime is already unwinding.
+        _lifecycle.MarkDisposed();
     }
 }

@@ -190,7 +190,8 @@ namespace DeadCellsMultiplayerMod.Tools
             double h,
             double radius,
             int fillColor,
-            int edgeColor)
+            int edgeColor,
+            int accentColor = 0)
         {
             if (g == null || w <= 1.0 || h <= 1.0)
                 return;
@@ -208,6 +209,17 @@ namespace DeadCellsMultiplayerMod.Tools
             {
                 g.beginFill(Ref<int>.From(ref lip), Ref<double>.From(ref lipA));
                 g.drawRect(lx, y + 2.0, lw, 2.0);
+                g.endFill();
+            }
+
+            // Optional menu-only signal mark. The lobby card keeps the quieter vanilla chrome.
+            if (accentColor != 0)
+            {
+                double accentA = 0.72;
+                int accentW = (int)System.Math.Min(92.0, System.Math.Max(24.0, w * 0.22));
+                g.beginFill(Ref<int>.From(ref accentColor), Ref<double>.From(ref accentA));
+                g.drawRect(x + radius, y + 2.0, accentW, 2.0);
+                g.drawRect(x + 2.0, y + radius, 2.0, System.Math.Min(46.0, h - radius * 2.0));
                 g.endFill();
             }
         }

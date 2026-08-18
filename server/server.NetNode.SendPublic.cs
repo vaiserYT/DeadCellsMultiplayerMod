@@ -1,5 +1,6 @@
 using System.Globalization;
 using DeadCellsMultiplayerMod;
+using DeadCellsMultiplayerMod.Mobs.MobsSynchronization;
 using DeadCellsMultiplayerMod.PortableCore;
 
 public sealed partial class NetNode
@@ -843,11 +844,13 @@ public sealed partial class NetNode
             bin != null)
         {
             var line = "MOBSTATE2|" + Convert.ToBase64String(bin) + "\n";
+            MobSyncTrace.RecordWireSend("state", states.Count, line.Length);
             _ = SendLineSafe(line);
             return;
         }
 
         var textLine = MobWireCodec.BuildMobStatesLine(states);
+        MobSyncTrace.RecordWireSend("state", states.Count, textLine.Length);
         _ = SendLineSafe(textLine);
     }
 
@@ -861,6 +864,7 @@ public sealed partial class NetNode
             return;
 
         var line = MobWireCodec.BuildMobMovesLine(moves);
+        MobSyncTrace.RecordWireSend("move", moves.Count, line.Length);
         _ = SendLineSafe(line);
     }
 
