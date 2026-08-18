@@ -53,9 +53,6 @@ namespace DeadCellsMultiplayerMod
                 _nextSteamFriendLobbyRefreshTicks = 0;
                 _steamFriendLobbySignature = string.Empty;
                 _steamFriendLobbies.Clear();
-                _pendingLaunchAction = PendingLaunchAction.NewGame;
-                _pendingLaunchCustom = false;
-                _pendingLaunchStreamEnabled = false;
                 _hasAuthoritativePendingNewGameLaunch = false;
                 _authoritativePendingNewGameCustom = false;
                 _authoritativePendingNewGameStreamEnabled = false;
@@ -107,24 +104,19 @@ namespace DeadCellsMultiplayerMod
 
         internal static bool IsClientInActualRun()
         {
-            lock (Sync)
-            {
-                return _role == NetRole.Client && _inActualRun;
-            }
+            var state = ReadSessionSnapshot();
+            return state.Role == NetRole.Client && state.InActualRun;
         }
 
         internal static bool IsInActualRun()
         {
-            lock (Sync)
-            {
-                return _inActualRun;
-            }
+            return ReadSessionSnapshot().InActualRun;
         }
 
         /// <summary>Read-only current session role, for diagnostics outside this class.</summary>
         internal static NetRole CurrentRole
         {
-            get { lock (Sync) { return _role; } }
+            get { return RunLaunchCoordinator.CurrentRole; }
         }
 
         public static void SetRole(NetRole role)

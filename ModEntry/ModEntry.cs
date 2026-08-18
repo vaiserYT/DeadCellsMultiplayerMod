@@ -14,6 +14,7 @@ using dc.libs.heaps.slib;
 using Rand = dc.libs.Rand;
 using dc.ui.hud;
 using dc.h2d;
+using dc.shader;
 using Hashlink.Virtuals;
 using dc.tool;
 using dc.tool.mainSkills;
@@ -546,6 +547,7 @@ namespace DeadCellsMultiplayerMod
             entry.Logger.Information("[NetMod][MobSyncStack] mode=host-authoritative-vanilla-ai-transport-neutral-replica-keyframes");
             entry.Logger.Information("[NetMod][SteamCallbacks] mode=main-thread-only-no-timer");
             Hook_Game.init += Hook_gameinit;
+            Hook_GlowKey.applyGlowData += Hook_GlowKey_applyGlowData;
             Hook_Hero.wakeup += hook_hero_wakeup;
             Hook_Hero.onLevelChanged += hook_level_changed;
             Hook_Game.activateSubLevel += Hook_Game_activateSubLevel;
@@ -594,6 +596,24 @@ namespace DeadCellsMultiplayerMod
             Hook__EndCollectorPostSmash.__constructor__ += Hook__EndCollectorPostSmash__constructor__;
             Hook__EndCollectorPostSmashKS.__constructor__ += Hook__EndCollectorPostSmashKS__constructor__;
             Ghost.KingWeaponHooks.Install();
+        }
+
+        private static void Hook_GlowKey_applyGlowData(
+            Hook_GlowKey.orig_applyGlowData orig,
+            GlowKey self,
+            int index,
+            Hashlink.Virtuals.virtual_animationIntensity_animationScale_animationSpeed_animationTextureMask_inner_key_outer_power_ glowData)
+        {
+            // Custom head/body glow data can contain more entries than the shader has allocated.
+            // Grow the count before the vanilla write instead of allowing an indexed native write
+            // to address an unallocated color slot.
+            if (index >= 0 && self.colorsCount__ <= index)
+            {
+                self.colorsCount__ = index + 1;
+                self.constModified = true;
+            }
+
+            orig(self, index, glowData);
         }
 
 

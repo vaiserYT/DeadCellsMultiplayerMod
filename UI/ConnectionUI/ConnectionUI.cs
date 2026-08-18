@@ -125,6 +125,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private int _layoutH = 720;
         private double _lastLayoutUiScale = double.NaN;
         private double _lastLayoutTextBoost = double.NaN;
+        private int _layoutMetricProbeCountdown;
+        private const int LayoutMetricProbeIntervalFrames = 10;
+        private int _lobbyCodeProbeCountdown;
         private Graphics? _hoverBorder;
         private static readonly int HoverBorderColor = 0x59D5FF;
         /// <summary>Same callback as the screen's Back/Disconnect button; fired on Escape.</summary>
@@ -132,9 +135,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         private static ConnectionUI? Instance;
         private HSprite? spriteui;
+        private readonly LifecycleTracker _lifecycle = new("ConnectionUI");
+        private readonly long _lifecycleGeneration;
 
         public ConnectionUI(Process parent) : base(parent)
         {
+            _lifecycleGeneration = _lifecycle.Start();
             Instance = this;
             this.createRoot(parent.root);
             MainPageLightingInitializer mainPage = new MainPageLightingInitializer(this);
@@ -179,7 +185,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             try
             {
-                if (instance.root == null || instance.destroyed)
+                if (!instance._lifecycle.IsCurrent(instance._lifecycleGeneration) ||
+                    instance.root == null || instance.destroyed)
                 {
                     Instance = null;
                     return null;
@@ -257,6 +264,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         {
             PendingButtons.Clear();
             PendingInfos.Clear();
+            _ConnectionUI.InvalidateLobbyPlayerSlots();
             var instance = TryGetLiveInstance();
             if (instance != null)
             {
@@ -321,6 +329,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             var instance = TryGetLiveInstance();
             if (instance == null)
                 return;
+            _ConnectionUI.InvalidateLobbyPlayerSlots();
             instance._mode = UiMode.Lobby;
             instance._menuVisible = false;
             instance._keepLobbyVisible = false;
@@ -457,7 +466,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     cardH,
                     CardCornerRadius * uiScale,
                     ContentCardFill,
-                    ContentCardEdge);
+                    ContentCardEdge,
+                    accentColor: AccentColor);
             }
 
             foreach (var info in PendingInfos)
@@ -1025,6 +1035,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         public static void NotifyConnectionsChanged()
         {
+            _ConnectionUI.InvalidateLobbyPlayerSlots();
             TryGetLiveInstance()?.updateConnections();
         }
 
@@ -1178,6 +1189,17 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             if (this._lobbyPanelRoot == null)
                 return;
 
+            if (!forceRefreshText)
+            {
+                if (this._lobbyCodeProbeCountdown > 0)
+                {
+                    this._lobbyCodeProbeCountdown--;
+                    return;
+                }
+
+                this._lobbyCodeProbeCountdown = LayoutMetricProbeIntervalFrames;
+            }
+
             string? lobbyCode = null;
             try
             {
@@ -1248,6 +1270,8 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             BuildFullScreenPanel(screenWidth, screenHeight);
             this._lastLayoutUiScale = UiScale.GetResolutionScale();
             this._lastLayoutTextBoost = GetWindowedTextBoost();
+            this._layoutMetricProbeCountdown = LayoutMetricProbeIntervalFrames;
+            this._lobbyCodeProbeCountdown = LayoutMetricProbeIntervalFrames;
 
             bool showLobbyCard = this._mode == UiMode.Lobby || this._keepLobbyVisible;
             if (showLobbyCard)
@@ -1326,28 +1350,38 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         public override void update()
         {
+            var perfEnabled = RuntimeHitchWatch.Enabled;
+            var perfStart = perfEnabled ? RuntimeHitchWatch.Start() : 0L;
             base.update();
 
             // Some display-mode changes do not dispatch Process.onResize. Detect them from the
             // live window and rebuild after the game has applied the new metrics, otherwise text
             // keeps the old bitmap scale/positions while the panel has already moved.
-            try
+            if (this._layoutMetricProbeCountdown > 0)
             {
-                var win = dc.hxd.Window.Class.getInstance();
-                var liveUiScale = UiScale.GetResolutionScale();
-                var liveTextBoost = GetWindowedTextBoost();
-                if (win != null &&
-                    (win.get_width() != this._layoutW ||
-                     win.get_height() != this._layoutH ||
-                     double.IsNaN(this._lastLayoutUiScale) ||
-                     System.Math.Abs(liveUiScale - this._lastLayoutUiScale) > 0.001 ||
-                     System.Math.Abs(liveTextBoost - this._lastLayoutTextBoost) > 0.001))
-                {
-                    this.onResize();
-                }
+                this._layoutMetricProbeCountdown--;
             }
-            catch
+            else
             {
+                this._layoutMetricProbeCountdown = LayoutMetricProbeIntervalFrames;
+                try
+                {
+                    var win = dc.hxd.Window.Class.getInstance();
+                    var liveUiScale = UiScale.GetResolutionScale();
+                    var liveTextBoost = GetWindowedTextBoost();
+                    if (win != null &&
+                        (win.get_width() != this._layoutW ||
+                         win.get_height() != this._layoutH ||
+                         double.IsNaN(this._lastLayoutUiScale) ||
+                         System.Math.Abs(liveUiScale - this._lastLayoutUiScale) > 0.001 ||
+                         System.Math.Abs(liveTextBoost - this._lastLayoutTextBoost) > 0.001))
+                    {
+                        this.onResize();
+                    }
+                }
+                catch
+                {
+                }
             }
 
             bool promptWasOpen = this._promptOpen;
@@ -1374,6 +1408,37 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
             // After skin rebind: step idle, then place heads on this frame's headBone.
             try { TickLobbyHeadBones(); } catch { }
+
+            if (perfEnabled)
+            {
+                var elapsedMs = RuntimeHitchWatch.GetElapsedMilliseconds(perfStart);
+                if (elapsedMs >= RuntimeHitchWatch.ModFrameSlowThresholdMs)
+                    RuntimeHitchWatch.LogSlow(Log.Logger, "ConnectionUI.Update", elapsedMs);
+            }
+        }
+
+        public override void onDispose()
+        {
+            if (!_lifecycle.TryBeginStop())
+            {
+                base.onDispose();
+                return;
+            }
+
+            try
+            {
+                clean();
+            }
+            catch
+            {
+            }
+            finally
+            {
+                _lifecycle.MarkDisposed();
+                if (ReferenceEquals(Instance, this))
+                    Instance = null;
+                base.onDispose();
+            }
         }
 
         public override void postUpdate()

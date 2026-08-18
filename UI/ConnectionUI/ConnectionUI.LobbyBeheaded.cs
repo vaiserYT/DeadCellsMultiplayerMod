@@ -576,41 +576,67 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
                 EnsureLobbyColorMapTextureReady(heroColorMap);
 
-                // Match dc.Entity.initSprite/KingSkin.initGfx ordering from GamePseudocode.dll:
-                // lighting is composed first, then the normal map, and KingSkin.initColorMap adds
-                // ColorMap last. Putting ColorMap before lighting changes the normal/shadow result
-                // in the title renderer.
-                spr.addShader(new DirLighted());
+                // Match the working lobby renderer: ColorMap, NormalMap, then DirLighted.
+                // DirLighted must be last so its shadow pass sees the remapped hero colors.
+                spr.addShader(new dc.shader.ColorMap(heroColorMap));
 
                 dc.h3d.mat.Texture? normalMap = null;
-                try
-                {
-                    string group = string.IsNullOrWhiteSpace(animGroup) ? "idle" : animGroup;
-                    normalMap = spr.lib?.getNormalMapFromGroup(group.AsHaxeString());
-                }
-                catch
-                {
-                    try { normalMap = spr.lib?.getNormalMapFromSprite(spr); } catch { }
-                }
-
+                try { normalMap = spr.lib?.getNormalMapFromSprite(spr); } catch { }
                 if (normalMap != null)
                 {
-                    try
-                    {
-                        spr.addOrUpdateNormalMapTexture(normalMap);
-                    }
-                    catch
-                    {
-                        spr.addShader(new NormalMap(normalMap));
-                    }
-
+                    try { spr.addOrUpdateNormalMapTexture(normalMap); } catch { }
                     if (spr.getShader(NormalMap.Class) == null)
                         spr.addShader(new NormalMap(normalMap));
                 }
 
-                spr.addShader(new dc.shader.ColorMap(heroColorMap));
+                var dirLight = new DirLighted();
+                spr.addShader(dirLight);
+                ApplyLobbyHeroLightDefaults(spr, dirLight);
 
                 try { spr.smooth = false; } catch { }
+            }
+            catch
+            {
+            }
+        }
+
+        private static void ApplyLobbyHeroLightDefaults(HSprite spr, DirLighted light)
+        {
+            try
+            {
+                var globals = spr.getScene().ctx.manager.globals;
+                var shaderGlobals = light.shader.globals;
+                int shadowId = -1;
+                int dirId = -1;
+
+                for (int i = 0; i < shaderGlobals.length; i++)
+                {
+                    var global = shaderGlobals.getDyn(i);
+                    var name = global.v.name.ToString();
+                    var parent = global.v.parent.name.ToString();
+                    if (parent != "light")
+                        continue;
+
+                    if (name == "shadowColor")
+                        shadowId = global.globalId;
+                    else if (name == "dirVec")
+                        dirId = global.globalId;
+
+                    if (shadowId != -1 && dirId != -1)
+                        break;
+                }
+
+                if (shadowId != -1)
+                {
+                    globals.map.set(shadowId, new dc.h3d.Vector(
+                        Ref<double>.In(1), Ref<double>.In(1), Ref<double>.In(1), Ref<double>.In(1)));
+                }
+
+                if (dirId != -1)
+                {
+                    globals.map.set(dirId, new dc.h3d.Vector(
+                        Ref<double>.In(0), Ref<double>.In(0), Ref<double>.In(1), Ref<double>.In(1)));
+                }
             }
             catch
             {

@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using DeadCellsMultiplayerMod;
+using DeadCellsMultiplayerMod.Network;
+using DeadCellsMultiplayerMod.Tools;
 using Serilog;
 using Steamworks;
 
@@ -12,6 +14,8 @@ public sealed partial class NetNode : IDisposable
 {
     private readonly ILogger _log;
     private readonly NetRole _role;
+    private readonly NetPacketBudget _realtimePacketBudget = new(96 * 1024, 16.0);
+    private readonly LifecycleTracker _lifecycle = new("NetNode");
 
     private TcpListener? _listener;   // host
     private TcpClient? _client;     // client
@@ -47,6 +51,17 @@ public sealed partial class NetNode : IDisposable
     private int ID;
 
     public int id => ID;
+
+    internal NetTransportSnapshot ReadTransportSnapshot()
+    {
+        return new NetTransportSnapshot(
+            _useSteamTransport ? NetTransportKind.Steam : NetTransportKind.Tcp,
+            _role,
+            HasAnyConnection(),
+            _disposed);
+    }
+
+    internal LifecycleSnapshot ReadLifecycleSnapshot() => _lifecycle.Snapshot;
 
     private static readonly int[] ClientIds = { 2, 3, 4 };
     public static int MaxClientSlots => ClientIds.Length;
@@ -255,6 +270,8 @@ public sealed partial class NetNode : IDisposable
             StartClient();
             ID = 0;
         }
+
+        _lifecycle.Start();
     }
 
     private readonly int _steamHostPort;
@@ -286,5 +303,7 @@ public sealed partial class NetNode : IDisposable
             ID = 0;
             StartSteamClient();
         }
+
+        _lifecycle.Start();
     }
 }

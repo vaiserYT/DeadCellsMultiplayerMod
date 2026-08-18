@@ -12,6 +12,7 @@ internal static class NetTrafficDiagnostics
     private static long _receivedLines;
     private static long _receivedBytes;
     private static long _sendErrors;
+    private static long _budgetDrops;
     private static long _lastFlushTicks;
 
     public static void RecordSent(int bytes)
@@ -31,6 +32,11 @@ internal static class NetTrafficDiagnostics
         Interlocked.Increment(ref _sendErrors);
     }
 
+    public static void RecordBudgetDrop()
+    {
+        Interlocked.Increment(ref _budgetDrops);
+    }
+
     public static void TryFlush(ILogger log, string role)
     {
         var now = Stopwatch.GetTimestamp();
@@ -44,14 +50,16 @@ internal static class NetTrafficDiagnostics
         var receivedLines = Interlocked.Exchange(ref _receivedLines, 0);
         var receivedBytes = Interlocked.Exchange(ref _receivedBytes, 0);
         var sendErrors = Interlocked.Exchange(ref _sendErrors, 0);
+        var budgetDrops = Interlocked.Exchange(ref _budgetDrops, 0);
 
         log.Information(
-            "[NetTraffic] PERF role={Role} sentLines={SentLines} sentBytes={SentBytes} receivedLines={ReceivedLines} receivedBytes={ReceivedBytes} sendErrors={SendErrors}",
+            "[NetTraffic] PERF role={Role} sentLines={SentLines} sentBytes={SentBytes} receivedLines={ReceivedLines} receivedBytes={ReceivedBytes} sendErrors={SendErrors} budgetDrops={BudgetDrops}",
             role ?? string.Empty,
             sentLines,
             sentBytes,
             receivedLines,
             receivedBytes,
-            sendErrors);
+            sendErrors,
+            budgetDrops);
     }
 }

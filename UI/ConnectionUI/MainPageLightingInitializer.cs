@@ -45,27 +45,27 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection.LightingInitialize
             if (this.ligttshadow == null)
             {
                 double x = 1.0;
-                double y = 0;
-                double z = 0;
+                double y = 1.0;
+                double z = 1.0;
                 double w = 1.0;
                 this.ligttshadow = new dc.h3d.Vector(
+                    Ref<double>.From(ref x),
                     Ref<double>.From(ref y),
                     Ref<double>.From(ref z),
-                    Ref<double>.From(ref w),
-                    Ref<double>.From(ref x));
+                    Ref<double>.From(ref w));
             }
 
             if (this.lightDirVecto == null)
             {
-                double x = -1;
+                double x = 0;
                 double y = 0;
-                double z = -1;
+                double z = 1.0;
+                double w = 1.0;
                 this.lightDirVecto = new dc.h3d.Vector(
                     Ref<double>.From(ref x),
                     Ref<double>.From(ref y),
                     Ref<double>.From(ref z),
-                    Ref<double>.Null);
-                this.lightDirVecto.normalize();
+                    Ref<double>.From(ref w));
             }
         }
     }

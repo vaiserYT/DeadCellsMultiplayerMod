@@ -76,10 +76,10 @@ namespace DeadCellsMultiplayerMod
         internal static string _username = "guest";
         internal static string _remoteUsername = "guest";
         internal static string _playerId = Guid.NewGuid().ToString("N");
-        public static string Username => _username;
-        public static string RemoteUsername => _remoteUsername;
+        public static string Username => ReadSessionSnapshot().Username;
+        public static string RemoteUsername => ReadSessionSnapshot().RemoteUsername;
 
-        internal static bool IsSteamJoinLobbyResolvePending() => _steamJoinLobbyResolvePending;
+        internal static bool IsSteamJoinLobbyResolvePending() => ReadSessionSnapshot().SteamJoinLobbyResolvePending;
         internal static bool _localReady;
         internal static List<PlayerInfo> _playersDisplay = new();
         internal static bool _inHostStatusMenu;

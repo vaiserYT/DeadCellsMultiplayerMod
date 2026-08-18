@@ -8,17 +8,7 @@ namespace DeadCellsMultiplayerMod
 {
     internal static partial class LobbySession
     {
-        internal enum PendingLaunchAction
-        {
-            None,
-            LoadSave,
-            NewGame
-        }
-
         internal static bool _launchHooksAttached;
-        internal static PendingLaunchAction _pendingLaunchAction = PendingLaunchAction.NewGame;
-        internal static bool _pendingLaunchCustom;
-        internal static bool _pendingLaunchStreamEnabled;
         internal static bool _hasAuthoritativePendingNewGameLaunch;
         internal static bool _authoritativePendingNewGameCustom;
         internal static bool _authoritativePendingNewGameStreamEnabled;
@@ -70,9 +60,7 @@ namespace DeadCellsMultiplayerMod
 
             lock (Sync)
             {
-                _pendingLaunchAction = action;
-                _pendingLaunchCustom = custom;
-                _pendingLaunchStreamEnabled = streamEnabled;
+                RunLaunchCoordinator.SetPendingLaunchIntent(action, custom, streamEnabled);
                 if (action == PendingLaunchAction.NewGame && sendToRemote && !assignNewCoopWorld)
                     _pendingNewCoopWorldIdAssigned = false;
                 InvalidateGeneratePayloadCacheLocked();
@@ -171,7 +159,7 @@ namespace DeadCellsMultiplayerMod
 
             lock (Sync)
             {
-                return _pendingLaunchCustom;
+                return RunLaunchCoordinator.GetPendingLaunchIntent().Custom;
             }
         }
 
@@ -736,9 +724,10 @@ namespace DeadCellsMultiplayerMod
             var hostHasContinueSave = HasLocalContinueSaveState(out _);
             lock (Sync)
             {
-                action = _pendingLaunchAction;
-                custom = _pendingLaunchCustom;
-                streamEnabled = _pendingLaunchStreamEnabled;
+                var intent = RunLaunchCoordinator.GetPendingLaunchIntent();
+                action = intent.Action;
+                custom = intent.Custom;
+                streamEnabled = intent.StreamEnabled;
                 newCoopWorldPrepared = _pendingNewCoopWorldIdAssigned;
             }
 
@@ -788,9 +777,7 @@ namespace DeadCellsMultiplayerMod
                 _hasAuthoritativePendingNewGameLaunch = action == PendingLaunchAction.NewGame;
                 _authoritativePendingNewGameCustom = action == PendingLaunchAction.NewGame && launchCustom;
                 _authoritativePendingNewGameStreamEnabled = action == PendingLaunchAction.NewGame && launchStreamEnabled;
-                _pendingLaunchAction = action;
-                _pendingLaunchCustom = launchCustom;
-                _pendingLaunchStreamEnabled = launchStreamEnabled;
+                RunLaunchCoordinator.SetPendingLaunchIntent(action, launchCustom, launchStreamEnabled);
                 // Opening Custom Mode announces custom=true before CGDATA exists. Clear readiness
                 // until the host's saved customGameData file arrives — but only if we have not
                 // already received that file. This announcement is re-published by the host launch
@@ -848,9 +835,10 @@ namespace DeadCellsMultiplayerMod
             bool newCoopWorldPrepared;
             lock (Sync)
             {
-                action = _pendingLaunchAction;
-                custom = _pendingLaunchCustom;
-                streamEnabled = _pendingLaunchStreamEnabled;
+                var intent = RunLaunchCoordinator.GetPendingLaunchIntent();
+                action = intent.Action;
+                custom = intent.Custom;
+                streamEnabled = intent.StreamEnabled;
                 newCoopWorldPrepared = _pendingNewCoopWorldIdAssigned;
             }
 
@@ -891,7 +879,7 @@ namespace DeadCellsMultiplayerMod
 
         internal static bool IsPendingLaunchReadyForAutoStartLocked()
         {
-            if (_pendingLaunchAction == PendingLaunchAction.LoadSave)
+            if (RunLaunchCoordinator.GetPendingLaunchIntent().Action == PendingLaunchAction.LoadSave)
             {
                 if (!CanClientAcceptContinueLaunchLocked(out var reason))
                 {
@@ -912,7 +900,7 @@ namespace DeadCellsMultiplayerMod
                 return false;
             }
 
-            if (_pendingLaunchCustom && !_remoteCustomGameDataReady)
+            if (RunLaunchCoordinator.GetPendingLaunchIntent().Custom && !_remoteCustomGameDataReady)
             {
                 LogClientLaunchBlockLocked("custom mode rules not received");
                 return false;
@@ -978,8 +966,10 @@ namespace DeadCellsMultiplayerMod
 
             _log?.Information(
                 "[NetMod][RunLaunch] Client launch waiting: {Reason} " +
-                "(gen={Gen} seed={Seed} commit={Commit} exec={Exec} seedSeq={SeedSeq} bossRune={BossRune} custom={Custom})",
+                "(phase={ClientPhase}/{PortablePhase} gen={Gen} seed={Seed} commit={Commit} exec={Exec} seedSeq={SeedSeq} bossRune={BossRune} custom={Custom})",
                 reason,
+                _clientLaunchPhase,
+                RunLaunchCoordinator.MapClientLaunchPhaseToSessionPhase(_clientLaunchPhase),
                 _genArrived,
                 _seedArrived,
                 _structuredLaunchCommitArrived,
@@ -1002,9 +992,10 @@ namespace DeadCellsMultiplayerMod
             bool streamEnabled;
             lock (Sync)
             {
-                action = _pendingLaunchAction;
-                custom = _pendingLaunchCustom;
-                streamEnabled = _pendingLaunchStreamEnabled;
+                var intent = RunLaunchCoordinator.GetPendingLaunchIntent();
+                action = intent.Action;
+                custom = intent.Custom;
+                streamEnabled = intent.StreamEnabled;
             }
 
             if (action == PendingLaunchAction.LoadSave)

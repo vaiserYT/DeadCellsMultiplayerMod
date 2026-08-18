@@ -51,7 +51,12 @@
     <Optimize>true</Optimize>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="ProtocolReplay.Tests\**" />
     <PackAssets Include="Resourcefile\**\*" RootInPak="DeadCellsMultiplayerModLang" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DeadCellsMultiplayerMod.ProtocolReplay.Tests" />
   </ItemGroup>
 
 </Project>

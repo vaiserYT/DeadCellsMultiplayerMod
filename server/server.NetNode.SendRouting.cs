@@ -143,12 +143,22 @@ public sealed partial class NetNode
 
     private Task SendLineSafe(string line)
     {
+        var transport = ReadTransportSnapshot();
+        if (!transport.HasConnection)
+            return Task.CompletedTask;
+
+        if (IsDroppableTcpRealtimeLine(line) && !_realtimePacketBudget.TryConsume(line.Length))
+        {
+            NetTrafficDiagnostics.RecordBudgetDrop();
+            return Task.CompletedTask;
+        }
+
         NetTrafficDiagnostics.TryFlush(_log, _role.ToString());
 
-        if (_role == NetRole.Host)
+        if (transport.Role == NetRole.Host)
             return BroadcastLineSafe(line);
 
-        if (_useSteamTransport && _steamBridge != null)
+        if (transport.Kind == DeadCellsMultiplayerMod.Network.NetTransportKind.Steam && _steamBridge != null)
             return SendLineToSteamBridgeSafe(_steamHostId.m_SteamID, line, ResolveSteamSendType(line), GetSteamOutgoingChannel());
 
         return SendLineToStreamSafe(_stream, _sendLock, line);
@@ -168,11 +178,13 @@ public sealed partial class NetNode
             if (steamSnapshot.Count == 0) return;
             var sendType = ResolveSteamSendType(line);
             var channel = SteamP2PChannelHostToClient;
-            if (!ProtocolWire.TryEncode(line, MaxProtocolLineChars, out var bytes))
+            var encoded = ProtocolWire.Encode(line, MaxProtocolLineChars);
+            if (!encoded.Success)
             {
-                _log.Warning("[NetNode] Rejected oversized Steam broadcast");
+                _log.Warning("[NetNode] Rejected Steam broadcast: {Error}", encoded.Error);
                 return;
             }
+            var bytes = encoded.Bytes;
             NetTrafficDiagnostics.RecordSent(bytes.Length);
             foreach (var client in steamSnapshot)
             {
@@ -234,11 +246,13 @@ public sealed partial class NetNode
         if (stream == null || sendLock == null || _disposed || string.IsNullOrEmpty(line))
             return;
 
-        if (!ProtocolWire.TryEncode(line, MaxProtocolLineChars, out var bytes))
+        var encoded = ProtocolWire.Encode(line, MaxProtocolLineChars);
+        if (!encoded.Success)
         {
-            _log.Warning("[NetNode] Rejected oversized TCP protocol line");
+            _log.Warning("[NetNode] Rejected TCP protocol line: {Error}", encoded.Error);
             return;
         }
+        var bytes = encoded.Bytes;
         NetTrafficDiagnostics.RecordSent(bytes.Length);
 
         var realtime = IsDroppableTcpRealtimeLine(line);
@@ -285,11 +299,13 @@ public sealed partial class NetNode
     {
         if (_steamBridge == null)
             return Task.CompletedTask;
-        if (!ProtocolWire.TryEncode(line, MaxProtocolLineChars, out var bytes))
+        var encoded = ProtocolWire.Encode(line, MaxProtocolLineChars);
+        if (!encoded.Success)
         {
-            _log.Warning("[NetNode] Steam payload too large for {SteamId}", client.SteamId.m_SteamID);
+            _log.Warning("[NetNode] Rejected Steam payload for {SteamId}: {Error}", client.SteamId.m_SteamID, encoded.Error);
             return Task.CompletedTask;
         }
+        var bytes = encoded.Bytes;
         NetTrafficDiagnostics.RecordSent(bytes.Length);
         var st = sendType ?? ResolveSteamSendType(line);
         if (!_steamBridge.TrySend(client.SteamId.m_SteamID, st, SteamP2PChannelHostToClient, bytes, out var err))

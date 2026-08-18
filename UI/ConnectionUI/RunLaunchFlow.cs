@@ -205,8 +205,8 @@ internal static partial class LobbySession
             if (isNewCommit)
             {
                 _structuredLaunchExecuteSequence = 0;
-                _pendingAutoStart = false;
-                _autoStartTriggered = false;
+                 _pendingAutoStart = false;
+                 _autoStartTriggered = false;
                 // A genuinely new launch gets a fresh level-graph preference window; carrying the
                 // previous launch's expiry over would skip the wait for a graph that is about to
                 // arrive for this run.

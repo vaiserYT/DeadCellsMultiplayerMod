@@ -43,6 +43,15 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             public static LobbyPlayerSlot Empty => new(false, string.Empty, "PrisonerDefault", "BaseFlame", false, false, false);
         }
 
+        private static List<LobbyPlayerSlot>? _cachedLobbyPlayerSlots;
+        private static string _cachedLobbyPlayerSlotsSignature = string.Empty;
+
+        internal static void InvalidateLobbyPlayerSlots()
+        {
+            _cachedLobbyPlayerSlots = null;
+            _cachedLobbyPlayerSlotsSignature = string.Empty;
+        }
+
         public static List<string> GetAllPlayerNames()
         {
             var slots = GetLobbyPlayerSlots();
@@ -78,15 +87,19 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         /// </summary>
         internal static List<LobbyPlayerSlot> GetLobbyPlayerSlots()
         {
+            if (_cachedLobbyPlayerSlots != null)
+                return _cachedLobbyPlayerSlots;
+
             int capacity = LobbySlotCount;
             var slots = new List<LobbyPlayerSlot>(capacity);
             for (int i = 0; i < capacity; i++)
                 slots.Add(LobbyPlayerSlot.Empty);
 
             var net = ModEntry._net;
+            var session = LobbySession.ReadSessionSnapshot();
             if (net == null)
             {
-                if (LobbySession.IsSteamJoinLobbyResolvePending())
+                if (session.SteamJoinLobbyResolvePending)
                 {
                     slots[0] = new LobbyPlayerSlot(
                         occupied: true,
@@ -97,10 +110,10 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         isYou: true,
                         isConnecting: true);
                 }
-                return slots;
+                return CacheLobbyPlayerSlots(slots);
             }
 
-            var localName = LobbySession.Username;
+            var localName = session.Username;
             if (string.IsNullOrWhiteSpace(localName))
                 localName = "Guest";
 
@@ -123,7 +136,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                         isHost: false,
                         isYou: true,
                         isConnecting: true);
-                    return slots;
+                    return CacheLobbyPlayerSlots(slots);
                 }
 
                 if (isHost)
@@ -248,7 +261,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     }
                 }
 
-                return slots;
+                return CacheLobbyPlayerSlots(slots);
             }
             finally
             {
@@ -260,6 +273,12 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         /// <summary>Compact signature so lobby UI refreshes when nick OR skin changes.</summary>
         internal static string BuildLobbySlotsSignature(List<LobbyPlayerSlot> slots)
         {
+            if (ReferenceEquals(slots, _cachedLobbyPlayerSlots) &&
+                !string.IsNullOrEmpty(_cachedLobbyPlayerSlotsSignature))
+            {
+                return _cachedLobbyPlayerSlotsSignature;
+            }
+
             var sb = new StringBuilder(slots.Count * 24);
             for (int i = 0; i < slots.Count; i++)
             {
@@ -279,6 +298,13 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 sb.Append(s.IsConnecting ? 'C' : '-');
             }
             return sb.ToString();
+        }
+
+        private static List<LobbyPlayerSlot> CacheLobbyPlayerSlots(List<LobbyPlayerSlot> slots)
+        {
+            _cachedLobbyPlayerSlots = slots;
+            _cachedLobbyPlayerSlotsSignature = BuildLobbySlotsSignature(slots);
+            return slots;
         }
 
         public static string GetPlayerName(int localId, int remoteId, string remoteUsername)
@@ -312,6 +338,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private static string _cachedLocalHeroSkinSource = string.Empty;
         private static int _cachedLocalHeroSkinSlot = int.MinValue;
         private static int _tryLoadLocalHeroSkinSlot = int.MinValue;
+        private static bool _preferCachedLocalHeroSkinForSlot;
         private static virtual_colorMap_consoleCmdId_glowData_group_head_incompatibleHeads_item_model_onlyDefaultHead_scarfBlendMode_scarfs_? _cachedLocalSkinInfo;
         private static string? _cachedLocalHeroHeadSkin;
 
@@ -355,16 +382,26 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
 
         internal static void RefreshLocalHeroCosmeticsForSaveSlot()
         {
+            InvalidateLobbyPlayerSlots();
             InvalidateLocalHeroSkinCacheIfSlotChanged();
             _tryLoadLocalHeroSkinSlot = int.MinValue;
+            _preferCachedLocalHeroSkinForSlot = false;
 
             try
             {
+                // TitleScreen.user can remain bound to the previous slot until the save-menu
+                // transition completes. Save.tryLoad follows options.curSlot and is authoritative
+                // immediately after a slot selection.
+                var loaded = TryLoadLocalUserSkinOnce(forceReload: true);
+                if (loaded != null)
+                {
+                    _preferCachedLocalHeroSkinForSlot = true;
+                    return;
+                }
+
                 var user = TryResolveLocalUser(out _);
                 if (user != null)
                     RememberLocalHeroSkinFromUser(user, "saveSlotChanged");
-                else
-                    TryLoadLocalUserSkinOnce();
             }
             catch
             {
@@ -376,6 +413,13 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             try
             {
                 InvalidateLocalHeroSkinCacheIfSlotChanged();
+
+                if (_preferCachedLocalHeroSkinForSlot &&
+                    _cachedLocalHeroSkinSlot == ResolveCurrentSaveSlot() &&
+                    !string.IsNullOrWhiteSpace(_cachedLocalHeroSkin))
+                {
+                    return _cachedLocalHeroSkin;
+                }
 
                 var user = TryResolveLocalUser(out var userSource);
                 if (user == null)
@@ -459,25 +503,27 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             return null;
         }
 
-        private static void TryLoadLocalUserSkinOnce()
+        private static User? TryLoadLocalUserSkinOnce(bool forceReload = false)
         {
             int slot = ResolveCurrentSaveSlot();
-            if (!string.IsNullOrWhiteSpace(_cachedLocalHeroSkin) && _cachedLocalHeroSkinSlot == slot)
-                return;
+            if (!forceReload && !string.IsNullOrWhiteSpace(_cachedLocalHeroSkin) && _cachedLocalHeroSkinSlot == slot)
+                return null;
             if (_tryLoadLocalHeroSkinSlot == slot)
-                return;
+                return null;
 
             _tryLoadLocalHeroSkinSlot = slot;
             try
             {
                 var loaded = Save.Class.tryLoad.Invoke();
                 if (loaded == null)
-                    return;
+                    return null;
 
                 RememberLocalHeroSkinFromUser(loaded, "tryLoad");
+                return loaded;
             }
             catch
             {
+                return null;
             }
         }
 
@@ -617,6 +663,13 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
             try
             {
                 InvalidateLocalHeroSkinCacheIfSlotChanged();
+
+                if (_preferCachedLocalHeroSkinForSlot &&
+                    _cachedLocalHeroSkinSlot == ResolveCurrentSaveSlot() &&
+                    !string.IsNullOrWhiteSpace(_cachedLocalHeroHeadSkin))
+                {
+                    return _cachedLocalHeroHeadSkin;
+                }
 
                 var user = TryResolveLocalUser(out _);
                 if (user == null)

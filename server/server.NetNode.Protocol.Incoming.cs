@@ -46,6 +46,11 @@ public sealed partial class NetNode
             target.Add(items[i]);
     }
 
+    private static void AppendBoundedLocked<T>(PendingQueue<T> target, IReadOnlyList<T> items, int maxCount)
+    {
+        target.AppendBounded(items, maxCount);
+    }
+
     private void AppendLatestMobMovesLocked(IReadOnlyList<MobMoveSnapshot> moves)
     {
         if (moves == null || moves.Count == 0)
@@ -54,24 +59,10 @@ public sealed partial class NetNode
         for (var i = 0; i < moves.Count; i++)
         {
             var move = moves[i];
-            var key = (move.Generation, move.Index);
-            if (_pendingMobMoveSlots.TryGetValue(key, out var slot))
-            {
-                _pendingMobMoves[slot] = move;
-                continue;
-            }
-
             // Movement is disposable presentation traffic. If the consumer is stalled, keeping a
             // complete history is actively harmful: the game thread would spend time applying
             // positions that are already obsolete. Start a fresh latest-only window at the bound.
-            if (_pendingMobMoves.Count >= PendingMobMoveLimit)
-            {
-                _pendingMobMoves.Clear();
-                _pendingMobMoveSlots.Clear();
-            }
-
-            _pendingMobMoveSlots[key] = _pendingMobMoves.Count;
-            _pendingMobMoves.Add(move);
+            _pendingMobMoves.Upsert((move.Generation, move.Index), move);
         }
     }
 
@@ -82,6 +73,11 @@ public sealed partial class NetNode
         if (target.Count >= maxCount)
             target.RemoveRange(0, target.Count - maxCount + 1);
         target.Add(item);
+    }
+
+    private static void AddBoundedLocked<T>(PendingQueue<T> target, T item, int maxCount)
+    {
+        target.AddBounded(item, maxCount);
     }
 
     /// <summary>
@@ -113,61 +109,12 @@ public sealed partial class NetNode
             return true;
 
         if (_role == NetRole.Host)
-        {
-            if (line.StartsWith("LSEEDREQ|", StringComparison.Ordinal))
-            {
-                var levelId = ClampProtocolText(line["LSEEDREQ|".Length..], MaxIdentityFieldChars);
-                if (!string.IsNullOrWhiteSpace(levelId))
-                    ResendCachedLevelSeed(levelId);
-                return true;
-            }
-
-            if (line.StartsWith("LGRAPHREQ|", StringComparison.Ordinal))
-            {
-                var levelId = ClampProtocolText(line["LGRAPHREQ|".Length..], MaxIdentityFieldChars);
-                if (!string.IsNullOrWhiteSpace(levelId))
-                    ResendCachedLevelGraph(levelId);
-                return true;
-            }
-
-            return false;
-        }
+            return TryHandleHostFastPathLine(line);
 
         if (_role != NetRole.Client)
             return false;
 
-        try
-        {
-            if (line.StartsWith("HXSYNC|", StringComparison.Ordinal))
-            {
-                var payload = line["HXSYNC|".Length..];
-                lock (_sync) _hasRemote = true;
-                GameDataSync.ReceiveSerializerSync(payload);
-                return true;
-            }
-
-            if (line.StartsWith("LSEED|", StringComparison.Ordinal))
-            {
-                var payload = line["LSEED|".Length..];
-                lock (_sync) _hasRemote = true;
-                GameDataSync.ReceiveLevelSeed(payload);
-                return true;
-            }
-
-            if (line.StartsWith("LGRAPH|", StringComparison.Ordinal))
-            {
-                var payload = line["LGRAPH|".Length..];
-                lock (_sync) _hasRemote = true;
-                GameDataSync.ReceiveLevelGraph(payload);
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.Warning("[NetNode] Fast-path line handling failed: {msg}", ex.Message);
-        }
-
-        return false;
+        return TryHandleClientFastPathLine(line);
     }
 
     private bool TryHandleMobTrafficFastPath(string line, int? senderId)

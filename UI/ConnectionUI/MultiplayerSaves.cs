@@ -63,11 +63,12 @@ namespace DeadCellsMultiplayerMod
 
         internal static void OpenMultiplayerSlotMenu(TitleScreen screen)
         {
-            _multiplayerSaveMenuReturnRole = _inHostStatusMenu
+            var state = ReadSessionSnapshot();
+            _multiplayerSaveMenuReturnRole = state.InHostStatusMenu
                 ? NetRole.Host
-                : _inClientWaitingMenu
+                : state.InClientWaitingMenu
                     ? NetRole.Client
-                    : _role;
+                    : state.Role;
 
             OpenSaveMenu(screen, MultiplayerSaveMenuKind.MultiplayerSlots);
         }
@@ -114,8 +115,6 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
-                _ConnectionUI.RefreshLocalHeroCosmeticsForSaveSlot();
-                _ConnectionUI.RememberLocalHeroSkinFromUser(self?.user, "titleScreen.leaveSaveMenu");
                 NotifyMultiplayerSaveSlotChanged();
             }
             catch { }

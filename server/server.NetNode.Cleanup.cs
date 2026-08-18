@@ -14,7 +14,6 @@ public sealed partial class NetNode
             _pendingAttacks.Clear();
             _pendingMobStates.Clear();
             _pendingMobMoves.Clear();
-            _pendingMobMoveSlots.Clear();
             _pendingMobHits.Clear();
             _pendingMobDies.Clear();
             _pendingMobAttacks.Clear();
@@ -74,6 +73,17 @@ public sealed partial class NetNode
                     _primaryRemoteId = key;
             }
         }
+    }
+
+    private void RemovePendingPeerStateLocked(int userId)
+    {
+        RemoveRemoteLocked(userId);
+        _pendingAttacks.RemoveAll(a => a.Id == userId);
+        _pendingMobHits.RemoveAll(h => h.UserId == userId);
+        _pendingMobDies.RemoveAll(d => d.UserId == userId);
+        _pendingExitReadyStates.RemoveAll(s => s.UserId == userId);
+        _pendingPlayerDownStates.RemoveAll(s => s.UserId == userId);
+        _pendingPlayerReviveRequests.RemoveAll(s => s.ReviverId == userId || s.TargetId == userId);
     }
 
     private static int? ResolvePayloadId(string payload, int? senderId, out string cleanedPayload)
