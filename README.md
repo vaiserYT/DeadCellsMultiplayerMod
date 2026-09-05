@@ -40,61 +40,59 @@ Every bit of feedback helps improve multiplayer support for **Dead Cells**.
 
 ## 🧰 Requirements
 
-- **Dead Cells (PC)**
+- **Dead Cells (PC)** (Update 35 / "The End is Near")
 - **Dead Cells Core Modding API (DCCM)**
+- **[.NET 10 Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/10.0)**
+- **[Microsoft Visual C++ Redistributable 2015–2022 (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)**
 - Local network, Steam, or virtual LAN software (for online play)
 
 ---
 
 ## 📦 Installation
 
-### 1️⃣ Install Dead Cells Core Modding API (DCCM)
+### Method A: Steam Workshop Users
+1. Subscribe to **[DCCM Core Modding API](https://steamcommunity.com/sharedfiles/filedetails/?id=3633185550)**.
+2. Subscribe to **[DeadCellsMultiplayerMod](https://steamcommunity.com/sharedfiles/filedetails/?id=3657857836)**.
+3. Steam downloads workshop files to your workshop cache folder (`steamapps/workshop/content/588650/`). To activate DCCM:
+   - Navigate to your game folder (`steamapps/common/Dead Cells/`).
+   - Copy `core`, `plugins`, and `ModCoreVersion.txt` from `<Steam>/steamapps/workshop/content/588650/3633185550/win-x64/content/` into a folder named **`coremod`** in your game root.
+   - Copy all files from `<Steam>/steamapps/workshop/content/588650/3657857836/` into `<DeadCellsGameRoot>/coremod/mods/DeadCellsMultiplayerMod/`.
+4. Launch the game using `<DeadCellsGameRoot>/coremod/core/host/startup/DeadCellsModding.exe`.
 
-If you are using the **Steam version** of the game, follow the official installation guide:
+### Method B: Manual / Non-Steam Setup
+1. Extract DCCM into your Dead Cells root folder so that `<DeadCellsGameRoot>/coremod/` exists.
+2. Create the folder `<DeadCellsGameRoot>/coremod/mods/DeadCellsMultiplayerMod/` if it does not exist.
+3. Extract the mod release contents into that folder (ensuring `modinfo.json` is directly inside).
+4. Launch via `<DeadCellsGameRoot>/coremod/core/host/startup/DeadCellsModding.exe`.
 
-👉 [https://dead-cells-core-modding.github.io/docs/docs/tutorial/install-workshop/](https://dead-cells-core-modding.github.io/docs/docs/tutorial/install-workshop/)
+> ⚠️ **Important Folder Rule:** The directory must be strictly named **`coremod`** (singular, lowercase). Naming it `coremods` will cause the launcher to exit immediately without an error.
 
-This method will automatically install and keep DCCM up to date.
-
-### 2️⃣ Install DeadCellsMultiplayerMod
-
-If you are using the **Steam version** of the game:
-1. Open [https://steamcommunity.com/sharedfiles/filedetails/?id=3657857836](https://steamcommunity.com/sharedfiles/filedetails/?id=3657857836)
-2. Install the mod in one click.
-
-If you are using a **non-Steam version** of Dead Cells (DCCM required):
-1. Navigate to your **DCCM directory**
-2. Create a folder named `mods` (if it doesn't exist)
-3. Extract the **DeadCellsMultiplayerMod** folder into the `mods` directory
-
-Example:
-```
-Your game path/
- └──coremod/
-    └── mods/
-        └── DeadCellsMultiplayerMod/
-```
-
-### 3️⃣ Run the game via DCCM
-
-Start **Dead Cells** using **DCCM**.  
-On the first launch, required configuration files will be generated automatically.
+*Having issues? See our comprehensive [Troubleshooting Guide](docs/TROUBLESHOOTING.md).*
 
 ---
 
 ## 🕹️ How to Play (Multiplayer)
 
-1. Launch the game via **DCCM**
-2. Click **Play Multiplayer**
-3. Choose **Host** or **Join**
-4. Enter **IP address** and **port** (TCP) or connect via Steam
-5. When the host starts the game, the client will automatically join the session
+### Steam P2P (Easiest)
+1. Both players launch Dead Cells via `DeadCellsModding.exe`.
+2. The Host clicks **Play Multiplayer** → **Host (Steam P2P)**.
+3. Once the lobby screen appears with your lobby code:
+   - Open the **Steam Overlay** (`Shift + Tab`).
+   - Right-click your friend in the Steam friend list and select **Invite to Game** (or copy and share the lobby code).
+4. The joining player accepts the invite via Steam chat or Steam profile.
+5. When both players appear in the lobby:
+   - The host selects a multiplayer save slot.
+   - Click **Start Game** — both players will spawn together in the Prisoner's Quarters!
 
-🌐 **For online play**, use one of the following:
-- Hamachi  
-- Radmin VPN  
-- ZeroTier  
-- Steam P2P (built-in)
+### Local Network / Direct TCP
+1. Connect to the same local network or virtual LAN (e.g., **Radmin VPN**, **ZeroTier**, **Hamachi**).
+2. Host clicks **Play Multiplayer** → **Host (TCP)** (default port: `1234`).
+3. Client clicks **Play Multiplayer** → **Join (TCP)**:
+   - Enter the Host's **Virtual LAN IP** (do not use `127.0.0.1` unless testing two clients on the same PC).
+   - Enter port `1234` and click Connect.
+4. Select a save slot and start the game.
+
+> 💡 **Tip:** Ensure Windows Defender Firewall allows incoming connections on port `1234` for `DeadCellsModding.exe` and `deadcells_gl.exe`.
 
 ---
 
