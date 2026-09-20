@@ -45,6 +45,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             public readonly string MobType;
             public readonly string StatePayload;
             public readonly bool VisibleForSync;
+            public readonly double StatePayloadFrame;
             // The managed registration the state was observed from. Mob.type and the runtime class
             // are immutable for a mob instance, so while the same registration keeps the syncId we
             // reuse the previous MobType instead of rebuilding the signature every frame.
@@ -60,6 +61,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 string mobType,
                 string statePayload,
                 bool visibleForSync,
+                double statePayloadFrame,
                 Mob mobRef)
             {
                 X = x;
@@ -71,6 +73,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 MobType = mobType ?? string.Empty;
                 StatePayload = statePayload ?? string.Empty;
                 VisibleForSync = visibleForSync;
+                StatePayloadFrame = statePayloadFrame;
                 MobRef = mobRef;
             }
         }
@@ -88,6 +91,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         }
 
         private static readonly Dictionary<int, HostMobObservedState> hostObservedMobStatesBySyncId = new();
+        private static readonly HashSet<int> hostStatePayloadDirtySyncIds = new();
         private static readonly Dictionary<int, HostMobDirtyFlags> hostDirtyFlagsBySyncId = new();
         private static readonly Queue<int> hostDirtyMobQueue = new();
         private static readonly HashSet<int> hostDirtyQueuedSyncIds = new();
@@ -141,31 +145,43 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             }
 
             var visibleForSync = IsMobOnScreenForSync(mob);
+            var observationFrame = GetCurrentFrame(mob);
 
             // Skip heavy state-payload builds for idle off-screen mobs. Anim still rebuilds whenever
             // the mob is visible so in-place attack cycles keep syncing. PrisonCourtyard (~100
             // tracked) previously built BOTH payloads every postUpdate — main-thread stall, idle CPU.
             HostMobObservedState previous;
             var hasPrevious = false;
+            var payloadDirty = false;
             lock (Sync)
             {
                 hasPrevious = hostObservedMobStatesBySyncId.TryGetValue(syncId, out previous);
+                payloadDirty = hostStatePayloadDirtySyncIds.Contains(syncId);
             }
 
             var needsAnim = visibleForSync;
             var needsStatePayload = true;
+            var lifeChanged = false;
+            var visibilityChanged = false;
+            var moveChanged = false;
             if (hasPrevious)
             {
-                var lifeChanged = life != previous.Life || maxLife != previous.MaxLife;
-                var visibilityChanged = visibleForSync != previous.VisibleForSync;
-                var moveChanged = visibleForSync && (
+                lifeChanged = life != previous.Life || maxLife != previous.MaxLife;
+                visibilityChanged = visibleForSync != previous.VisibleForSync;
+                moveChanged = visibleForSync && (
                     !previous.VisibleForSync ||
                     !IsApproximatelyEqual(previous.X, x, MobStatePositionEpsilon) ||
                     !IsApproximatelyEqual(previous.Y, y, MobStatePositionEpsilon) ||
                     previous.Dir != dir);
 
-                // Off-screen and unchanged: reuse last state payload (keyframes still refresh).
-                if (!visibleForSync && !lifeChanged && !visibilityChanged && !moveChanged)
+                var refreshDue = observationFrame - previous.StatePayloadFrame >= HostStatePayloadRefreshIntervalFrames;
+                // Affect hooks mark the payload immediately. Otherwise visible metadata is rebuilt
+                // on a short cadence instead of once per mob per frame. Off-screen unchanged mobs
+                // continue to reuse the cached payload until the reliable resync path covers them.
+                needsStatePayload = payloadDirty || lifeChanged || visibilityChanged ||
+                                    (visibleForSync && refreshDue);
+
+                if (!visibleForSync && !lifeChanged && !visibilityChanged && !moveChanged && !payloadDirty)
                     needsStatePayload = false;
             }
 
@@ -205,14 +221,14 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                     if (visibleForSync)
                     {
-                        var moveChanged =
+                        var snapshotMoveChanged =
                             !previous.VisibleForSync ||
                             !IsApproximatelyEqual(previous.X, x, MobStatePositionEpsilon) ||
                             !IsApproximatelyEqual(previous.Y, y, MobStatePositionEpsilon) ||
                             previous.Dir != dir ||
                             !string.Equals(previous.AnimPayload, animPayload, StringComparison.Ordinal);
 
-                        if (moveChanged)
+                        if (snapshotMoveChanged)
                             flags |= previous.VisibleForSync ? HostMobDirtyFlags.Move : HostMobDirtyFlags.ForceState;
                     }
                     else if (previous.VisibleForSync)
@@ -231,7 +247,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                     mobType,
                     statePayload,
                     visibleForSync,
+                    needsStatePayload ? observationFrame : previous.StatePayloadFrame,
                     mob);
+
+                if (needsStatePayload)
+                    hostStatePayloadDirtySyncIds.Remove(syncId);
 
                 if (flags != HostMobDirtyFlags.None)
                     EnqueueHostMobDirtyLocked(syncId, flags);
@@ -963,6 +983,12 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var net = LobbySession.NetRef;
             if (IsHost(net))
             {
+                if (TryGetMobSyncId(mob, out var syncId) && syncId > 0)
+                {
+                    lock (Sync)
+                        hostStatePayloadDirtySyncIds.Add(syncId);
+                }
+
                 QueueHostMobDirty(mob, HostMobDirtyFlags.State);
                 return;
             }
@@ -979,6 +1005,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static void ClearQueuedDirtyStateLocked()
         {
             hostObservedMobStatesBySyncId.Clear();
+            hostStatePayloadDirtySyncIds.Clear();
             s_hostBossPartWatch.Clear();
             hostDirtyFlagsBySyncId.Clear();
             hostDirtyQueuedSyncIds.Clear();

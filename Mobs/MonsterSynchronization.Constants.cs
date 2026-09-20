@@ -28,6 +28,10 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private const double MobHitMissingSyncIdRebindDistancePx = 24.0 * 48.0;
         /// <summary>How often the host catch-up pass covers remaining tracked mobs.</summary>
         private const double HostAuthoritativeFullResyncIntervalFrames = 45.0;
+        // A visible mob's affect/boss metadata is refreshed at a bounded cadence when no
+        // explicit dirty hook fired. This avoids rebuilding the same payload every frame while
+        // still converging phase changes within 100 ms at 30 FPS.
+        private const double HostStatePayloadRefreshIntervalFrames = 3.0;
         /// <summary>Reliable keyframe interval for mobs actively fighting or visible to either player.</summary>
         private const double HostActiveReliableKeyframeIntervalFrames = 8.0;
         /// <summary>Bosses get a tighter reliable state cadence without increasing traffic for every normal mob.</summary>
