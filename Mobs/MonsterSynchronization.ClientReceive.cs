@@ -814,33 +814,57 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static HashSet<int> ParseAffectStatePayload(string? payload)
         {
-            var affects = new HashSet<int>();
             if (string.IsNullOrWhiteSpace(payload))
-                return affects;
+                return new HashSet<int>();
 
-            var decoded = payload!;
-            try { decoded = Uri.UnescapeDataString(decoded); } catch { }
-            if (string.IsNullOrWhiteSpace(decoded))
-                return affects;
-
-            var parts = decoded.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            for (int i = 0; i < parts.Length; i++)
+            // Do not retain unusually large/corrupt payloads. Normal affect signatures are short
+            // and repeat frequently, making this cache much cheaper than Split + HashSet per packet.
+            if (payload.Length <= 512)
             {
-                var token = parts[i]?.Trim();
-                if (string.IsNullOrWhiteSpace(token))
-                    continue;
+                lock (Sync)
+                {
+                    if (s_affectPayloadParseCache.TryGetValue(payload, out var cached))
+                        return cached;
+                }
+            }
 
-                var idPart = token;
-                var separator = token.IndexOf(':');
-                if (separator > 0)
-                    idPart = token[..separator];
+            var affects = new HashSet<int>();
+            var decoded = payload;
+            try { decoded = Uri.UnescapeDataString(decoded); } catch { }
+            if (!string.IsNullOrWhiteSpace(decoded))
+            {
+                var parts = decoded.Split('.', StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    var token = parts[i]?.Trim();
+                    if (string.IsNullOrWhiteSpace(token))
+                        continue;
 
-                if (!int.TryParse(idPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id))
-                    continue;
-                if (id < 0)
-                    continue;
+                    var idPart = token;
+                    var separator = token.IndexOf(':');
+                    if (separator > 0)
+                        idPart = token[..separator];
 
-                affects.Add(id);
+                    if (int.TryParse(idPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) && id >= 0)
+                        affects.Add(id);
+                }
+            }
+
+            if (payload.Length <= 512)
+            {
+                lock (Sync)
+                {
+                    if (!s_affectPayloadParseCache.ContainsKey(payload))
+                    {
+                        s_affectPayloadParseCache[payload] = affects;
+                        s_affectPayloadParseCacheOrder.Enqueue(payload);
+                        while (s_affectPayloadParseCacheOrder.Count > AffectPayloadParseCacheLimit)
+                        {
+                            var oldest = s_affectPayloadParseCacheOrder.Dequeue();
+                            s_affectPayloadParseCache.Remove(oldest);
+                        }
+                    }
+                }
             }
 
             return affects;

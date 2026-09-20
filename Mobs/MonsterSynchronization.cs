@@ -65,6 +65,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly Dictionary<int, string> clientLastAppliedHostAffectPayloadBySyncId = new();
         private static readonly Dictionary<int, Mob> clientLastAppliedHostAffectMobBySyncId = new();
         private static readonly Dictionary<int, string> hostLastAppliedClientAffectPayloadBySyncId = new();
+        // Affect payloads repeat heavily between state packets. Keep a small immutable-by-convention
+        // cache; callers only enumerate the returned sets and never mutate them.
+        private const int AffectPayloadParseCacheLimit = 256;
+        private static readonly Dictionary<string, HashSet<int>> s_affectPayloadParseCache = new(StringComparer.Ordinal);
+        private static readonly Queue<string> s_affectPayloadParseCacheOrder = new();
         // Affect ids that were actually created on the host from a client report. This prevents
         // a later client empty payload from pruning unrelated host/elite affects.
         private static readonly Dictionary<Mob, HashSet<int>> hostClientOwnedAffectIdsByMob = new(ReferenceEqualityComparer.Instance);

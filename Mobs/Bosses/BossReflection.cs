@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Reflection;
 
 namespace DeadCellsMultiplayerMod.Mobs.Bosses;
@@ -14,32 +16,41 @@ internal static class BossReflection
     private const BindingFlags Flags =
         BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
+    private sealed class MemberAccessorCache : ConcurrentDictionary<string, MemberAccessor>
+    {
+    }
+
+    private sealed class MemberAccessor
+    {
+        internal static readonly MemberAccessor Missing = new(null, null);
+
+        internal readonly PropertyInfo? Property;
+        internal readonly FieldInfo? Field;
+
+        internal MemberAccessor(PropertyInfo? property, FieldInfo? field)
+        {
+            Property = property;
+            Field = field;
+        }
+    }
+
+    private static readonly ConditionalWeakTable<Type, MemberAccessorCache> MemberCaches = new();
+
     internal static object? TryReadMember(object? target, string name)
     {
         if (target == null || string.IsNullOrEmpty(name))
             return null;
 
-        for (var t = target.GetType(); t != null; t = t.BaseType)
+        var accessor = ResolveAccessor(target.GetType(), name);
+        try
         {
-            try
-            {
-                var p = t.GetProperty(name, Flags);
-                if (p != null && p.CanRead)
-                    return p.GetValue(target);
-            }
-            catch
-            {
-            }
-
-            try
-            {
-                var f = t.GetField(name, Flags);
-                if (f != null)
-                    return f.GetValue(target);
-            }
-            catch
-            {
-            }
+            if (accessor.Property is { CanRead: true } property)
+                return property.GetValue(target);
+            if (accessor.Field != null)
+                return accessor.Field.GetValue(target);
+        }
+        catch
+        {
         }
 
         return null;
@@ -50,36 +61,58 @@ internal static class BossReflection
         if (target == null || string.IsNullOrEmpty(name))
             return false;
 
-        for (var t = target.GetType(); t != null; t = t.BaseType)
+        var accessor = ResolveAccessor(target.GetType(), name);
+        try
         {
-            try
+            if (accessor.Property is { CanWrite: true } property)
             {
-                var p = t.GetProperty(name, Flags);
-                if (p != null && p.CanWrite)
-                {
-                    p.SetValue(target, CoerceValue(value, p.PropertyType));
-                    return true;
-                }
-            }
-            catch
-            {
+                property.SetValue(target, CoerceValue(value, property.PropertyType));
+                return true;
             }
 
-            try
+            if (accessor.Field != null)
             {
-                var f = t.GetField(name, Flags);
-                if (f != null)
-                {
-                    f.SetValue(target, CoerceValue(value, f.FieldType));
-                    return true;
-                }
+                accessor.Field.SetValue(target, CoerceValue(value, accessor.Field.FieldType));
+                return true;
             }
-            catch
-            {
-            }
+        }
+        catch
+        {
         }
 
         return false;
+    }
+
+    private static MemberAccessor ResolveAccessor(Type type, string name)
+    {
+        var cache = MemberCaches.GetOrCreateValue(type);
+        return cache.GetOrAdd(name, static (memberName, declaringType) =>
+        {
+            for (var current = declaringType; current != null; current = current.BaseType)
+            {
+                try
+                {
+                    var property = current.GetProperty(memberName, Flags);
+                    if (property != null)
+                        return new MemberAccessor(property, null);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    var field = current.GetField(memberName, Flags);
+                    if (field != null)
+                        return new MemberAccessor(null, field);
+                }
+                catch
+                {
+                }
+            }
+
+            return MemberAccessor.Missing;
+        }, type);
     }
 
     internal static int? TryReadInt(object? target, string name)
