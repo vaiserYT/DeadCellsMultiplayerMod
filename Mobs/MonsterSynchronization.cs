@@ -16,6 +16,7 @@ using dc.tool.skill;
 using DeadCellsMultiplayerMod.Ghost;
 using DeadCellsMultiplayerMod.Interface.ModuleInitializing;
 using DeadCellsMultiplayerMod.Mobs.Bosses;
+using DeadCellsMultiplayerMod.PortableCore;
 using DeadCellsMultiplayerMod.Tools;
 using Hashlink.Virtuals;
 using HaxeProxy.Runtime;
@@ -93,6 +94,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         private static readonly List<PendingClientAffectApply> s_clientAffectAppliesScratch = new();
         private static readonly List<PendingHostStateApply> s_hostStateAppliesScratch = new();
         private static readonly List<PendingMobHitApply> s_pendingMobHitAppliesScratch = new();
+        private static readonly List<Mob> s_pendingCulledMobDeathsScratch = new();
         private static readonly List<NetNode.MobHit> s_mobHitMergeScratch = new();
         private static readonly List<PendingClientBossAttack> clientPendingBossAttacks = new();
         private static readonly List<ResolvedClientBossAttack> s_resolvedClientBossAttacksScratch = new();
@@ -255,6 +257,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
         // Prevent repeated typed tombstones from running a native
         // final boss onDie twice and duplicating rewards/cinematics. Guarded by Sync.
         private static readonly HashSet<Mob> clientCompletedAuthoritativeBossDeaths = new(ReferenceEqualityComparer.Instance);
+        private static readonly MobLifecycleLedger s_clientMobLifecycle = new();
         // Local client lethal damage is suppressed until the host confirms death. Track that
         // suppression explicitly so Hook_Mob_onDamage can still report hit|0 instead of the
         // temporary life=1 recovery value.
@@ -1233,6 +1236,23 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
         private static void Hook_Mob_onDie(Hook_Mob.orig_onDie orig, Mob self)
         {
+            var lifecycleGeneration = 0;
+            var lifecycleNetId = -1;
+            var authoritativeClientDeath = false;
+            if (self != null && IsClient(LobbySession.NetRef) &&
+                System.Threading.Volatile.Read(ref authoritativeClientMobDieDepth) > 0 &&
+                TryGetMobSyncId(self, out lifecycleNetId) &&
+                TryGetCurrentLevelIdentityToken(out lifecycleGeneration))
+            {
+                lock (Sync)
+                {
+                    if (s_clientMobLifecycle.IsDead(lifecycleGeneration, lifecycleNetId))
+                        return;
+                }
+
+                authoritativeClientDeath = true;
+            }
+
             if (ShouldSuppressClientBossDie(self))
             {
                 MarkSuppressedClientBossDie(self);
@@ -1291,6 +1311,17 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             ClearSuppressedClientBossDie(self);
+
+            if (authoritativeClientDeath)
+            {
+                var stillAlive = false;
+                try { stillAlive = !self.destroyed && self.life > 0; } catch { }
+                if (!stillAlive)
+                {
+                    lock (Sync)
+                        s_clientMobLifecycle.MarkDead(lifecycleGeneration, lifecycleNetId);
+                }
+            }
 
             // Some multi-phase bosses route a depleted phase through onDie(), then rebuild the
             // same encounter with positive life.  That is not a victory.  Keep its authoritative

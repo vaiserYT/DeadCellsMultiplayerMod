@@ -1685,6 +1685,35 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
 
                 if (!reserved)
                 {
+                    // NetId is the host-owned identity. Elite rune mobs can replace their native
+                    // wrapper (and therefore their type/class signature) during promotion, phase
+                    // setup, or the final death transition. Rejecting that packet invalidates the
+                    // only binding we have and turns the next host life=0/MOBDIE into a permanent
+                    // client ghost. The resolver already validated the generation, level and
+                    // forward/reverse mapping, so preserve the binding and refresh the cached type.
+                    // Do not use position here: a teleport/elite transform may legitimately move
+                    // the same authoritative mob between packets.
+                    if (IsStateRebindCandidateLocked(mappedMob) &&
+                        MappingOwnsSyncIdLocked(mappedMob, state.Index))
+                    {
+                        if (!string.IsNullOrWhiteSpace(state.Type))
+                            hostMobTypeBySyncId[state.Index] = state.Type;
+
+                        MobSyncTrace.LogFallbackMatchResolved(
+                            state.Life <= 0
+                                ? "state_type_mismatch_accepted_by_authoritative_id"
+                                : "state_type_changed_preserved_authoritative_id",
+                            state.Index,
+                            state.Type ?? string.Empty,
+                            state.X,
+                            state.Y,
+                            candidateCount: 1,
+                            rebound: false);
+                        if (bossEntityId > 0)
+                            RememberClientBossEntityIdLocked(mappedMob, bossEntityId);
+                        return mappedMob;
+                    }
+
                     InvalidateTrackedSyncCacheLocked(state.Index, "state_type_mismatch");
                     MobSyncTrace.LogIncomingMappingMismatch(
                         "state",

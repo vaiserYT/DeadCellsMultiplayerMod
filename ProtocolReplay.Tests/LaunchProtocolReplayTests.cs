@@ -85,6 +85,26 @@ public sealed class LaunchProtocolReplayTests
         Assert.Equal(LifecycleState.Disposed, tracker.Snapshot.State);
     }
 
+
+    [Fact]
+    public void MobLifecycleLedgerIsIdempotentPerGeneration()
+    {
+        var ledger = new MobLifecycleLedger();
+
+        ledger.MarkActive(10, 7);
+        Assert.False(ledger.IsDead(10, 7));
+
+        ledger.MarkDead(10, 7);
+        Assert.True(ledger.IsDead(10, 7));
+
+        // A stale active observation must not resurrect a confirmed death.
+        ledger.MarkActive(10, 7);
+        Assert.True(ledger.IsDead(10, 7));
+
+        // The same NetId is valid again only in a new level generation.
+        Assert.False(ledger.IsDead(11, 7));
+    }
+
     private static RunLaunchDescriptor CreateDescriptor()
     {
         return new RunLaunchDescriptor(

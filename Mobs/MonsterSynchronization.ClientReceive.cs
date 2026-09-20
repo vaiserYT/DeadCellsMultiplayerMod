@@ -276,6 +276,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         continue;
                     }
                     LogFocusSyncLifecycleLocked(state.Index, "STATE_APPLY", $"life={state.Life}");
+                    if (state.Life > 0)
+                        s_clientMobLifecycle.MarkActive(state.Generation, state.Index);
 
                     s_usedTrackedMobsScratch.Add(mob);
                     var incomingDir = NormalizeDir(state.Dir);
@@ -2941,6 +2943,26 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                         DoesMobMatchStateType(mapped, die.Type) ||
                         (BossSyncHelpers.IsBossMob(mapped) && DoesBossMatchAuthoritativeType(mapped, die.Type)))
                     {
+                        return mapped;
+                    }
+
+                    // MOBDIE is keyed by the host-owned NetId. An elite may have changed its
+                    // native wrapper/type signature before the death packet arrives, and an
+                    // elite teleport makes position corroboration unreliable. The mapping has
+                    // already passed generation/level validation in ResolveMobBySyncIdLocked;
+                    // preserve it and finish vanilla onDie instead of stranding the replica at
+                    // zero HP.
+                    if (IsStateRebindCandidateLocked(mapped) &&
+                        MappingOwnsSyncIdLocked(mapped, die.MobIndex))
+                    {
+                        MobSyncTrace.LogFallbackMatchResolved(
+                            "death_type_mismatch_accepted_by_authoritative_id",
+                            die.MobIndex,
+                            die.Type,
+                            die.X,
+                            die.Y,
+                            candidateCount: 1,
+                            rebound: false);
                         return mapped;
                     }
 

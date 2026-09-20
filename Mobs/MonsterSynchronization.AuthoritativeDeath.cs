@@ -152,19 +152,19 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             if (!IsClient(LobbySession.NetRef))
                 return;
 
-            var pending = new List<Mob>();
             var frame = GetCurrentFrame(null);
             lock (Sync)
             {
                 if (s_pendingCulledMobDeaths.Count == 0)
                     return;
 
-                pending.AddRange(s_pendingCulledMobDeaths);
+                s_pendingCulledMobDeathsScratch.Clear();
+                s_pendingCulledMobDeathsScratch.AddRange(s_pendingCulledMobDeaths);
             }
 
-            for (int i = 0; i < pending.Count; i++)
+            for (int i = 0; i < s_pendingCulledMobDeathsScratch.Count; i++)
             {
-                var mob = pending[i];
+                var mob = s_pendingCulledMobDeathsScratch[i];
                 if (mob == null)
                     continue;
 
@@ -205,6 +205,8 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 if (RunAuthoritativeClientDeathNow(mob))
                     ClearPendingClientAuthoritativeDeath(mob);
             }
+
+            s_pendingCulledMobDeathsScratch.Clear();
         }
 
         private static void ClearPendingClientAuthoritativeDeath(Mob mob)

@@ -41,6 +41,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
         private static SpriteLib? _cachedLib;
         private static string _cachedAtlas = string.Empty;
 
+        // The CDB proxy is exposed through dynamic Haxe members. Nullability analysis cannot
+        // follow those members even though every access is guarded or isolated in a try/catch.
+#pragma warning disable CS8602
         internal static bool TryResolve(string headId, out string atlas, out List<Part> parts, out ArrayObj? glowData, out List<string> particleEffects)
         {
             atlas = "customHead";
@@ -59,7 +62,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                 for (int i = 0; i < rows.array.length; i++)
                 {
                     var row = rows.getDyn(i);
-                    if (!string.Equals(row.item?.ToString(), headId, StringComparison.Ordinal))
+                    if (row == null || !string.Equals(row.item?.ToString(), headId, StringComparison.Ordinal))
                         continue;
 
                     try
@@ -94,6 +97,9 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                             for (int p = 0; p < props.length; p++)
                             {
                                 var part = props.getDyn(p);
+                                if (part == null)
+                                    continue;
+
                                 string group = part.baseSpr?.ToString() ?? string.Empty;
                                 if (string.IsNullOrWhiteSpace(group))
                                     continue;
@@ -140,7 +146,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                                             for (int s = 0; s < states.length; s++)
                                             {
                                                 var st = states.getDyn(s);
-                                                if ((int)st.state != 0)
+                                                if (st == null || (int)st.state != 0)
                                                     continue;
                                                 idleAnim = st.animId?.ToString();
                                                 try { idleAnimSpeed = (double)st.animSpd; } catch { }
@@ -161,7 +167,7 @@ namespace DeadCellsMultiplayerMod.MultiplayerModUI.Connection
                     {
                     }
 
-try
+                    try
                     {
                         var fx = row.particleEffects;
                         if (fx != null)
@@ -188,6 +194,7 @@ try
 
             return false;
         }
+#pragma warning restore CS8602
 
         internal static SpriteLib? LoadAtlas(string atlas)
         {
