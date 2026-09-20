@@ -152,34 +152,39 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
                 return;
 
             var desired = ParseAffectStatePayload(payload);
-            HashSet<int> previousOwned;
+            HashSet<int>? previousOwned;
             lock (Sync)
             {
-                previousOwned = hostClientOwnedAffectIdsByMob.TryGetValue(mob, out var existing)
-                    ? new HashSet<int>(existing)
-                    : new HashSet<int>();
+                hostClientOwnedAffectIdsByMob.TryGetValue(mob, out previousOwned);
             }
 
-            var nextOwned = new HashSet<int>();
+            // The common path is an unchanged or empty owned-affect set. Avoid copying two
+            // HashSets for every client state packet; the dictionary value is replaced, never
+            // mutated in place, so it is safe to inspect it outside the lock.
+            if (previousOwned == null || previousOwned.Count == 0)
+                return;
 
+            HashSet<int>? nextOwned = null;
             foreach (var affectId in previousOwned)
             {
                 if (desired.Contains(affectId))
-                {
-                    nextOwned.Add(affectId);
                     continue;
-                }
 
+                nextOwned ??= new HashSet<int>(previousOwned);
                 try
                 {
                     mob.removeAllAffects(affectId);
+                    nextOwned.Remove(affectId);
                 }
                 catch
                 {
                     // Keep ownership if removal failed so a later state can retry safely.
-                    nextOwned.Add(affectId);
                 }
             }
+
+            // No differences means no dictionary write and no allocation.
+            if (nextOwned == null)
+                return;
 
             // Do not create new host affects from client presence reports. Client combat prediction
             // previously called setAffectS(..., 99999) here and permanently froze mobs after hits
