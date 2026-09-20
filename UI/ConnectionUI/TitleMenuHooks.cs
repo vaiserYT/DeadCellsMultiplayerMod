@@ -62,7 +62,7 @@ namespace DeadCellsMultiplayerMod
             ConnectionUI.set_visible = false;
             orig(self);
 
-            try { _ConnectionUI.RememberLocalHeroSkinFromUser(self?.user, "titleScreen.mainMenu"); } catch { }
+            try { _ConnectionUI.RememberLocalHeroSkinFromUser(self.user, "titleScreen.mainMenu"); } catch { }
 
             EnsureMainMenuMultiplayerButton(self);
             ProcessPendingOverlayJoinRequest(self);

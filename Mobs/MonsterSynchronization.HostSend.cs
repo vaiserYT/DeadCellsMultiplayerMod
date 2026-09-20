@@ -268,6 +268,7 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             var statePayload = string.Empty;
             HostMobObservedState observed = default;
             var hasObserved = false;
+            var payloadDirty = false;
             HostMobSentState previous;
             var hadPrevious = false;
             var ft = GetCurrentFrame(mob);
@@ -277,10 +278,11 @@ namespace DeadCellsMultiplayerMod.Mobs.MobsSynchronization
             lock (Sync)
             {
                 hasObserved = hostObservedMobStatesBySyncId.TryGetValue(mobSyncId, out observed);
+                payloadDirty = hostStatePayloadDirtySyncIds.Contains(mobSyncId);
                 hadPrevious = hostLastSentMobStatesBySyncId.TryGetValue(mobSyncId, out previous);
             }
 
-            if (hasObserved)
+            if (hasObserved && !payloadDirty)
             {
                 animPayload = prebuiltAnimPayload ?? observed.AnimPayload;
                 mobType = observed.MobType;
