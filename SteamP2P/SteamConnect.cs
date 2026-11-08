@@ -262,13 +262,13 @@ namespace DeadCellsMultiplayerMod
                 LobbyCode = lobbyCode
             };
 
-            var workerSucceeded = TryRunWorker(request, out var response);
+            var workerSucceeded = TryRunJoin(request, out var response);
             if (!workerSucceeded && IsTransientJoinWorkerError(response.Error))
             {
                 for (var attempt = 0; attempt < JoinWorkerRetryCount; attempt++)
                 {
                     Thread.Sleep(JoinWorkerRetryDelayMs);
-                    workerSucceeded = TryRunWorker(request, out response);
+                    workerSucceeded = TryRunJoin(request, out response);
                     if (workerSucceeded || !IsTransientJoinWorkerError(response.Error))
                         break;
                 }
@@ -342,13 +342,13 @@ namespace DeadCellsMultiplayerMod
                 LobbyCode = string.Empty
             };
 
-            var workerSucceeded = TryRunWorker(request, out var response);
+            var workerSucceeded = TryRunJoin(request, out var response);
             if (!workerSucceeded && IsTransientJoinWorkerError(response.Error))
             {
                 for (var attempt = 0; attempt < JoinWorkerRetryCount; attempt++)
                 {
                     Thread.Sleep(JoinWorkerRetryDelayMs);
-                    workerSucceeded = TryRunWorker(request, out response);
+                    workerSucceeded = TryRunJoin(request, out response);
                     if (workerSucceeded || !IsTransientJoinWorkerError(response.Error))
                         break;
                 }
@@ -696,6 +696,71 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        /// <summary>
+        /// Local patch: resolve the Steam lobby inside the game process, using the SteamAPI the
+        /// modded game already initialized (the same approach the P2P host already uses). The
+        /// separate worker process re-loads steam_api64.dll and re-inits Steam, which fails on
+        /// some installs (DllNotFoundException) and can make Steam relaunch the game. The worker
+        /// is kept only as a fallback when in-process Steam is unavailable.
+        /// </summary>
+        private static bool TryRunJoin(WorkerRequest request, out WorkerResponse response)
+        {
+            if (TryRunJoinInProcess(request, out response))
+                return true;
+
+            // A definitive answer from Steam (wrong build, own lobby, not joinable...) must not
+            // be retried through the worker; only fall back when in-process Steam is unusable.
+            if (!response.Error.StartsWith("[in-process unavailable]", StringComparison.Ordinal))
+                return false;
+
+            ModEntry.Instance?.Logger?.Warning("[NetMod][Steam] In-process join unavailable ({Error}); falling back to worker", response.Error);
+            return TryRunWorker(request, out response);
+        }
+
+        private static bool TryRunJoinInProcess(WorkerRequest request, out WorkerResponse response)
+        {
+            response = new WorkerResponse
+            {
+                Success = false,
+                Error = "[in-process unavailable] SteamAPI is not initialized in the game process"
+            };
+
+            try
+            {
+                if (!ModEntry.EnsureSteamApiForNetworking("in-process lobby join"))
+                    return false;
+
+                ModEntry.Instance?.Logger?.Information("[NetMod][Steam] Resolving lobby in-process (lobbyId={LobbyId})", request.LobbyId);
+                // Do NOT take the Steam pump lock or call SteamAPI.RunCallbacks from this
+                // background thread: the game's main-thread title/frame hooks keep pumping
+                // callbacks, and off-main-thread RunCallbacks can crash the game (0xC0000005).
+                s_inProcessJoinThread = true;
+                try
+                {
+                    response = ExecuteJoin(request);
+                }
+                finally
+                {
+                    s_inProcessJoinThread = false;
+                }
+                ModEntry.Instance?.Logger?.Information(
+                    "[NetMod][Steam] In-process lobby resolve result: ok={Ok} hostSteamId={HostSteamId} error={Error}",
+                    response.Success,
+                    response.HostSteamId,
+                    response.Error);
+                return response.Success;
+            }
+            catch (Exception ex)
+            {
+                response = new WorkerResponse
+                {
+                    Success = false,
+                    Error = "[in-process unavailable] " + ex.GetType().Name + ": " + ex.Message
+                };
+                return false;
+            }
+        }
+
         private static bool TryRunWorker(WorkerRequest request, out WorkerResponse response)
         {
             response = new WorkerResponse
@@ -946,14 +1011,11 @@ namespace DeadCellsMultiplayerMod
             responseWritten = false;
             PrepareSteamNativePath();
 
-            if (SteamAPI.RestartAppIfNecessary(new AppId_t(DeadCellsAppId)))
-            {
-                return new WorkerResponse
-                {
-                    Success = false,
-                    Error = "Steam requested app restart"
-                };
-            }
+            // Local patch: RestartAppIfNecessary removed. In a helper process it can make Steam
+            // relaunch Dead Cells, which leaves Steam in a state where the real game then fails
+            // "Steam init". The worker gets SteamAppId via its environment instead.
+            Environment.SetEnvironmentVariable("SteamAppId", DeadCellsAppId.ToString(CultureInfo.InvariantCulture));
+            Environment.SetEnvironmentVariable("SteamGameId", DeadCellsAppId.ToString(CultureInfo.InvariantCulture));
 
             if (!SteamAPI.Init())
             {
@@ -1559,8 +1621,15 @@ namespace DeadCellsMultiplayerMod
         /// FileNotFoundException('GameProxy') on every join. Pumping SteamAPI directly here keeps
         /// the worker self-contained and touches nothing from the main mod assembly.
         /// </summary>
+        [ThreadStatic]
+        private static bool s_inProcessJoinThread;
+
         private static void RunWorkerSteamCallbacks()
         {
+            // In-process join: the game's main thread pumps Steam callbacks; just wait.
+            if (s_inProcessJoinThread)
+                return;
+
             if (!Monitor.TryEnter(s_workerSteamCallbackLock))
                 return;
             try
@@ -1766,6 +1835,7 @@ namespace DeadCellsMultiplayerMod
                         continue;
 
                     SetDllDirectory(path);
+                    PreloadSteamApi(steamApiPath);
                     return;
                 }
                 catch
@@ -1778,10 +1848,28 @@ namespace DeadCellsMultiplayerMod
                 try
                 {
                     SetDllDirectory(fallbackPath);
+                    PreloadSteamApi(Path.Combine(fallbackPath, steamApiName));
                 }
                 catch
                 {
                 }
+            }
+        }
+
+        /// <summary>
+        /// Local patch: SetDllDirectory is ignored when Steamworks.NET's DllImport uses the safe
+        /// LOAD_LIBRARY_SEARCH_* flags, so the worker threw DllNotFoundException('steam_api64').
+        /// Loading the module by full path first makes every later by-name load reuse it.
+        /// </summary>
+        private static void PreloadSteamApi(string steamApiPath)
+        {
+            try
+            {
+                if (File.Exists(steamApiPath))
+                    NativeLibrary.Load(steamApiPath);
+            }
+            catch
+            {
             }
         }
 
